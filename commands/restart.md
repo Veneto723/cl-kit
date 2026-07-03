@@ -1,5 +1,5 @@
 ---
-description: Reload the cl wrapper and restart claude on the same account
+description: "Reload the cl wrapper + relaunch (tip: cl:restart does this with zero tokens; /cl for all commands)"
 allowed-tools: Bash(node:*)
 ---
 

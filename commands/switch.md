@@ -1,5 +1,5 @@
 ---
-description: Switch this cl session to another configured account (optionally by id)
+description: "Switch account picker (tip: type cl:switch for zero tokens / when rate-limited; /cl for all commands)"
 allowed-tools: Bash(node:*)
 argument-hint: "[account-id]"
 ---

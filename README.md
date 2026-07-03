@@ -43,6 +43,7 @@ Requires: Windows 11, Node.js, Claude Code (`claude` CLI installed).
   can't get approved, since the classifier runs on the exhausted account). Use
   this if `/switch` ever errors with "cannot determine the safety of Bash".
 - **`/restart`** — reload the wrapper (fresh on-disk code) + relaunch, same account.
+- **`/cl`** — cheat sheet of every cl command (the discoverable menu entry that documents the zero-token `cl:` sentinels).
 - **Statusline** — active account label (your color), oauth usage % + reset times +
   pace ETA, blink warnings near limits, optional pool-DB per-account metrics,
   model + effort (sticky ultracode detection).

@@ -389,7 +389,8 @@ function pickAccount(currentId) {
           ? `  \x1b[7m${body}\x1b[0m${cur}\r\n`   // reverse-video selection
           : `   ${body}${cur}\r\n`);
       });
-      out.write('\r\n');
+      // Footer reinforces the memorable entry points every time they switch.
+      out.write('\r\n  \x1b[2mtip: `cl:switch <name>` jumps directly · `/cl` lists all commands\x1b[0m\r\n');
     }
 
     function done(id) {
