@@ -1,0 +1,12 @@
+{
+  "name": "pool-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing Claude Code pool account status (utilization + reset times) from Neon",
+  "main": "server.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "pg": "^8.22.0"
+  }
+}
