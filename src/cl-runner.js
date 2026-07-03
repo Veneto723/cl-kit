@@ -86,6 +86,60 @@ function deleteState() {
   try { fs.unlinkSync(STATE_PATH); } catch {}
 }
 
+// ---- crash / exit logging --------------------------------------------------
+// cl used to throw away claude's exit code, so a silent crash left NO trace and
+// was undebuggable. Every launch + exit now appends one line here.
+const LOG_PATH = path.join(CACHE_DIR, 'cl-runner.log');
+function logLine(msg) {
+  try {
+    try { if (fs.statSync(LOG_PATH).size > 256_000) fs.truncateSync(LOG_PATH, 0); } catch {}
+    fs.appendFileSync(LOG_PATH, `${new Date().toISOString()} [${process.pid}] ${msg}\n`);
+  } catch {}
+}
+
+// ---- duplicate-live-session guard ------------------------------------------
+// Is `pid` an alive process? (Windows + POSIX.) signal 0 = existence probe.
+function pidAlive(pid) {
+  if (!pid || pid === process.pid) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; } // exists but not ours to signal
+}
+
+// Per-conversation lock file. Keyed by the ACTUAL conversation id (not the state
+// file, whose convId is null until the statusline bridges a picker-resume), so
+// the guard is unambiguous. Holds the owning pid + cwd + session id.
+function convLockPath(convId) { return path.join(CACHE_DIR, `cl-convlock-${convId}.json`); }
+
+// If conversation `convId` is already held by a LIVE cl process, return its
+// { pid, cwd }; otherwise reclaim any stale lock and return null. Two cl
+// processes on one conversation both write its transcript .jsonl and can crash
+// together — the confirmed cause of the "both sessions died at once" bug.
+function liveOwnerOf(convId) {
+  if (!convId) return null;
+  const lp = convLockPath(convId);
+  let lock; try { lock = JSON.parse(fs.readFileSync(lp, 'utf8')); } catch { return null; }
+  if (lock.session === SESSION_ID) return null;      // our own lock (respawn) — fine
+  if (lock.pid && pidAlive(lock.pid)) return { pid: lock.pid, cwd: lock.cwd || '?' };
+  try { fs.unlinkSync(lp); } catch {}                // stale (owner dead) — reclaim
+  return null;
+}
+
+// Claim the conversation for THIS process. Call after the guard passes.
+function claimConv(convId) {
+  if (!convId) return;
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.writeFileSync(convLockPath(convId), JSON.stringify({ pid: process.pid, cwd: process.cwd(), session: SESSION_ID, at: Date.now() }));
+  } catch {}
+}
+function releaseConv(convId) {
+  if (!convId) return;
+  try {
+    const lock = JSON.parse(fs.readFileSync(convLockPath(convId), 'utf8'));
+    if (lock.session === SESSION_ID) fs.unlinkSync(convLockPath(convId)); // only release our own
+  } catch {}
+}
+
 // Sweep per-session state files older than a day, so ones orphaned by a hard
 // kill (terminal closed with the X, machine reboot) don't accumulate forever.
 // Effort memories get 7 days: they're what lets `cl --resume` restore a
@@ -94,8 +148,14 @@ function sweepStaleStates() {
   const DAY = 24 * 60 * 60 * 1000;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
-      if (!/^cl-(state|prefs|active|effort|flagretry|flagretry-payload|turn)-.*\.json$/.test(f)) continue;
+      if (!/^cl-(state|prefs|active|effort|flagretry|flagretry-payload|turn|convlock)-.*\.json$/.test(f)) continue;
       const p = path.join(CACHE_DIR, f);
+      // convlock files are cleaned by LIVENESS, not age: a still-running session
+      // days old must keep its lock. Remove only if its owner pid is dead.
+      if (f.startsWith('cl-convlock-')) {
+        try { const l = JSON.parse(fs.readFileSync(p, 'utf8')); if (!pidAlive(l.pid)) fs.unlinkSync(p); } catch { try { fs.unlinkSync(p); } catch {} }
+        continue;
+      }
       const limit = f.startsWith('cl-effort-') ? 7 * DAY : DAY;
       try { if (Date.now() - fs.statSync(p).mtimeMs > limit) fs.unlinkSync(p); } catch {}
     }
@@ -384,8 +444,17 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
       }
     }, TRIGGER_POLL_MS);
 
-    child.on('exit', code => finish('exit', code));
-    child.on('error', () => finish('exit', 1));
+    // Log the raw exit so a silent crash is never traceless. `done` is only true
+    // here if a switch/restart/flagretry trigger already fired — otherwise this
+    // is a real claude exit (clean OR crash), captured with its code + signal.
+    child.on('exit', (code, signal) => {
+      if (!done) logLine(`claude exited code=${code} signal=${signal || '-'} account=${account}`);
+      finish('exit', code);
+    });
+    child.on('error', (err) => {
+      logLine(`claude spawn error: ${err && err.message} account=${account}`);
+      finish('exit', 1);
+    });
   });
 }
 
@@ -476,7 +545,7 @@ async function main() {
   //  --apihub/--max still work when such accounts exist) → starting account.
   //  --effort <level> → PIN the effort for the whole cl session, re-applied on
   //  every respawn (pin > per-conversation detection).
-  let forceAccount = null, argEffort = null;
+  let forceAccount = null, argEffort = null, forceDupFlag = false;
   const passArgs = [];
   const idFlags = new Set(cfg.accounts.map((a) => `--${a.id}`));
   for (let i = 0; i < userArgs.length; i++) {
@@ -485,6 +554,7 @@ async function main() {
     if (idFlags.has(x)) { forceAccount = x.slice(2); continue; }
     if (x === '--apihub' && C.findAccount(cfg, 'apihub')) { forceAccount = 'apihub'; continue; } // legacy alias
     if (x === '--effort') { argEffort = userArgs[i + 1] || null; i++; continue; }
+    if (x === '--force-duplicate') { forceDupFlag = true; continue; } // cl-only; strip before claude
     passArgs.push(x);
   }
 
@@ -526,6 +596,44 @@ async function main() {
   const explicitId = userManagesConv ? explicitConvId(passArgs) : null;
   let adoptFixDone = false; // at most ONE effort-restoring relaunch per cl process
   let flagRetry = null;     // {text, model} — pending safeguard-flag auto-retry
+
+  // DUPLICATE-LIVE-SESSION GUARD (fixes the confirmed "both sessions crash at
+  // once" bug). Two cl processes resuming the SAME conversation both write its
+  // transcript .jsonl and can die together; re-resuming re-collides. Refuse to
+  // open a conversation another LIVE cl already owns — unless --force. Skipped
+  // on a /restart re-exec (CL_RESPAWNED): that's the same logical session handing
+  // off to itself, and the old process is already exiting.
+  const forceDup = forceDupFlag || process.env.CL_FORCE_DUP === '1';
+  // Guard the ids we know pre-launch: a managed convId (incl. /restart re-exec),
+  // OR an explicit `cl --resume <uuid>`. A bare picker resume has no id yet — it
+  // gets claimed once the statusline bridges its real id (see below).
+  const guardConv = convId || explicitId;
+  if (!forceDup && guardConv) {
+    const owner = liveOwnerOf(guardConv);
+    if (owner) {
+      process.stderr.write(
+        `\x1b[31m[cl] REFUSING TO LAUNCH — conversation ${guardConv.slice(0, 8)} is already open in a live cl session ` +
+        `(pid ${owner.pid}, cwd ${owner.cwd}).\x1b[0m\n` +
+        `\x1b[33m[cl] Two sessions on one conversation corrupt each other and can crash together (this is that bug).\n` +
+        `      • Use the EXISTING window, or\n` +
+        `      • start a fresh chat: \`cl\` (no --resume), or\n` +
+        `      • fork it read-only: \`claude --resume ${guardConv} --fork-session\`, or\n` +
+        `      • override (NOT recommended): \`cl --force-duplicate ...\`\x1b[0m\n`);
+      logLine(`refused duplicate launch of conv=${guardConv} (live owner pid=${owner.pid})`);
+      process.exit(1);
+    }
+    claimConv(guardConv); // this session now owns it
+  } else if (!userManagesConv && convId) {
+    // Brand-new managed conversation (fresh `cl`): claim its just-minted id so a
+    // second terminal can't collide on it either.
+    claimConv(convId);
+  }
+  // Release our conversation lock on ANY exit path (clean quit, crash, Ctrl-C).
+  const releaseOnExit = () => releaseConv(convId || explicitId);
+  process.on('exit', releaseOnExit);
+  process.on('SIGINT', () => { releaseOnExit(); process.exit(130); });
+  process.on('SIGTERM', () => { releaseOnExit(); process.exit(143); });
+  logLine(`launch account=${account} conv=${guardConv || '(picker/new)'} cwd=${process.cwd()}${forceDup ? ' [FORCED DUP]' : ''}`);
 
   for (;;) {
     // Build claude args, pinning THIS terminal's conversation by UUID so parallel
@@ -584,7 +692,20 @@ async function main() {
     // switches re-resume it precisely AND preserve its model/mode/effort.
     if (userManagesConv) {
       const actual = readActiveConv();
-      if (actual) { convId = actual; userManagesConv = false; }
+      if (actual) {
+        convId = actual; userManagesConv = false;
+        // Now that a bare picker resume revealed its real id, enforce the guard:
+        // if another live cl already owns it, we collided — warn (can't un-launch
+        // retroactively, but flag it) — otherwise claim it so the NEXT launch and
+        // other terminals see it as taken.
+        const owner = !forceDup ? liveOwnerOf(convId) : null;
+        if (owner) {
+          process.stderr.write(`\x1b[31m[cl] WARNING — the resumed conversation ${convId.slice(0, 8)} is ALSO open in cl pid ${owner.pid} (${owner.cwd}). Two sessions on one conversation can corrupt/crash. Close one.\x1b[0m\n`);
+          logLine(`duplicate detected post-adopt conv=${convId} other pid=${owner.pid}`);
+        } else {
+          claimConv(convId);
+        }
+      }
     }
 
     if (reason === 'restart') {
