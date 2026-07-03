@@ -37,6 +37,11 @@ Requires: Windows 11, Node.js, Claude Code (`claude` CLI installed).
 - **`/switch [id]`** — real slash command; relaunches THIS conversation on the next
   (or named) account, preserving model / permission mode / effort. Manual-only:
   there is no usage-based auto-switching.
+- **`cl:switch [id]` / `cl:restart`** (type as a plain message) — a hook-based
+  fallback that runs with **no permission classifier**, so it works even when the
+  current account is fully **rate-limited** (that's exactly when `/switch`'s bash
+  can't get approved, since the classifier runs on the exhausted account). Use
+  this if `/switch` ever errors with "cannot determine the safety of Bash".
 - **`/restart`** — reload the wrapper (fresh on-disk code) + relaunch, same account.
 - **Statusline** — active account label (your color), oauth usage % + reset times +
   pace ETA, blink warnings near limits, optional pool-DB per-account metrics,

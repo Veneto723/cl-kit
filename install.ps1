@@ -93,6 +93,8 @@ function Ensure-Hook($obj, [string]$event, [string]$command) {
   }
 }
 $node = 'node'
+# classifier-immune switch fallback FIRST (so `cl:switch` works even rate-limited)
+Ensure-Hook $settings 'UserPromptSubmit' "$node `"$($scripts -replace '\\','/')/cl-switch-hook.js`""
 Ensure-Hook $settings 'UserPromptSubmit' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" start"
 Ensure-Hook $settings 'Stop' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" done"
 Ensure-Hook $settings 'Stop' "$node `"$($scripts -replace '\\','/')/cl-flag-retry.js`""
@@ -103,8 +105,17 @@ if (-not $settings.statusLine) {
     type = 'command'; command = "node `"$scripts\usage-monitor.js`" --compact"
   }) -Force
 }
+# allow /switch's !-bash without the classifier (so it works in auto mode, and
+# is pre-approved rather than prompted). Narrow rule = carries into auto mode.
+if (-not $settings.permissions) { $settings | Add-Member -NotePropertyName permissions -NotePropertyValue ([pscustomobject]@{ allow = @() }) -Force }
+if (-not $settings.permissions.allow) { $settings.permissions | Add-Member -NotePropertyName allow -NotePropertyValue @() -Force }
+$allowRule = 'Bash(node "$HOME/.claude/scripts/cl-signal.js":*)'
+if ($settings.permissions.allow -notcontains $allowRule) {
+  $settings.permissions.allow = @($settings.permissions.allow) + $allowRule
+}
+
 $settings | ConvertTo-Json -Depth 20 | Set-Content $settingsPath -Encoding utf8
-Write-Host "  settings.json hooks + statusline wired (backup at settings.json.bak-cl-kit)"
+Write-Host "  settings.json hooks + statusline + switch allow-rule wired (backup at settings.json.bak-cl-kit)"
 
 Write-Host ""
 Write-Host "Done. Next:" -ForegroundColor Green
