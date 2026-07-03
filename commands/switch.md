@@ -6,6 +6,7 @@ argument-hint: "[account-id]"
 
 !`node "$HOME/.claude/scripts/cl-signal.js" switch $ARGUMENTS`
 
-The account switch has been signaled to the cl wrapper. It will confirm and
-relaunch this session on the target account shortly, continuing the conversation.
-Do not take any further action.
+Above is the outcome of the switch request (the RESULT line). Relay it to the
+user PLAINLY AND EXACTLY — especially when it says NOT SWITCHING: tell them the
+switch did NOT happen, why, and what to do about it. Never imply a switch is in
+progress unless the RESULT line says SWITCHING. Take no further action.
