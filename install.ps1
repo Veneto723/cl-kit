@@ -43,8 +43,13 @@ if (-not (Test-Path (Join-Path $mcpDest 'node_modules'))) {
 }
 # register at user scope (idempotent: remove-then-add) — only if claude is present
 if ($hasClaude) {
+  # Native `claude` stderr (e.g. "No MCP server named cl" on a clean first run)
+  # becomes a terminating error under $ErrorActionPreference='Stop' in PS 5.1;
+  # relax it just around these idempotent calls so remove-then-add is safe.
+  $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   claude mcp remove --scope user cl 2>$null | Out-Null
   claude mcp add --scope user cl node (Join-Path $mcpDest 'server.js') 2>$null | Out-Null
+  $ErrorActionPreference = $eap
   Write-Host "  cl MCP server installed + registered (account_* / config_update / pool_* tools)"
 } else {
   Write-Host "  cl MCP server installed (register later: claude mcp add --scope user cl node `"$mcpDest\server.js`")"
@@ -129,7 +134,9 @@ if ($settings.permissions.allow -notcontains $allowRule) {
   $settings.permissions.allow = @($settings.permissions.allow) + $allowRule
 }
 
-$settings | ConvertTo-Json -Depth 20 | Set-Content $settingsPath -Encoding utf8
+# Write UTF-8 *without* BOM: PS 5.1's `Set-Content -Encoding utf8` prepends a BOM
+# that Node's JSON.parse (used by cl-runner / doctor) rejects as invalid JSON.
+[System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "  settings.json hooks + statusline + switch allow-rule wired (backup at settings.json.bak-cl-kit)"
 
 Write-Host ""
