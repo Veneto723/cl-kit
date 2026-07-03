@@ -33,6 +33,26 @@ One config file fits any setup:
 
 ---
 
+## Demo
+
+`cl:switch` opens the picker — no tokens, driven entirely by arrow keys:
+
+```text
+  Switch cl account   ↑/↓ move · 1-9 jump · Enter confirm · Esc keep current
+
+   1. max   ·  MAX  [oauth]   ← current
+ ❯ 2. pool  ·  POOL [api]                ← selected (reverse-video in the terminal)
+
+  tip: cl:switch <name> jumps directly · /cl lists all commands
+```
+
+<!-- Replace the block above with a real recording once captured:
+     drop the file at docs/picker.gif and uncomment the next line.
+![account picker](docs/picker.gif)
+-->
+
+---
+
 ## Requirements
 
 - **Windows 11** (toasts, window-focus, `taskkill`, and registry integration are Windows-specific)
@@ -238,3 +258,7 @@ install.ps1     deploy + wire everything into ~/.claude (idempotent)
 - `cl:switch` is the token-free interactive path; `/switch` is a slash command so
   it always costs a small model turn (Claude Code has no way to make a *custom*
   command instant — that path is reserved for built-ins).
+
+## License
+
+[MIT](LICENSE) © 2026 Veneto723
