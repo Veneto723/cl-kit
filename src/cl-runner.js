@@ -149,7 +149,7 @@ function sweepStaleStates() {
   const DAY = 24 * 60 * 60 * 1000;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
-      if (!/^cl-(state|prefs|active|effort|flagretry|flagretry-payload|turn|convlock|rmpending)-.*\.json$/.test(f)) continue;
+      if (!/^cl-(state|prefs|active|effort|flagretry|flagretry-payload|turn|convlock|rmpending|delpending)-.*\.json$/.test(f)) continue;
       const p = path.join(CACHE_DIR, f);
       // convlock files are cleaned by LIVENESS, not age: a still-running session
       // days old must keep its lock. Remove only if its owner pid is dead.
@@ -362,9 +362,12 @@ const pickTrigger      = path.join(CACHE_DIR, `cl-pick-${SESSION_ID}.trigger`);
 // Dropped by the cl:add-account hook: carries { args } (the id + flags). cl-runner
 // kills claude, runs the guided browser login on the freed TTY, and relaunches.
 const addAcctTrigger   = path.join(CACHE_DIR, `cl-addacct-${SESSION_ID}.trigger`);
+// Dropped by the cl:delete hook (after confirm): carries { convId }. cl-runner
+// kills claude, moves the transcript to recoverable trash, and starts fresh.
+const deleteTrigger    = path.join(CACHE_DIR, `cl-delete-${SESSION_ID}.trigger`);
 
 function clearTriggers() {
-  for (const t of [switchTrigger, restartTrigger, flagRetryTrigger, pickTrigger, addAcctTrigger]) {
+  for (const t of [switchTrigger, restartTrigger, flagRetryTrigger, pickTrigger, addAcctTrigger, deleteTrigger]) {
     try { fs.unlinkSync(t); } catch {}
   }
 }
@@ -428,7 +431,7 @@ function pickAccount(currentId) {
 }
 
 // ---- one claude session ---------------------------------------------------
-// Resolves with { reason: 'switch'|'restart'|'flagretry'|'effort'|'pick'|'addaccount'|'exit', exitCode, payload }.
+// Resolves with { reason: 'switch'|'restart'|'flagretry'|'effort'|'pick'|'addaccount'|'delete'|'exit', exitCode, payload }.
 
 function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
   return new Promise(resolve => {
@@ -483,6 +486,13 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
         let payload = null;
         try { payload = JSON.parse(fs.readFileSync(addAcctTrigger, 'utf8')); } catch {}
         clearTriggers(); killChild(child); finish('addaccount', undefined, payload || {});
+      }
+      else if (fs.existsSync(deleteTrigger)) {
+        // Delete current session: kill claude (releases the transcript handle),
+        // then cl-runner trashes it and starts fresh.
+        let payload = null;
+        try { payload = JSON.parse(fs.readFileSync(deleteTrigger, 'utf8')); } catch {}
+        clearTriggers(); killChild(child); finish('delete', undefined, payload || {});
       }
       else if (fs.existsSync(switchTrigger)) {
         // The trigger may carry a target account id (from `/switch <id>`).
@@ -932,6 +942,26 @@ async function main() {
         env: { ...process.env, CL_SESSION: SESSION_ID, CL_RESPAWNED: '1' },
       });
       process.exit(r.status == null ? 0 : r.status);
+    }
+
+    if (reason === 'delete') {
+      // claude is dead → its transcript handle is released → safe to move it.
+      const delConv = (payload && payload.convId) || convId;
+      let res = { trashDir: null, moved: [] };
+      try { res = require('./cl-sync').trashSession(delConv); } catch (e) { logLine(`delete failed: ${e.message}`); }
+      releaseConv(delConv);
+      try { fs.unlinkSync(effortStateFile(delConv)); } catch {}
+      logLine(`deleted conv=${delConv} → ${res.trashDir || '(not found)'} (${res.moved.join('+') || 'nothing'})`);
+      // Start a brand-new empty conversation in this same terminal.
+      convId = crypto.randomUUID();
+      convStarted = false; userManagesConv = false;
+      claimConv(convId);
+      writeState({ account, switchCount, convId, pinnedEffort });
+      process.stdout.write(res.moved.length
+        ? `\x1b[33m[cl] deleted this conversation → recoverable trash: ${res.trashDir}\x1b[0m\n\x1b[2m[cl] starting a fresh session…\x1b[0m\n`
+        : `\x1b[33m[cl] (no transcript found to delete) — starting a fresh session…\x1b[0m\n`);
+      await new Promise(r => setTimeout(r, 300));
+      continue; // loop launches --session-id <new convId>
     }
 
     if (reason === 'addaccount') {

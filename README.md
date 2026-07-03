@@ -94,6 +94,7 @@ sessions to load new wrapper code.
 | `cl:remove-account <id>` | remove an account (double-confirmed; `<id> confirm` to finish) | **0** |
 | `cl:export [sel]` | archive chat sessions to a `.tgz` (bare = current conv) | **0** |
 | `cl:import <archive>` | merge sessions from an archive (newer-wins, safe) | **0** |
+| `cl:delete` | delete THIS conversation → recoverable trash, start fresh (double-confirmed) | **0** |
 | `cl:restart` | reload the wrapper + relaunch this conversation | **0** |
 | `/switch [n\|name]` | same picker / direct switch, from the `/` menu | small |
 | `/restart` | reload + relaunch | small |

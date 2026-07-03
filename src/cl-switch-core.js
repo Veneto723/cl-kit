@@ -247,6 +247,58 @@ function requestRemoveAccount(session, argStr) {
   };
 }
 
+// ---- delete current session (double-confirmed, moves to recoverable trash) ---
+function pendingDelPath(session) { return path.join(CACHE_DIR, `cl-delpending-${session}.json`); }
+
+// The conversation id THIS cl session is on.
+function sessionConvId(session) {
+  for (const p of [path.join(CACHE_DIR, `cl-state-${session}.json`), path.join(CACHE_DIR, `cl-active-${session}.json`)]) {
+    try { const j = JSON.parse(fs.readFileSync(p, 'utf8')); if (j.convId) return j.convId; } catch {}
+  }
+  return null;
+}
+
+// Two-step deletion of the CURRENT conversation. Step 1 (bare `cl:delete`) shows
+// the impact and arms a 2-min pending marker; step 2 (`cl:delete confirm`) drops
+// a delete trigger — cl-runner kills claude, moves the transcript to recoverable
+// trash, and starts a FRESH session. Returns { ok, pending?, deleting?, message }.
+function requestDelete(session, argStr) {
+  if (!session) return { ok: false, message: 'NOT running under the cl wrapper (launch with `cl`).' };
+  const convId = sessionConvId(session);
+  if (!convId) return { ok: false, message: 'no current conversation id yet (the statusline hasn\'t bridged it) — try again in a moment.' };
+
+  let sizeStr = '';
+  try {
+    const fp = require('./cl-sync').findTranscriptFile(convId);
+    if (fp) { const b = fs.statSync(fp).size; sizeStr = b < 1024 ? ` (${b} B)` : b < 1048576 ? ` (${Math.round(b / 1024)} KB)` : ` (${(b / 1048576).toFixed(1)} MB)`; }
+  } catch {}
+
+  const isConfirm = (argStr || '').trim().split(/\s+/).some((t) => CONFIRM_WORDS.has(t.toLowerCase()));
+  if (!isConfirm) {
+    try { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(pendingDelPath(session), JSON.stringify({ convId, at: Date.now() })); } catch {}
+    return {
+      ok: true, pending: true,
+      message:
+        `DELETE the CURRENT conversation (${convId.slice(0, 8)}${sizeStr})?\n` +
+        `  • it is MOVED to recoverable trash (~/.claude/backups/cl-deleted-<ts>/), never hard-deleted\n` +
+        `  • this conversation ENDS and a fresh empty session starts in its place\n` +
+        `  CONFIRM within 2 min:  cl:delete confirm     ·     or ignore this to cancel`,
+    };
+  }
+
+  let pend = null;
+  try { pend = JSON.parse(fs.readFileSync(pendingDelPath(session), 'utf8')); } catch {}
+  if (!pend || pend.convId !== convId || Date.now() - pend.at > 120_000) {
+    return { ok: false, message: `no pending confirmation for this conversation (or it expired) — run \`cl:delete\` first to review.` };
+  }
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(CACHE_DIR, `cl-delete-${session}.trigger`), JSON.stringify({ at: Date.now(), convId }));
+    fs.unlinkSync(pendingDelPath(session));
+  } catch (e) { return { ok: false, message: `delete signal FAILED — ${e.message}` }; }
+  return { ok: true, deleting: true, message: `deleting this conversation and starting fresh — one moment…` };
+}
+
 // Drop a restart trigger. Returns { ok, message }. Never throws.
 function requestRestart(session) {
   if (!session) {
@@ -261,4 +313,4 @@ function requestRestart(session) {
   }
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, currentAccount, CACHE_DIR };
+module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, currentAccount, CACHE_DIR };

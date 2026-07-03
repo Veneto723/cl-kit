@@ -31,6 +31,7 @@ Move chats between PCs (discrete export/import — no realtime sync):
 
 Session:
   cl:restart   /restart  reload the wrapper + relaunch this conversation
+  cl:delete              delete THIS conversation → trash, start fresh (asks; then 'confirm')
   /pool                  pool account usage % + reset times
 
 Why two forms?

@@ -285,4 +285,53 @@ function doImport(session, argStr) {
 
 function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} }
 
-module.exports = { doExport, doImport, discover };
+// ---- delete (to recoverable trash) -----------------------------------------
+
+// Locate a conversation's transcript across project dirs.
+function findTranscriptFile(convId) {
+  if (!convId) return null;
+  let projs = []; try { projs = fs.readdirSync(PROJECTS); } catch { return null; }
+  for (const proj of projs) {
+    if (proj === '.trash') continue;
+    const fp = path.join(PROJECTS, proj, convId + '.jsonl');
+    if (fs.existsSync(fp)) return fp;
+  }
+  return null;
+}
+
+// Move a path, retrying (Windows may briefly hold the handle after a killed
+// claude), falling back to copy+delete across volumes.
+function moveWithRetry(src, dst) {
+  for (let i = 0; i < 5; i++) {
+    try { fs.renameSync(src, dst); return true; } catch (e) {
+      if (i === 4) {
+        try { // last resort: copy then remove
+          const st = fs.statSync(src);
+          if (st.isDirectory()) fs.cpSync(src, dst, { recursive: true }); else fs.copyFileSync(src, dst);
+          fs.rmSync(src, { recursive: true, force: true });
+          return true;
+        } catch { return false; }
+      }
+      const until = Date.now() + 150; while (Date.now() < until) { /* brief spin */ }
+    }
+  }
+  return false;
+}
+
+// Move a conversation's transcript (+ sidecar dir) to recoverable trash under
+// ~/.claude/backups/cl-deleted-<ts>/. Returns { trashDir, moved:[...] }.
+function trashSession(convId) {
+  const fp = findTranscriptFile(convId);
+  if (!fp) return { trashDir: null, moved: [] };
+  const proj = path.basename(path.dirname(fp));
+  const trashDir = path.join(BACKUPS, `cl-deleted-${stamp()}`);
+  const destProj = path.join(trashDir, proj);
+  fs.mkdirSync(destProj, { recursive: true });
+  const moved = [];
+  if (moveWithRetry(fp, path.join(destProj, convId + '.jsonl'))) moved.push('transcript');
+  const side = path.join(path.dirname(fp), convId);
+  try { if (fs.existsSync(side) && fs.statSync(side).isDirectory()) { if (moveWithRetry(side, path.join(destProj, convId))) moved.push('sidecar'); } } catch {}
+  return { trashDir, moved };
+}
+
+module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession };
