@@ -46,8 +46,10 @@ function run(raw) {
     return block(`[cl] ${r.message}`);
   }
   const r = core.requestSwitch(session, arg);
-  // Prefix so you can tell this came from the classifier-immune path.
-  return block(`[cl] ${r.message}${r.switching ? '' : '\n(typed cl:switch — no model/classifier involved, works even when rate-limited)'}`);
+  // Append the rate-limit-proof note only on a plain refusal (a menu already
+  // explains how to pick; a real switch needs no note).
+  const note = (!r.switching && !r.menu) ? '\n(typed cl:switch — no model/classifier involved, works even when rate-limited)' : '';
+  return block(`[cl] ${r.message}${note}`);
 }
 
 let data = '';

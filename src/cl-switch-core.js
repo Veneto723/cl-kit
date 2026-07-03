@@ -25,7 +25,32 @@ function currentAccount(C, cfg, session) {
 }
 
 // Decide + (if valid) perform a switch signal. Returns { ok, switching, message }.
-// switching=true only when a trigger was actually written. Never throws.
+// switching=true only when a trigger was actually written. `menu:true` marks a
+// picker listing (no switch happened — the user should choose). Never throws.
+//
+// `target` may be an account id/name OR a 1-based number from the menu. With no
+// target: 1 account → refuse; 2 accounts → cycle to the other; 3+ → show the menu
+// (can't sensibly auto-pick — this is the "hard to recall names" case).
+
+// Numbered picker of all accounts, current marked. Numbers match resolveTarget.
+function renderMenu(cfg, current, lead) {
+  const rows = cfg.accounts.map((a, i) => {
+    const mark = a.id === current ? '  ← current' : '';
+    return `  ${i + 1}. ${a.id}${a.label && a.label !== a.id.toUpperCase() ? ` (${a.label})` : ''} [${a.type}]${mark}`;
+  });
+  return `${lead}\n${rows.join('\n')}\n` +
+    `Pick by number or name: \`/switch <n|name>\`  (or \`cl:switch <n|name>\` — works even when rate-limited).`;
+}
+
+// Resolve a target token to an account: a 1-based menu number, or an id/name.
+function resolveTarget(C, cfg, target) {
+  if (/^\d+$/.test(target)) {
+    const idx = parseInt(target, 10) - 1;
+    return (idx >= 0 && idx < cfg.accounts.length) ? cfg.accounts[idx] : null;
+  }
+  return C.findAccount(cfg, target);
+}
+
 function requestSwitch(session, target) {
   if (!session) {
     return { ok: false, switching: false,
@@ -42,27 +67,41 @@ function requestSwitch(session, target) {
   const ids = cfg.accounts.map((a) => a.id).join(', ');
   target = target ? String(target).trim() : null;
 
-  if (cfg.accounts.length < 2 && !target) {
-    return { ok: false, switching: false,
-      message: `NOT SWITCHING — only ONE account is configured (${ids}), so there is nothing to switch to. The session stays on "${current}" and was NOT restarted. Add another account first (ask "add a cl account ..." via the cl MCP, or run \`cl setup\`).` };
+  // No explicit target: refuse (1) / cycle (2) / show the picker menu (3+).
+  if (!target) {
+    if (cfg.accounts.length < 2) {
+      return { ok: false, switching: false,
+        message: `NOT SWITCHING — only ONE account is configured (${ids}), so there is nothing to switch to. The session stays on "${current}". Add another with \`cl add-account <id>\`.` };
+    }
+    if (cfg.accounts.length >= 3) {
+      return { ok: true, switching: false, menu: true,
+        message: renderMenu(cfg, current, `SWITCH ACCOUNT — you're on "${current}". ${cfg.accounts.length} accounts configured:`) };
+    }
+    // exactly 2 → cycle to the other
+    const next = C.nextAccount(cfg, current, null);
+    if (!next) return { ok: false, switching: false, message: `NOT SWITCHING — no other account to cycle to (current: "${current}").` };
+    return writeSwitch(session, current, next);
   }
-  if (target && !C.findAccount(cfg, target)) {
-    return { ok: false, switching: false,
-      message: `NOT SWITCHING — no account named "${target}". Configured accounts: ${ids}. The session stays on "${current}" and was NOT restarted.` };
+
+  // Explicit target (number or name).
+  const acc = resolveTarget(C, cfg, target);
+  if (!acc) {
+    return { ok: false, switching: false, menu: true,
+      message: renderMenu(cfg, current, `NOT SWITCHING — "${target}" is not a valid account number or name. Choose one:`) };
   }
-  if (target && C.findAccount(cfg, target).id === current) {
+  if (acc.id === current) {
     return { ok: false, switching: false,
       message: `NOT SWITCHING — this session is ALREADY on "${current}". Nothing happened.` };
   }
-  const next = C.nextAccount(cfg, current, target);
-  if (!next) {
-    return { ok: false, switching: false,
-      message: `NOT SWITCHING — no other account to cycle to (configured: ${ids}; current: "${current}"). The session was NOT restarted.` };
-  }
+  return writeSwitch(session, current, acc);
+}
 
+// Write the switch trigger carrying the RESOLVED account id (so a menu number is
+// already turned into an id before cl-runner sees it).
+function writeSwitch(session, current, next) {
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    fs.writeFileSync(path.join(CACHE_DIR, `cl-switch-${session}.trigger`), JSON.stringify({ at: Date.now(), target }));
+    fs.writeFileSync(path.join(CACHE_DIR, `cl-switch-${session}.trigger`), JSON.stringify({ at: Date.now(), target: next.id }));
     return { ok: true, switching: true,
       message: `SWITCHING "${current}" → "${next.id}" (${next.label}) — the wrapper will relaunch this conversation on it momentarily.` };
   } catch (e) {
