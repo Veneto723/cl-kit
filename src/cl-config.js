@@ -13,6 +13,9 @@
 //            (`apiKeyFrom: {file, regex}` — first capture group), or stored
 //            DPAPI-encrypted in the config itself (`apiKeyEnc` — no plaintext on
 //            disk, bound to this Windows user+machine; set via `cl set-key <id>`).
+//            Optional `usageUrl` (default `<baseUrl>/v1/usage`, set false to
+//            disable): the gateway's own usage endpoint — cl fetches it and shows
+//            the account's cost/tokens in the statusline + cl:peek (see gw-usage.js).
 //
 // Minimal example (single subscription):
 //   { "version": 1, "accounts": [ { "id": "main", "label": "MAX", "type": "oauth" } ] }

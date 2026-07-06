@@ -11,6 +11,7 @@ const path = require('path');
 const { exec, spawn } = require('child_process');
 
 const C = require('./cl-config');
+const GW = require('./gw-usage'); // gateway (api) accounts' own usage endpoint
 
 const CACHE_PATH = path.join(C.CACHE_DIR, 'usage-monitor-cache.json');
 // Dry-run hook: if this marker file exists, the statusline forces the
@@ -19,6 +20,7 @@ const CACHE_PATH = path.join(C.CACHE_DIR, 'usage-monitor-cache.json');
 const BOTH_EXHAUSTED_TEST = path.join(C.CACHE_DIR, 'both-exhausted.test');
 const CACHE_TTL_MS = 60_000;
 const POOL_CACHE_TTL_MS = 5 * 60_000;
+const GW_CACHE_TTL_MS = 5 * 60_000; // gateway (api) accounts' own /v1/usage endpoint
 const HISTORY_WINDOW_MS = 45 * 60 * 1000;
 const ETA_LOOKBACK_MS = 20 * 60 * 1000;
 const ETA_MIN_SPAN_MS = 3 * 60 * 1000;
@@ -186,6 +188,26 @@ function readCachedPool() {
   return { rows: c ? c.rows : null, fresh: c ? Date.now() - c.fetchedAt < POOL_CACHE_TTL_MS : false };
 }
 
+// --- Gateway (api) usage: each api account's own /v1/usage endpoint -----------
+// Cached under cache.gwUsage[accountId]. resolveApiKey may DPAPI-decrypt (a
+// PowerShell shell-out) — fine in the detached refresh child, never on the hot
+// render path (renders only READ readCachedGwUsage).
+async function getGwUsageCached(acc) {
+  if (!GW.usageUrlFor(acc)) return null;
+  const cached = (readCacheFile().gwUsage || {})[acc.id];
+  if (cached && Date.now() - cached.fetchedAt < GW_CACHE_TTL_MS) return cached.data;
+  let key; try { key = C.resolveApiKey(acc); } catch { return cached ? cached.data : null; }
+  const data = await GW.fetchGatewayUsage(acc, key);
+  if (!data) return cached ? cached.data : null;
+  const cur = readCacheFile();
+  writeCacheFile({ ...cur, gwUsage: { ...(cur.gwUsage || {}), [acc.id]: { fetchedAt: Date.now(), data } } });
+  return data;
+}
+function readCachedGwUsage(accId) {
+  const e = (readCacheFile().gwUsage || {})[accId];
+  return { data: e ? e.data : null, fresh: e ? Date.now() - e.fetchedAt < GW_CACHE_TTL_MS : false, fetchedAt: e ? e.fetchedAt : 0 };
+}
+
 // Fire a detached background refresh of any stale slices, then exit. Guarded by
 // a short-lived lock file so concurrent statusline ticks don't all spawn one.
 function triggerBackgroundRefresh(wantPool) {
@@ -208,10 +230,12 @@ function triggerBackgroundRefresh(wantPool) {
 
 // Runs in the detached child: refresh caches, then release the lock.
 async function runRefresh(wantPool) {
+  const apiAccts = ((cfg && cfg.accounts) || []).filter((a) => a.type === 'api' && GW.usageUrlFor(a));
   try {
     await Promise.all([
       getUsageCached(),
       wantPool && poolConfigured() ? getPoolCached() : Promise.resolve(null),
+      ...apiAccts.map((a) => getGwUsageCached(a)), // each gateway's own /v1/usage
     ]);
   } catch {}
   try { fs.unlinkSync(`${CACHE_PATH}.refresh.lock`); } catch {}
@@ -507,9 +531,23 @@ function renderFull(data, sessionEta, weekEta, poolRows, acc, model, effort) {
     return lines.join('\n');
   }
 
-  // API account without pool metrics: nothing to meter — show the label.
+  // API gateway account: show its own usage endpoint (e.g. MATE /v1/usage).
   if (isApi) {
-    const lines = [`Account: ${label(acc)}`, '', 'API gateway account (no usage metering configured)'];
+    const lines = [`Account: ${label(acc)}`];
+    try {
+      const gw = readCachedGwUsage(acc.id);
+      if (gw.data) {
+        const s = GW.summarizeGatewayUsage(gw.data);
+        lines.push('', GW.gatewayUsageLine(gw.data, { withReq: true }) || '(usage)');
+        if (s && s.models.length) {
+          lines.push('', 'By model (today)', ...s.models.slice(0, 6).map((m) =>
+            `  ${String(m.model || '?').replace(/^claude-/, '').slice(0, 16).padEnd(16)} ${GW.fmtTokens(m.tokens)} tok${m.cost != null ? ` · ${GW.fmtCost(m.cost, s.unit)}` : ''}`));
+        }
+        if (s && s.plan) lines.push('', `plan: ${s.plan}`);
+      } else {
+        lines.push('', 'API gateway account (no usage data yet)');
+      }
+    } catch { lines.push('', 'API gateway account (usage unavailable)'); }
     footer(lines);
     return lines.join('\n');
   }
@@ -571,7 +609,11 @@ function renderCompact(data, sessionEta, poolRows, acc, model, effort) {
       if (poolExhausted(poolRows)) return bothExhaustedAlert(data);
       return withL2(`${label(acc)} ${renderPoolAccounts(poolRows)}${subPart}`);
     }
-    return withL2(`${label(acc)}${subPart}`);
+    // Gateway account's own usage (e.g. MATE /v1/usage), from cache. Guarded so a
+    // weird payload can never break the statusline (falls back to the plain label).
+    let gwPart = '';
+    try { const gw = readCachedGwUsage(acc.id); const l = gw.data ? GW.gatewayUsageLine(gw.data) : null; gwPart = l ? ` ${l}` : ''; } catch {}
+    return withL2(`${label(acc)}${gwPart}${subPart}`);
   }
 
   // oauth account
@@ -655,7 +697,10 @@ async function main() {
 
   // Keep the background refresh running (it maintains the ETA history and the
   // api-mode subscription numbers) whenever the cache is stale.
-  const needRefresh = !usage.fresh || (isApi && poolConfigured() && !pool.fresh);
+  // Refresh when the subscription usage is stale OR any gateway account's usage is
+  // stale (kept fresh even while on the subscription, so cl:peek isn't stale).
+  const anyGwStale = ((cfg && cfg.accounts) || []).some((a) => a.type === 'api' && GW.usageUrlFor(a) && !readCachedGwUsage(a.id).fresh);
+  const needRefresh = !usage.fresh || (isApi && poolConfigured() && !pool.fresh) || anyGwStale;
   if (needRefresh) triggerBackgroundRefresh(isApi);
 
   const history = readCacheFile().history;

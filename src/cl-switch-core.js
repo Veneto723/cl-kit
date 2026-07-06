@@ -137,7 +137,20 @@ function buildPeek(session) {
         lines.push(`  ${label} [subscription]   (no usage data)${mark}`);
       }
     } else if (a.type === 'api') {
-      if (cache && cache.pool && Array.isArray(cache.pool.rows) && cache.pool.rows.length) {
+      const gw = cache && cache.gwUsage && cache.gwUsage[a.id];
+      if (gw && gw.data) {
+        // The gateway's OWN usage endpoint (e.g. MATE /v1/usage). Guarded — a hook
+        // must never throw on a weird gateway payload (a throw = silent pass-through).
+        try {
+          const GW = require('./gw-usage');
+          const s = GW.summarizeGatewayUsage(gw.data);
+          lines.push(`  ${label} [gateway]        ${GW.gatewayUsageLine(gw.data, { withReq: true }) || '(usage)'}   ${ageStr(gw.fetchedAt)}${mark}`);
+          for (const m of ((s && s.models) || []).slice(0, 4)) {
+            lines.push(`      ${String(m.model || '?').replace(/^claude-/, '').slice(0, 12).padEnd(12)}  ${GW.fmtTokens(m.tokens)} tok${m.cost != null ? ` · ${GW.fmtCost(m.cost, s.unit)}` : ''}`);
+          }
+        } catch { lines.push(`  ${label} [gateway]        (usage unavailable)${mark}`); }
+      } else if (cache && cache.pool && Array.isArray(cache.pool.rows) && cache.pool.rows.length) {
+        // Legacy poolDb metrics (per-backing-account 5h/7d).
         const rows = cache.pool.rows;
         const active = rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited').length;
         const fhs = rows.map((r) => r.fh).filter((v) => v != null);
@@ -149,7 +162,7 @@ function buildPeek(session) {
           lines.push(`      ${nm}  5h ${pct(r.fh)}%  ·  7d ${pct(r.sd)}%   ${st}`);
         }
       } else {
-        lines.push(`  ${label} [gateway]        (no pool metrics${cfg.poolDb ? ' cached yet' : ' — poolDb not configured'})${mark}`);
+        lines.push(`  ${label} [gateway]        (no usage data yet)${mark}`);
       }
     } else {
       lines.push(`  ${label} [${a.type}]${mark}`);

@@ -208,6 +208,15 @@ no extra network call — and does nothing if there's no cache yet. This is
 overrides it for one launch; `"autoBest": false` disables it. `cl doctor` prints
 the account it *would* pick right now.
 
+**Gateway usage in the statusline + `cl:peek` (`usageUrl`):** if a gateway exposes its
+own usage endpoint, cl shows the account's real cost/tokens. By default it tries
+`<baseUrl>/v1/usage` (what MATE-style gateways serve — `{ usage:{today}, subscription:{limits},
+model_stats, mode, unit }`); set `"usageUrl": "<url>"` to override or `false` to disable.
+cl fetches it (cached ~5 min, zero model tokens — a metadata call) and renders e.g.
+`MATE $103.60 today · 62.9M tok · unlimited`, with a per-model breakdown in `cl:peek`.
+Token counts/cost are the gateway's own numbers; there's no 5h/7d window unless the
+gateway reports one (that's an Anthropic-subscription concept). See `src/gw-usage.js`.
+
 **Optional pool metrics (`poolDb.neonUrl`):** point it at a Postgres DB with
 `pool_accounts` / `account_usage` tables to get per-account utilization in the
 statusline, the `/pool` table, and the `pool_status` / `pool_next_reset` MCP tools.
