@@ -791,6 +791,65 @@ function cmdDoctor() {
   process.exit(0);
 }
 
+// ---- cl set-key <id> : store an api account's key DPAPI-encrypted in config ---
+// Reads the key from the clipboard (default), a file (--file), or stdin (--stdin),
+// DPAPI-encrypts it (bound to this Windows user+machine), writes it as `apiKeyEnc`
+// in cl-config.json and DROPS any other key source — so no plaintext key lives on
+// disk. Backs up + validates (round-trips the decrypt); restores on failure.
+function cmdSetKey(argv) {
+  const id = argv.find((a) => !a.startsWith('-'));
+  if (!id) { process.stderr.write('usage: cl set-key <id> [--file <path> | --stdin]   (default: read key from clipboard)\n'); process.exit(1); }
+  const acc = C.findAccount(cfg, id);
+  if (!acc) { process.stderr.write(`[cl] unknown account "${id}" (configured: ${cfg.accounts.map((a) => a.id).join(', ')})\n`); process.exit(1); }
+  if (acc.type !== 'api') { process.stderr.write(`[cl] set-key applies to api (gateway) accounts; "${id}" is ${acc.type}.\n`); process.exit(1); }
+
+  // 1. obtain the plaintext key
+  let key = '', src = 'clipboard';
+  const fi = argv.indexOf('--file');
+  try {
+    if (fi !== -1 && argv[fi + 1]) {
+      src = argv[fi + 1];
+      const raw = fs.readFileSync(C.expandHome(argv[fi + 1]), 'utf8');
+      const m = raw.match(/sk-[A-Za-z0-9-]+/);
+      key = m ? m[0] : raw.trim();
+    } else if (argv.includes('--stdin')) {
+      src = 'stdin'; key = fs.readFileSync(0, 'utf8').trim();
+    } else {
+      key = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
+        { encoding: 'utf8', windowsHide: true, timeout: 15000 }).stdout || '';
+    }
+  } catch (e) { process.stderr.write(`[cl] could not read key from ${src}: ${e.message}\n`); process.exit(1); }
+  key = (key || '').trim();
+  if (!key) { process.stderr.write(`[cl] no key found in ${src} (clipboard empty? try --file <path> or --stdin)\n`); process.exit(1); }
+  if (!/^sk-/.test(key)) process.stderr.write(`[cl] note: key from ${src} doesn't start with "sk-" (len ${key.length}) — proceeding.\n`);
+
+  // 2. encrypt + verify the round-trip before touching the config
+  let enc;
+  try { enc = C.dpapiEncrypt(key); if (C.dpapiDecrypt(enc) !== key) throw new Error('DPAPI round-trip mismatch'); }
+  catch (e) { process.stderr.write(`[cl] DPAPI encrypt failed: ${e.message}\n`); process.exit(1); }
+
+  // 3. backup -> write apiKeyEnc + drop other key sources -> validate -> rollback on fail
+  const bak = C.CONFIG_PATH + '.bak-' + Date.now();
+  let raw; try { raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8')); }
+  catch (e) { process.stderr.write(`[cl] cl-config.json unreadable: ${e.message}\n`); process.exit(1); }
+  fs.copyFileSync(C.CONFIG_PATH, bak);
+  const a = (raw.accounts || []).find((x) => x.id === id);
+  delete a.apiKey; delete a.apiKeyEnv; delete a.apiKeyFrom;
+  a.apiKeyEnc = enc;
+  fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2));
+  try {
+    const k = C.resolveApiKey(C.findAccount(C.loadConfig(), id));
+    if (k !== key) throw new Error('resolved key mismatch after write');
+  } catch (e) {
+    fs.copyFileSync(bak, C.CONFIG_PATH);
+    process.stderr.write(`[cl] validation failed — restored backup. ${e.message}\n`); process.exit(1);
+  }
+  process.stdout.write(`[cl] ✓ "${id}" key stored DPAPI-encrypted in cl-config.json (apiKeyEnc); apiKey/apiKeyEnv/apiKeyFrom removed.\n`);
+  process.stdout.write(`     ${key.slice(0, 7)}…${key.slice(-4)} (len ${key.length}) · backup ${path.basename(bak)}\n`);
+  process.stdout.write(`     DPAPI is per user+machine — on another PC run \`cl set-key ${id}\` there too. If you kept a plaintext copy, delete it now.\n`);
+  process.exit(0);
+}
+
 // ---- main loop ------------------------------------------------------------
 
 async function main() {
@@ -815,6 +874,7 @@ async function main() {
     process.stdout.write(r.message + '\n');
     process.exit(r.ok ? 0 : 1);
   }
+  if (userArgs[0] === 'set-key') return cmdSetKey(userArgs.slice(1));
   if (userArgs[0] === 'doctor') return cmdDoctor();
 
   let respawning = process.env.CL_RESPAWNED === '1';

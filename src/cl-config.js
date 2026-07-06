@@ -9,8 +9,10 @@
 //            ~/.claude). Absent → whatever login is currently active.
 //   api    — any Anthropic-compatible gateway: baseUrl + key (+ optional header
 //            and model-alias mapping). The key can be inline (`apiKey`), read
-//            from an env var (`apiKeyEnv`), or extracted from a file with a
-//            regex (`apiKeyFrom: {file, regex}` — first capture group).
+//            from an env var (`apiKeyEnv`), extracted from a file with a regex
+//            (`apiKeyFrom: {file, regex}` — first capture group), or stored
+//            DPAPI-encrypted in the config itself (`apiKeyEnc` — no plaintext on
+//            disk, bound to this Windows user+machine; set via `cl set-key <id>`).
 //
 // Minimal example (single subscription):
 //   { "version": 1, "accounts": [ { "id": "main", "label": "MAX", "type": "oauth" } ] }
@@ -19,6 +21,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'cl-config.json');
@@ -118,11 +121,45 @@ function nextAccount(cfg, currentId, targetId) {
   return next === (cur && cur.id) ? null : findAccount(cfg, next); // null = nowhere to go
 }
 
-// The API key for an `api` account. Order: inline > env var > file+regex.
+// DPAPI (Windows Data Protection API, CurrentUser scope) via PowerShell: encrypt
+// / decrypt a secret at rest, bound to this Windows user+machine. Lets the API
+// key live encrypted INSIDE cl-config.json (`apiKeyEnc`) — no plaintext key file,
+// and a copied config is useless on any other machine/user. Secret is passed via
+// env (not argv) so it never appears in a command line. Windows-only (cl is).
+function runPowerShell(script, extraEnv) {
+  return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    env: { ...process.env, ...extraEnv }, encoding: 'utf8', windowsHide: true, timeout: 20000,
+  });
+}
+function dpapiEncrypt(plaintext) {
+  const out = runPowerShell(
+    "Add-Type -AssemblyName System.Security;" +
+    "[Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect(" +
+    "[Text.Encoding]::UTF8.GetBytes($env:CL_PT),$null,'CurrentUser'))",
+    { CL_PT: plaintext });
+  return out.trim();
+}
+function dpapiDecrypt(b64) {
+  const out = runPowerShell(
+    "Add-Type -AssemblyName System.Security;" +
+    "[Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect(" +
+    "[Convert]::FromBase64String($env:CL_ENC),$null,'CurrentUser'))",
+    { CL_ENC: b64 });
+  return out.replace(/\r?\n$/, ''); // strip only PowerShell's trailing newline
+}
+
+// The API key for an `api` account. Order: inline > env var > DPAPI blob > file.
 // Throws with a clear message if unresolvable — callers surface it.
 function resolveApiKey(acc) {
   if (acc.apiKey) return acc.apiKey;
   if (acc.apiKeyEnv && process.env[acc.apiKeyEnv]) return process.env[acc.apiKeyEnv];
+  if (acc.apiKeyEnc) {
+    let k; try { k = dpapiDecrypt(acc.apiKeyEnc); } catch (e) {
+      throw new Error(`account "${acc.id}": apiKeyEnc DPAPI decrypt failed — the blob is bound to the Windows user+machine that created it. Re-run \`cl set-key ${acc.id}\` on THIS machine. (${String(e.message).split('\n')[0]})`);
+    }
+    if (k) return k;
+    throw new Error(`account "${acc.id}": apiKeyEnc decrypted to empty — re-run \`cl set-key ${acc.id}\`.`);
+  }
   if (acc.apiKeyFrom && acc.apiKeyFrom.file) {
     const file = expandHome(acc.apiKeyFrom.file);
     const text = fs.readFileSync(file, 'utf8'); // throws if missing
@@ -169,4 +206,5 @@ function accountEnv(acc, base) {
 module.exports = {
   CLAUDE_DIR, CONFIG_PATH, CACHE_DIR, CRED_PATH, SCRIPTS_DIR,
   loadConfig, findAccount, nextAccount, resolveApiKey, claudeBin, accountEnv, expandHome,
+  dpapiEncrypt, dpapiDecrypt,
 };
