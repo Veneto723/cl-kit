@@ -386,24 +386,30 @@ function resetTerminal() {
 }
 
 // A short usage summary for an account, read from the statusline's cache
-// (usage-monitor-cache.json) — so the picker can show headroom without any
-// network call. oauth → the subscription's 5h/7d %; api+poolDb → the pool's
-// active-count and lowest 5h. '' when there's no data to show.
+// (usage-monitor-cache.json) — so the picker shows the same info as cl:peek
+// without any network call. oauth → subscription 5h/7d %; api → the gateway's
+// own usage line (e.g. "$103.60 today · 62.9M tok"); legacy poolDb → active/5h.
+// '' when there's no data to show. Never throws.
 function accountUsage(acc) {
   try {
     const c = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, 'usage-monitor-cache.json'), 'utf8'));
+    const stale = (t) => (t && Date.now() - t > 10 * 60_000 ? ' (stale)' : '');
     if (acc.type === 'oauth' && c.usage && c.usage.data && c.usage.data.five_hour) {
       const d = c.usage.data;
-      const stale = c.usage.fetchedAt && Date.now() - c.usage.fetchedAt > 10 * 60_000;
-      return `5h ${Math.round(d.five_hour.utilization)}% · 7d ${Math.round(d.seven_day.utilization)}%${stale ? ' (stale)' : ''}`;
+      return `5h ${Math.round(d.five_hour.utilization)}% · 7d ${Math.round(d.seven_day.utilization)}%${stale(c.usage.fetchedAt)}`;
     }
-    if (acc.type === 'api' && c.pool && Array.isArray(c.pool.rows) && c.pool.rows.length) {
-      const rows = c.pool.rows;
-      const active = rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited').length;
-      const fhs = rows.map((r) => r.fh).filter((v) => v != null);
-      const minFh = fhs.length ? Math.round(Math.min(...fhs)) : null;
-      const stale = c.pool.fetchedAt && Date.now() - c.pool.fetchedAt > 10 * 60_000;
-      return `pool: ${active}/${rows.length} active${minFh != null ? ` · 5h from ${minFh}%` : ''}${stale ? ' (stale)' : ''}`;
+    if (acc.type === 'api') {
+      const gw = c.gwUsage && c.gwUsage[acc.id];
+      if (gw && gw.data) {
+        try { const line = require('./gw-usage').gatewayUsageLine(gw.data); if (line) return `${line}${stale(gw.fetchedAt)}`; } catch {}
+      }
+      if (c.pool && Array.isArray(c.pool.rows) && c.pool.rows.length) { // legacy poolDb metrics
+        const rows = c.pool.rows;
+        const active = rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited').length;
+        const fhs = rows.map((r) => r.fh).filter((v) => v != null);
+        const minFh = fhs.length ? Math.round(Math.min(...fhs)) : null;
+        return `pool: ${active}/${rows.length} active${minFh != null ? ` · 5h from ${minFh}%` : ''}${stale(c.pool.fetchedAt)}`;
+      }
     }
   } catch {}
   return '';
