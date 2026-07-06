@@ -12,7 +12,8 @@
 //   cl:switch <id>       → switch to a named account
 //   cl:restart           → reload the wrapper + relaunch, same account
 //   cl:peek              → read-only usage readout of all accounts (no switch)
-//   … plus add-account / remove-account / export / import / delete
+//   cl:remove-account <id> → remove an account (alias: cl:delete-account <id>)
+//   … plus add-account / export / import / delete (delete = the current CHAT)
 //
 // On a trigger it drops the same trigger file cl-runner polls for and BLOCKS the
 // prompt (decision:"block") so the text is NOT sent to the model — the reason
@@ -24,7 +25,10 @@
 
 const core = require('./cl-switch-core');
 
-const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|export|import|delete|peek|usage)\b\s*(.*)$/i;
+// NOTE: delete-account / del-account MUST precede the bare `delete` alternative,
+// else `cl:delete-account` matches `delete` (+ `\b` at the hyphen) and misfires as
+// a CONVERSATION delete. They route to remove-account (account removal), not delete.
+const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|export|import|delete|peek|usage)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -57,7 +61,8 @@ function run(raw) {
     const r = core.requestAddAccount(session, arg || '');
     return block(`[cl] ${r.message}`);
   }
-  if (action === 'remove-account' || action === 'rm-account' || action === 'remove') {
+  if (action === 'remove-account' || action === 'rm-account' || action === 'remove'
+      || action === 'delete-account' || action === 'del-account') {
     const r = core.requestRemoveAccount(session, arg || '');
     return block(`[cl] ${r.message}`);
   }

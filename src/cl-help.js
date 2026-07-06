@@ -22,7 +22,7 @@ Switch account (keeps your conversation, preserves model/effort/mode):
 Add / manage accounts:
   cl:add-account <id>    guided browser login to add a subscription (in-session)
   cl add-account <id>    same, run from a terminal
-  cl:remove-account <id> remove an account (asks; then repeat with 'confirm')
+  cl:remove-account <id> remove an account (alias cl:delete-account) — asks, then repeat with 'confirm'
 
 Move chats between PCs (discrete export/import — no realtime sync):
   cl:export              archive the CURRENT conversation → ~/cl-export-<ts>.tgz
