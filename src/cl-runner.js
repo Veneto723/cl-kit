@@ -112,6 +112,34 @@ function pidAlive(pid) {
   catch (e) { return e.code === 'EPERM'; } // exists but not ours to signal
 }
 
+// cl-focus support: snapshot the PID that owns the FOREGROUND window at launch —
+// the user's terminal — so a clicked toast can raise exactly that window. This is
+// authoritative even under a ConPTY host (Windows Terminal), where the terminal
+// process is NOT in the claude process tree and an ancestry climb can't find it.
+// Captured once, while our terminal is still foreground (before claude takes the
+// TTY), then written per-child so cl-focus.vbs can read cl-win-<claude pid>.json.
+let launchWinPid = null;
+function captureLaunchWinPid() {
+  if (launchWinPid !== null) return launchWinPid;
+  launchWinPid = 0;
+  if (process.platform !== 'win32') return 0;
+  try {
+    const ps = "Add-Type 'using System;using System.Runtime.InteropServices;" +
+      "public class F{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();" +
+      "[DllImport(\"user32.dll\")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);}';" +
+      "$p=0;[F]::GetWindowThreadProcessId([F]::GetForegroundWindow(),[ref]$p)|Out-Null;$p";
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    const n = parseInt((r.stdout || '').trim(), 10);
+    if (n > 0) launchWinPid = n;
+  } catch {}
+  return launchWinPid;
+}
+function winPidPath(childPid) { return path.join(CACHE_DIR, `cl-win-${childPid}.json`); }
+function writeWinPid(childPid) {
+  if (!launchWinPid || !childPid) return;
+  try { fs.writeFileSync(winPidPath(childPid), String(launchWinPid)); } catch {}
+}
+
 // Per-conversation lock file. Keyed by the ACTUAL conversation id (not the state
 // file, whose convId is null until the statusline bridges a picker-resume), so
 // the guard is unambiguous. Holds the owning pid + cwd + session id.
@@ -155,12 +183,20 @@ function sweepStaleStates() {
   const DAY = 24 * 60 * 60 * 1000;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
-      if (!/^cl-(state|prefs|active|effort|flagretry|flagretry-payload|turn|convlock|rmpending|delpending)-.*\.json$/.test(f)) continue;
+      if (!/^cl-(state|prefs|active|effort|flagretry|flagretry-payload|turn|convlock|rmpending|delpending|win)-.*\.json$/.test(f)) continue;
       const p = path.join(CACHE_DIR, f);
       // convlock files are cleaned by LIVENESS, not age: a still-running session
       // days old must keep its lock. Remove only if its owner pid is dead.
       if (f.startsWith('cl-convlock-')) {
         try { const l = JSON.parse(fs.readFileSync(p, 'utf8')); if (!pidAlive(l.pid)) fs.unlinkSync(p); } catch { try { fs.unlinkSync(p); } catch {} }
+        continue;
+      }
+      // cl-win-<pid> maps a claude pid -> its terminal window (for toast focus).
+      // Also liveness-cleaned: keep it while that claude pid is alive, drop it once
+      // the pid is gone (a crash-exit that skipped finish()'s own unlink).
+      if (f.startsWith('cl-win-')) {
+        const m = f.match(/^cl-win-(\d+)\.json$/);
+        if (m && !pidAlive(parseInt(m[1], 10))) { try { fs.unlinkSync(p); } catch {} }
         continue;
       }
       const limit = f.startsWith('cl-effort-') ? 7 * DAY : DAY;
@@ -641,12 +677,14 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
       env,
       cwd: process.cwd(),
     });
+    writeWinPid(child.pid); // map this claude pid -> the terminal window (toast focus)
 
     let done = false;
     const finish = (reason, exitCode, payload) => {
       if (done) return;
       done = true;
       clearInterval(triggerPoll);
+      try { fs.unlinkSync(winPidPath(child.pid)); } catch {} // pid retiring — drop its window map
       resolve({ reason, exitCode, payload });
     };
 
@@ -1022,6 +1060,9 @@ async function main() {
 
   let respawning = process.env.CL_RESPAWNED === '1';
   if (!respawning) sweepStaleStates(); // only the original launch; not re-execs
+  // Snapshot the terminal window now, while it is still foreground (before claude
+  // takes over the TTY), so a clicked toast can focus it later. Once per process.
+  captureLaunchWinPid();
 
   // Parse cl-managed flags out of the args before they reach claude:
   //  --account <id> (or --<id> for any configured account id; legacy --pool/
