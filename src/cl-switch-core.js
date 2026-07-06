@@ -577,8 +577,14 @@ function requestRemoveAccount(session, argStr) {
     ? ((cfg.accounts.find((a) => a.id !== acc.id) || {}).id || '?')
     : cfg.defaultAccount;
   const live = liveSessionsOn(acc.id);
+  // ANSI: black on BRIGHT-RED for the banner, bold red for the detail. If the host
+  // renders the hook message with ANSI it's coloured; if not, the CAPS + ⚠ still
+  // make it stand out (RST at the end so nothing bleeds into the rest).
+  const A_BANNER = '\x1b[1;30;101m', A_RED = '\x1b[1;91m', A_RST = '\x1b[0m';
   const liveWarn = live > 0
-    ? `\n  ⚠ ${live} live cl session${live > 1 ? 's are' : ' is'} on "${acc.id}" — ${live > 1 ? 'they' : 'it'} keep${live > 1 ? '' : 's'} working (removal never kills a session), but drop${live > 1 ? '' : 's'} to "${newDefault}" on the next switch/restart. To move one off now: cl:switch ${newDefault} in it.`
+    ? `${A_BANNER} ⚠ ${live} LIVE SESSION${live > 1 ? 'S' : ''} STILL ON "${acc.id.toUpperCase()}" ${A_RST}`
+      + `${A_RED} — ${live > 1 ? 'they keep' : 'it keeps'} running (removal won't stop ${live > 1 ? 'them' : 'it'}); `
+      + `${live > 1 ? 'they drop' : 'it drops'} to "${newDefault}" on next switch/restart. Move one off now: cl:switch ${newDefault} in it.${A_RST}\n`
     : '';
 
   if (!isConfirm) {
@@ -587,8 +593,9 @@ function requestRemoveAccount(session, argStr) {
     return {
       ok: true, pending: true,
       message:
+        liveWarn +
         `REMOVE account "${acc.id}"${acc.label && acc.label !== acc.id.toUpperCase() ? ` (${acc.label})` : ''}` +
-        ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + liveWarn + '\n' +
+        ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + '\n' +
         `  • cl-config.json is backed up first; references (switch order / default / rephrase) are auto-fixed\n` +
         `  • its captured login file is KEPT (never deleted) so removal is recoverable\n` +
         `  CONFIRM within 2 min:  cl:remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
@@ -609,7 +616,7 @@ function requestRemoveAccount(session, argStr) {
     ok: true, removed: true,
     message:
       `✓ removed account "${acc.id}".${res.fixes.length ? ` (${res.fixes.join('; ')})` : ''}\n` +
-      (live > 0 ? `  ${live} live session${live > 1 ? 's keep' : ' keeps'} running (same key) and will drop to "${newDefault}" on the next switch/restart.\n` : '') +
+      (live > 0 ? `  ${A_RED}${live} live session${live > 1 ? 's keep' : ' keeps'} running (same key) and will drop to "${newDefault}" on the next switch/restart.${A_RST}\n` : '') +
       (res.credFile ? `  its login file was KEPT at ${res.credFile} — delete it yourself if you want it gone.\n` : '') +
       `  reverse it by restoring the backup: ${res.backup}`,
   };
