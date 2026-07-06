@@ -340,21 +340,33 @@ function pickFamilyModel(models, family) {
   })[0];
 }
 
-// Verify + register an api account. Returns { ok, message }. Never throws.
+// Flag-driven api add (cl:add-account <id> --api --url … / terminal). Thin wrapper
+// that resolves the key from tokens, then delegates to addApiAccountResolved.
 function addApiAccount(tokens, id) {
-  const C = require('./cl-config');
-  const baseUrl = flagVal(tokens, 'url');
-  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-    return { ok: false, message: 'a gateway/pool account needs --url <https://gateway> (a full http(s) URL).' };
-  }
   const { key, src, error } = readAddKey(tokens);
-  if (!key) return { ok: false, message: `no key found in ${src}${error ? ` (${error})` : ''} — copy the key to the clipboard, or pass --file <path> / --key <sk-…>.` };
+  return addApiAccountResolved({
+    id, baseUrl: flagVal(tokens, 'url'), key, keySrc: src, keyErr: error,
+    label: flagVal(tokens, 'label'), color: flagVal(tokens, 'color'), makeDefault: hasFlag(tokens, 'default'),
+  });
+}
+
+// Verify + register an api account from STRUCTURED params (also used by the
+// interactive add wizard). Verifies the gateway, auto-detects models, DPAPI-
+// encrypts the key, writes the account (backup + validate, restore on failure).
+// Returns { ok, message }. Never throws.
+function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color, makeDefault }) {
+  const C = require('./cl-config');
+  keySrc = keySrc || 'clipboard';
+  if (!/^[a-z][a-z0-9_-]*$/i.test(id || '')) return { ok: false, message: `invalid id "${id || ''}" — letters/digits/dash/underscore, start with a letter.` };
+  try { if (C.findAccount(C.loadConfig(), id)) return { ok: false, message: `account "${id}" already exists — pick a different id.` }; } catch {}
+  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) return { ok: false, message: 'a gateway/pool account needs a full http(s):// URL.' };
+  if (!key) return { ok: false, message: `no key found in ${keySrc}${keyErr ? ` (${keyErr})` : ''} — copy the key to the clipboard, or pass --file <path> / --key <sk-…>.` };
 
   // Verify the gateway + discover its Claude models before writing anything.
   const probe = probeGatewayModels(baseUrl, key);
   if (!probe.ok) return { ok: false, message: `gateway check FAILED — ${probe.error}. Account NOT added.` };
   const claude = probe.models.filter((m) => /claude/i.test(m));
-  if (!claude.length) return { ok: false, message: `that gateway serves no Claude models (${probe.models.slice(0, 6).join(', ') || 'none'}). cl drives Claude Code, so the gateway must expose claude-* models. Account NOT added.` };
+  if (!claude.length) return { ok: false, message: `that gateway serves no Claude models (${probe.models.slice(0, 6).join(', ') || 'none'}). cl drives Claude Code, so it must expose claude-* models. Account NOT added.` };
   const modelMap = {};
   for (const fam of ['haiku', 'sonnet', 'opus', 'fable']) modelMap[fam] = pickFamilyModel(claude, fam) || fam;
 
@@ -363,11 +375,11 @@ function addApiAccount(tokens, id) {
   catch (e) { return { ok: false, message: `DPAPI encrypt failed: ${e.message}` }; }
 
   const acct = {
-    id, label: flagVal(tokens, 'label') || id.toUpperCase(), type: 'api',
+    id, label: label || id.toUpperCase(), type: 'api',
     baseUrl: baseUrl.replace(/\/+$/, ''), apiKeyEnc: enc,
     headers: { 'x-title': 'claude' }, modelMap, disableConnectors: true,
   };
-  const color = flagVal(tokens, 'color'); if (color) acct.color = color;
+  if (color) acct.color = color;
 
   const bak = C.CONFIG_PATH + '.bak-' + Date.now();
   let raw; try { raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8')); }
@@ -377,7 +389,7 @@ function addApiAccount(tokens, id) {
   raw.accounts.push(acct);
   if (!Array.isArray(raw.switchOrder)) raw.switchOrder = raw.accounts.map((a) => a.id);
   else if (!raw.switchOrder.includes(id)) raw.switchOrder.push(id);
-  if (hasFlag(tokens, 'default')) raw.defaultAccount = id;
+  if (makeDefault) raw.defaultAccount = id;
   fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2));
   try { if (C.resolveApiKey(C.findAccount(C.loadConfig(), id)) !== key) throw new Error('resolved key mismatch'); }
   catch (e) { fs.copyFileSync(bak, C.CONFIG_PATH); return { ok: false, message: `validation failed — restored backup. ${e.message}` }; }
@@ -386,8 +398,8 @@ function addApiAccount(tokens, id) {
   return {
     ok: true,
     message: `✓ added gateway account "${id}" (${acct.label}) → ${acct.baseUrl}\n` +
-      `  key ${key.slice(0, 7)}…${key.slice(-4)} DPAPI-encrypted (from ${src}) · models: ${mm}` +
-      `${hasFlag(tokens, 'default') ? '\n  set as the default account' : ''}\n  use it: cl:switch ${id}`,
+      `  key ${key.slice(0, 7)}…${key.slice(-4)} DPAPI-encrypted (from ${keySrc}) · models: ${mm}` +
+      `${makeDefault ? '\n  set as the default account' : ''}\n  use it: cl:switch ${id}`,
   };
 }
 
@@ -396,6 +408,16 @@ function addApiAccount(tokens, id) {
 // browser login on the freed TTY. `argStr` is everything after `cl:add-account`.
 function requestAddAccount(session, argStr) {
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
+  // Bare `cl:add-account` (no id/flags) → open the interactive wizard (pick
+  // Subscription vs Gateway on a cl:switch-style screen, then guided prompts).
+  if (!tokens.length) {
+    if (!session) return { ok: false, message: 'launch `cl` first — then `cl:add-account` opens the add wizard.' };
+    try {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      fs.writeFileSync(path.join(CACHE_DIR, `cl-addacct-${session}.trigger`), JSON.stringify({ at: Date.now(), wizard: true }));
+      return { ok: true, message: 'opening the add-account wizard — pick the type in the terminal…' };
+    } catch (e) { return { ok: false, message: `add wizard signal FAILED — ${e.message}` }; }
+  }
   const id = tokens.find((t) => !t.startsWith('-') && !/^sk-/.test(t)); // skip a bare key token
   if (!id) {
     return { ok: false, message: 'usage: cl:add-account <id>  (subscription: browser login)  ·  or  cl:add-account <id> --api --url <gateway> [--label L] [--color #hex] [--default]  (gateway/pool; key from clipboard, or --file/--key)' };
@@ -573,4 +595,4 @@ function requestRestart(session) {
   }
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, readUsageCache, CACHE_DIR };
+module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };

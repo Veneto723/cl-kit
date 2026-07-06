@@ -20,6 +20,7 @@ Switch account (keeps your conversation, preserves model/effort/mode):
   /switch ${example.padEnd(13)} switch directly, from the / menu
 
 Add / manage accounts:
+  cl:add-account                   open the WIZARD — pick Subscription or Gateway, then guided prompts
   cl:add-account <id>              add a SUBSCRIPTION via guided browser login (in-session)
   cl:add-account <id> --api --url <gateway> [--label L --color #hex --default]
                                    add a GATEWAY/POOL (like mate): verifies it, auto-detects

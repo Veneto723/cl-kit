@@ -476,6 +476,114 @@ function pickAccount(currentId) {
   });
 }
 
+// ---- generic arrow-key menu (add-account wizard) ---------------------------
+function selectMenu(title, options, hint) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin, out = process.stdout;
+    if (!stdin.isTTY) return resolve(null);
+    let sel = 0;
+    out.write('\x1b[?1049l\x1b[?25l');
+    const render = () => {
+      out.write('\x1b[2J\x1b[H');
+      out.write(`\r\n  \x1b[1;36m${title}\x1b[0m   \x1b[2m${hint || '↑/↓ move · Enter select · Esc cancel'}\x1b[0m\r\n\r\n`);
+      options.forEach((o, i) => {
+        const desc = o.desc ? `  \x1b[2m${o.desc}\x1b[0m` : '';
+        out.write(i === sel ? `  \x1b[7m ${o.label} \x1b[0m${desc}\r\n` : `    ${o.label}${desc}\r\n`);
+      });
+    };
+    const done = (v) => { try { stdin.removeListener('data', onKey); } catch {} try { stdin.setRawMode(false); } catch {} stdin.pause(); out.write('\x1b[?25h'); resolve(v); };
+    const onKey = (buf) => {
+      const k = buf.toString('utf8');
+      if (k === '\x1b[A' || k === 'k') { sel = (sel - 1 + options.length) % options.length; render(); }
+      else if (k === '\x1b[B' || k === 'j') { sel = (sel + 1) % options.length; render(); }
+      else if (k >= '1' && k <= String(Math.min(9, options.length))) done(+k - 1);
+      else if (k === '\r' || k === '\n') done(sel);
+      else if (k === '\x1b' || k === 'q' || k === '\x03') done(null);
+    };
+    try { stdin.setRawMode(true); } catch {}
+    stdin.resume(); stdin.on('data', onKey); render();
+  });
+}
+
+// ---- single-line TTY input (add-account wizard) ----------------------------
+function promptLine(label, opts = {}) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin, out = process.stdout;
+    if (!stdin.isTTY) return resolve(null);
+    let buf = '';
+    out.write('\x1b[?25h');
+    const render = () => { out.write('\r\x1b[K  ' + label + (opts.secret ? '*'.repeat(buf.length) : buf)); };
+    const done = (v) => { try { stdin.removeListener('data', onKey); } catch {} try { stdin.setRawMode(false); } catch {} stdin.pause(); out.write('\r\n'); resolve(v); };
+    const onKey = (chunk) => {
+      const s = chunk.toString('utf8');
+      if (s === '\x1b') return done(null);          // bare Esc → cancel
+      if (s.startsWith('\x1b')) return;             // arrow/nav escape seq → ignore
+      for (const c of s) {
+        if (c === '\r' || c === '\n') return done(buf.trim());
+        if (c === '\x03') return done(null);        // Ctrl-C → cancel
+        if (c === '\x7f' || c === '\b') { buf = buf.slice(0, -1); continue; }
+        if (c >= ' ') buf += c;
+      }
+      render();
+    };
+    try { stdin.setRawMode(true); } catch {}
+    stdin.resume(); stdin.on('data', onKey); render();
+  });
+}
+
+// ---- interactive add-account wizard ----------------------------------------
+// Type-select (Subscription vs Gateway) then guided prompts. cl-runner owns the
+// TTY (claude was killed by the wizard trigger). Delegates the real work to
+// doAddAccount (oauth) / core.addApiAccountResolved (api). Any Esc/Ctrl-C cancels.
+async function runAddWizard() {
+  resetTerminal();
+  const out = process.stdout;
+  const cancel = () => out.write('\x1b[2m[cl] add cancelled.\x1b[0m\n');
+
+  const type = await selectMenu('Add a cl account — what type?', [
+    { label: 'Subscription', desc: 'claude.ai login (MAX / Pro / Team) — opens a browser' },
+    { label: 'Gateway / pool', desc: 'an API key + URL (e.g. mate, APIHub)' },
+  ]);
+  out.write('\x1b[2J\x1b[H');
+  if (type === null) return cancel();
+
+  let id;
+  while (true) {
+    id = await promptLine('Account id (short name, e.g. work): ');
+    if (id === null) return cancel();
+    if (!/^[a-z][a-z0-9_-]*$/i.test(id)) { out.write('  \x1b[31m✗ letters/digits/dash/underscore, starting with a letter\x1b[0m\n'); continue; }
+    if (C.findAccount(reloadCfg(), id)) { out.write(`  \x1b[31m✗ "${id}" already exists — pick another\x1b[0m\n`); continue; }
+    break;
+  }
+
+  if (type === 0) { // subscription → browser login flow
+    out.write(`\r\n\x1b[2m[cl] adding subscription "${id}" — a browser sign-in will open; log in as the NEW account…\x1b[0m\n`);
+    doAddAccount([id]);
+    return;
+  }
+
+  // gateway / pool
+  let url;
+  while (true) {
+    url = await promptLine('Gateway URL (https://…): ');
+    if (url === null) return cancel();
+    if (/^https?:\/\/.+/i.test(url.trim())) { url = url.trim(); break; }
+    out.write('  \x1b[31m✗ enter a full http(s):// URL\x1b[0m\n');
+  }
+  let label = await promptLine(`Label [${id.toUpperCase()}]: `);
+  if (label === null) return cancel();
+  label = label.trim() || id.toUpperCase();
+
+  out.write('\r\n  \x1b[1mCopy your API key to the clipboard now\x1b[0m \x1b[2m(never shown or typed)\x1b[0m\n');
+  const go = await promptLine('  press Enter to read the key (or Esc to cancel): ');
+  if (go === null) return cancel();
+
+  out.write('\x1b[2m  reading key + verifying gateway/models…\x1b[0m\n');
+  const { key, src, error } = core.readAddKey([]); // clipboard
+  const r = core.addApiAccountResolved({ id, baseUrl: url, key, keySrc: src, keyErr: error, label });
+  out.write((r.ok ? '\x1b[32m' : '\x1b[31m') + r.message + '\x1b[0m\r\n');
+}
+
 // ---- one claude session ---------------------------------------------------
 // Resolves with { reason: 'switch'|'restart'|'flagretry'|'effort'|'pick'|'addaccount'|'delete'|'exit', exitCode, payload }.
 
@@ -1103,10 +1211,15 @@ async function main() {
     }
 
     if (reason === 'addaccount') {
-      // Guided add-account: claude is dead, cl-runner owns the TTY for the login.
-      resetTerminal();
-      const argv = (payload && typeof payload.args === 'string' ? payload.args : '').trim().split(/\s+/).filter(Boolean);
-      doAddAccount(argv); // prints its own progress; never exits
+      // claude is dead, cl-runner owns the TTY. Wizard (bare cl:add-account) →
+      // type-select + prompts; otherwise the flag-driven guided login/api add.
+      if (payload && payload.wizard) {
+        await runAddWizard();
+      } else {
+        resetTerminal();
+        const argv = (payload && typeof payload.args === 'string' ? payload.args : '').trim().split(/\s+/).filter(Boolean);
+        doAddAccount(argv); // prints its own progress; never exits
+      }
       process.stdout.write('\x1b[2m[cl] returning to your conversation…\x1b[0m\n');
       writeState({ account, switchCount, convId, pinnedEffort });
       await new Promise(r => setTimeout(r, 300));
