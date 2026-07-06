@@ -577,12 +577,12 @@ function requestRemoveAccount(session, argStr) {
     ? ((cfg.accounts.find((a) => a.id !== acc.id) || {}).id || '?')
     : cfg.defaultAccount;
   const live = liveSessionsOn(acc.id);
-  // ANSI: black on BRIGHT-RED for the banner, bold red for the detail. If the host
-  // renders the hook message with ANSI it's coloured; if not, the CAPS + ⚠ still
-  // make it stand out (RST at the end so nothing bleeds into the rest).
-  const A_BANNER = '\x1b[1;30;101m', A_RED = '\x1b[1;91m', A_RST = '\x1b[0m';
+  // Bold BRIGHT-YELLOW banner + bold BRIGHT-RED detail, NO background — high
+  // contrast and legible on a dark terminal (black-on-red was muddy). RST after
+  // each run so nothing bleeds; CAPS + ⚠ keep it loud even if ANSI is stripped.
+  const A_BANNER = '\x1b[1;93m', A_RED = '\x1b[1;91m', A_RST = '\x1b[0m';
   const liveWarn = live > 0
-    ? `${A_BANNER} ⚠ ${live} LIVE SESSION${live > 1 ? 'S' : ''} STILL ON "${acc.id.toUpperCase()}" ${A_RST}`
+    ? `${A_BANNER}⚠ ${live} LIVE SESSION${live > 1 ? 'S' : ''} STILL ON "${acc.id.toUpperCase()}"${A_RST}`
       + `${A_RED} — ${live > 1 ? 'they keep' : 'it keeps'} running (removal won't stop ${live > 1 ? 'them' : 'it'}); `
       + `${live > 1 ? 'they drop' : 'it drops'} to "${newDefault}" on next switch/restart. Move one off now: cl:switch ${newDefault} in it.${A_RST}\n`
     : '';
