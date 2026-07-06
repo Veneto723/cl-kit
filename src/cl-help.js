@@ -29,10 +29,13 @@ Move chats between PCs (discrete export/import — no realtime sync):
   cl:export all          archive every session   ·   cl:export <project|id>
   cl:import <archive>    merge sessions in (newer-wins; live chats protected)
 
+See usage:
+  cl:peek                usage of ALL accounts + where a launch would land — ZERO tokens
+  /pool                  pool account usage % + reset times (from the / menu)
+
 Session:
   cl:restart   /restart  reload the wrapper + relaunch this conversation
   cl:delete              delete THIS conversation → trash, start fresh (asks; then 'confirm')
-  /pool                  pool account usage % + reset times
 
 Why two forms?
   cl:...  are plain messages caught by a hook BEFORE the model runs — they cost

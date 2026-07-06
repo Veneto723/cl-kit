@@ -24,6 +24,150 @@ function currentAccount(C, cfg, session) {
   return cfg.defaultAccount;
 }
 
+// ---- usage peek + shared launch-account decision ---------------------------
+// These back BOTH the launch-time auto-select (cl-runner) and the `cl:peek`
+// readout, so the "would launch on X" line always matches what actually happens.
+
+function readUsageCache() {
+  try { return JSON.parse(fs.readFileSync(path.join(CACHE_DIR, 'usage-monitor-cache.json'), 'utf8')); }
+  catch { return null; }
+}
+
+// Headroom score for an account from the usage cache: higher = more free.
+//   null = can't judge (no data)   ·   -1 = exhausted   ·   0..100 = % headroom
+function accountHeadroom(acc, cache, th) {
+  if (!cache) return null;
+  const SW_S = (th && th.switchSessionPct) != null ? th.switchSessionPct : 92;
+  const SW_W = (th && th.switchWeekPct) != null ? th.switchWeekPct : 95;
+  if (acc.type === 'oauth') {
+    const d = cache.usage && cache.usage.data;
+    if (!d || !d.five_hour || typeof d.five_hour.utilization !== 'number') return null;
+    const fh = d.five_hour.utilization;                   // seven_day may be absent in a partial cache
+    const sd = d.seven_day && typeof d.seven_day.utilization === 'number' ? d.seven_day.utilization : 0;
+    if (fh >= SW_S || sd >= SW_W) return -1;             // over a switch threshold = exhausted
+    return 100 - fh;                                      // 5h is the binding short-term limit
+  }
+  if (acc.type === 'api') {
+    if (!cache.pool || !Array.isArray(cache.pool.rows) || !cache.pool.rows.length) return null;
+    const active = cache.pool.rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited' && r.fh != null);
+    if (!active.length) return -1;                        // every pool account in cooldown = exhausted
+    return 100 - Math.min(...active.map((r) => r.fh));    // headroom of the least-loaded pool account
+  }
+  return null;
+}
+
+// Decide the launch account: PREFER a subscription (oauth) with headroom; fall to
+// the most-available api/pool only when all subscriptions are exhausted; else the
+// least-bad. Returns { id, reason } or null when nothing can be judged (no cache).
+function chooseLaunchAccount(cfg, cache) {
+  const C = require('./cl-config');
+  const th = cfg.thresholds || {};
+  const score = (a) => accountHeadroom(a, cache, th);
+  const oauth = cfg.accounts.filter((a) => a.type === 'oauth').map((a) => ({ a, s: score(a) }));
+  const oauthJudged = oauth.filter((x) => x.s != null);
+
+  if (oauth.length && !oauthJudged.length) return null;   // subs exist but unjudged → don't guess
+
+  const oauthRoom = oauthJudged.filter((x) => x.s >= 0).sort((x, y) => y.s - x.s);
+  if (oauthRoom.length) return { id: oauthRoom[0].a.id, reason: 'subscription has headroom' };
+
+  const apiRoom = cfg.accounts.filter((a) => a.type === 'api').map((a) => ({ a, s: score(a) }))
+    .filter((x) => x.s != null && x.s >= 0).sort((x, y) => y.s - x.s);
+  if (apiRoom.length) {
+    const subLabel = oauthJudged.length ? oauthJudged[0].a.label : 'subscription';
+    return { id: apiRoom[0].a.id, reason: `${subLabel} exhausted → most available` };
+  }
+
+  if (!oauth.length) {                                    // api-only config
+    const anyApi = cfg.accounts.map((a) => ({ a, s: score(a) })).filter((x) => x.s != null);
+    if (!anyApi.length) return null;
+    const best = anyApi.filter((x) => x.s >= 0).sort((x, y) => y.s - x.s)[0];
+    if (best) return { id: best.a.id, reason: 'most available' };
+  }
+
+  const lb = (oauthJudged[0] && oauthJudged[0].a) || C.findAccount(cfg, cfg.defaultAccount) || cfg.accounts[0];
+  return { id: lb.id, reason: 'all accounts exhausted → least-bad' };
+}
+
+// Compact reset-time label, e.g. "Jul 12, 4pm". null on null/invalid.
+function fmtReset(iso) {
+  if (iso == null) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+  let h = d.getHours(); const ap = h < 12 ? 'am' : 'pm'; h = h % 12 || 12;
+  const mm = d.getMinutes(); const min = mm ? ':' + String(mm).padStart(2, '0') : '';
+  return `${mon} ${d.getDate()}, ${h}${min}${ap}`;
+}
+
+function ageStr(ms) {
+  if (typeof ms !== 'number' || !isFinite(ms) || ms <= 0) return '?';
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 0) return '?';
+  if (s < 90) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  return m < 90 ? `${m}m ago` : `${Math.round(m / 60)}h ago`;
+}
+
+// Standalone, ZERO-TOKEN usage readout of ALL accounts (subscription + pool),
+// current account marked, plus what a fresh launch would auto-select. Read-only —
+// the hook renders this directly (no trigger, no relaunch). Returns { ok, message }.
+function buildPeek(session) {
+  let C, cfg;
+  try { C = require('./cl-config'); cfg = C.loadConfig(); }
+  catch (e) { return { ok: false, message: `cl usage — config unreadable (${e.message}). Fix ~/.claude/cl-config.json or run \`cl setup\`.` }; }
+  const cache = readUsageCache();
+  const current = session ? currentAccount(C, cfg, session) : null;
+  const pct = (v) => (v == null ? '  ?' : String(Math.round(v)).padStart(3));
+  const lines = ['cl usage — peek'];
+  if (!cache) lines.push('  (no usage cache yet — the statusline populates it every few minutes; try again shortly)');
+
+  for (const a of cfg.accounts) {
+    const mark = a.id === current ? '   ← current' : '';
+    const label = a.label || a.id;
+    if (a.type === 'oauth') {
+      if (cache && cache.usage && cache.usage.data && cache.usage.data.five_hour) {
+        const d = cache.usage.data;
+        const sd = d.seven_day || {};                    // partial cache may lack seven_day
+        const reset = fmtReset(d.five_hour.resets_at) || fmtReset(sd.resets_at);
+        const rp = reset ? `  (resets ${reset})` : '';
+        lines.push(`  ${label} [subscription]   5h ${pct(d.five_hour.utilization).trim()}%  ·  7d ${pct(sd.utilization).trim()}%${rp}   ${ageStr(cache.usage.fetchedAt)}${mark}`);
+      } else {
+        lines.push(`  ${label} [subscription]   (no usage data)${mark}`);
+      }
+    } else if (a.type === 'api') {
+      if (cache && cache.pool && Array.isArray(cache.pool.rows) && cache.pool.rows.length) {
+        const rows = cache.pool.rows;
+        const active = rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited').length;
+        const fhs = rows.map((r) => r.fh).filter((v) => v != null);
+        const minFh = fhs.length ? Math.round(Math.min(...fhs)) : null;
+        lines.push(`  ${label} [gateway]        ${active}/${rows.length} active${minFh != null ? `  ·  5h from ${minFh}%` : ''}   ${ageStr(cache.pool.fetchedAt)}${mark}`);
+        for (const r of rows) {
+          const nm = String(r.label || r.email || '?').split('@')[0].slice(0, 10).padEnd(10);
+          const st = r.reason_code === 'rate_limited' ? 'cooldown' : (r.status || '?');
+          lines.push(`      ${nm}  5h ${pct(r.fh)}%  ·  7d ${pct(r.sd)}%   ${st}`);
+        }
+      } else {
+        lines.push(`  ${label} [gateway]        (no pool metrics${cfg.poolDb ? ' cached yet' : ' — poolDb not configured'})${mark}`);
+      }
+    } else {
+      lines.push(`  ${label} [${a.type}]${mark}`);
+    }
+  }
+
+  // The account a fresh launch/resume would auto-select (same decision cl-runner
+  // uses) — so peek doubles as "where's my headroom / where will cl start me".
+  if (cfg.features && cfg.features.autoBest !== false && cfg.accounts.length > 1) {
+    const pick = chooseLaunchAccount(cfg, cache);
+    if (pick) {
+      const pl = (C.findAccount(cfg, pick.id) || {}).label || pick.id;
+      lines.push(`  → a new launch/resume auto-selects: ${pl} (${pick.reason})`);
+    }
+  }
+  lines.push('  (read-only peek · no switch · zero model tokens · works when rate-limited)');
+  return { ok: true, message: lines.join('\n') };
+}
+
 // Decide + (if valid) perform a switch signal. Returns { ok, switching, message }.
 // switching=true only when a trigger was actually written. `menu:true` marks a
 // picker listing (no switch happened — the user should choose). Never throws.
@@ -313,4 +457,4 @@ function requestRestart(session) {
   }
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, currentAccount, CACHE_DIR };
+module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, readUsageCache, CACHE_DIR };

@@ -11,6 +11,8 @@
 //   cl:switch            → cycle to the next account
 //   cl:switch <id>       → switch to a named account
 //   cl:restart           → reload the wrapper + relaunch, same account
+//   cl:peek              → read-only usage readout of all accounts (no switch)
+//   … plus add-account / remove-account / export / import / delete
 //
 // On a trigger it drops the same trigger file cl-runner polls for and BLOCKS the
 // prompt (decision:"block") so the text is NOT sent to the model — the reason
@@ -22,7 +24,7 @@
 
 const core = require('./cl-switch-core');
 
-const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|export|import|delete)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|export|import|delete|peek|usage)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -41,6 +43,12 @@ function run(raw) {
   const action = m[1].toLowerCase();
   const arg = (m[2] || '').trim() || null;
 
+  if (action === 'peek' || action === 'usage') {
+    // Read-only usage readout — rendered entirely here (no trigger, no relaunch).
+    // Its message is self-contained (own header), so no `[cl]` prefix.
+    const r = core.buildPeek(session);
+    return block(r.message);
+  }
   if (action === 'restart') {
     const r = core.requestRestart(session);
     return block(`[cl] ${r.message}`);
