@@ -25,6 +25,22 @@ function currentAccount(C, cfg, session) {
   return cfg.defaultAccount;
 }
 
+// Count LIVE cl sessions currently pinned to `accountId` (a cl-state file says so
+// AND its pid is alive). Removing an account doesn't kill sessions using it — they
+// keep working and drop to the default on their next relaunch — so we warn first.
+function liveSessionsOn(accountId) {
+  let n = 0;
+  try {
+    for (const f of fs.readdirSync(CACHE_DIR)) {
+      if (!/^cl-state-.*\.json$/.test(f)) continue;
+      let st; try { st = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, f), 'utf8')); } catch { continue; }
+      if (st.account !== accountId || !st.pid) continue;
+      try { process.kill(st.pid, 0); n++; } catch (e) { if (e.code === 'EPERM') n++; } // EPERM = alive, not ours
+    }
+  } catch {}
+  return n;
+}
+
 // ---- usage peek + shared launch-account decision ---------------------------
 // These back BOTH the launch-time auto-select (cl-runner) and the `cl:peek`
 // readout, so the "would launch on X" line always matches what actually happens.
@@ -555,9 +571,15 @@ function requestRemoveAccount(session, argStr) {
   if (!acc) return { ok: false, message: `no account "${id}". Configured: ${cfg.accounts.map((a) => a.id).join(', ')}.` };
   if (cfg.accounts.length < 2) return { ok: false, message: `refusing to remove the LAST account ("${acc.id}") — cl needs at least one.` };
 
-  const current = currentAccount(C, cfg, session);
-  const onIt = acc.id === current
-    ? '\n  ⚠ this session is CURRENTLY on it — it keeps working until you switch or exit.' : '';
+  // Where sessions on this account fall back to on their next relaunch (removing
+  // the default reassigns it to the first remaining account).
+  const newDefault = cfg.defaultAccount === acc.id
+    ? ((cfg.accounts.find((a) => a.id !== acc.id) || {}).id || '?')
+    : cfg.defaultAccount;
+  const live = liveSessionsOn(acc.id);
+  const liveWarn = live > 0
+    ? `\n  ⚠ ${live} live cl session${live > 1 ? 's are' : ' is'} on "${acc.id}" — ${live > 1 ? 'they' : 'it'} keep${live > 1 ? '' : 's'} working (removal never kills a session), but drop${live > 1 ? '' : 's'} to "${newDefault}" on the next switch/restart. To move one off now: cl:switch ${newDefault} in it.`
+    : '';
 
   if (!isConfirm) {
     // STEP 1 — arm a short-lived pending marker and show exactly what happens.
@@ -566,7 +588,7 @@ function requestRemoveAccount(session, argStr) {
       ok: true, pending: true,
       message:
         `REMOVE account "${acc.id}"${acc.label && acc.label !== acc.id.toUpperCase() ? ` (${acc.label})` : ''}` +
-        ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + onIt + '\n' +
+        ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + liveWarn + '\n' +
         `  • cl-config.json is backed up first; references (switch order / default / rephrase) are auto-fixed\n` +
         `  • its captured login file is KEPT (never deleted) so removal is recoverable\n` +
         `  CONFIRM within 2 min:  cl:remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
@@ -587,6 +609,7 @@ function requestRemoveAccount(session, argStr) {
     ok: true, removed: true,
     message:
       `✓ removed account "${acc.id}".${res.fixes.length ? ` (${res.fixes.join('; ')})` : ''}\n` +
+      (live > 0 ? `  ${live} live session${live > 1 ? 's keep' : ' keeps'} running (same key) and will drop to "${newDefault}" on the next switch/restart.\n` : '') +
       (res.credFile ? `  its login file was KEPT at ${res.credFile} — delete it yourself if you want it gone.\n` : '') +
       `  reverse it by restoring the backup: ${res.backup}`,
   };
