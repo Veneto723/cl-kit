@@ -346,9 +346,8 @@ function bothExhaustedAlert(data) {
     data.five_hour.utilization >= SWITCH_SESSION ||
     (data.seven_day && data.seven_day.utilization >= SWITCH_WEEK);
   if (subExhausted) {
-    const reset = data && data.five_hour.resets_at
-      ? ` — ${subLabel} resets @ ${formatResetTime(data.five_hour.resets_at)}`
-      : '';
+    const rt = data && (formatResetTime(data.five_hour.resets_at) || formatResetTime(data.seven_day.resets_at));
+    const reset = rt ? ` — ${subLabel} resets @ ${rt}` : '';
     return criticalAlert(`⛔ POOL + ${subLabel} both exhausted${reset}`);
   }
   const mx = Math.round(data.five_hour.utilization);
@@ -381,8 +380,14 @@ function formatEta(minutes) {
   return m > 0 ? `~${h}h${m}m` : `~${h}h`;
 }
 
+// Format a reset time. Returns null when there's no valid time — the OAuth usage
+// endpoint reports resets_at:null for a window with no activity yet (e.g. the
+// 5-hour subscription window while you've been running on the pool). Callers
+// must handle null instead of printing a bogus 1970 epoch time.
 function formatResetTime(iso) {
+  if (iso == null) return null;
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
   const now = new Date();
   const opts = d.getMinutes() === 0 ? { hour: 'numeric' } : { hour: 'numeric', minute: '2-digit' };
   const timePart = d.toLocaleTimeString(undefined, opts).toLowerCase().replace(' ', '');
@@ -520,15 +525,17 @@ function renderFull(data, sessionEta, weekEta, poolRows, acc, model, effort) {
   if ((over || nearSession) && target) {
     lines.push('', blinkAlert(over ? `⚠ ${acc.label} limit reached — /switch to ${target} now` : `⚠ Nearing ${acc.label} limit — /switch to ${target}`));
   }
+  const sReset = formatResetTime(session.resets_at);
+  const wReset = formatResetTime(week.resets_at);
   lines.push(
     '',
     'Current session',
     `  ${bar(session.utilization)} ${Math.round(session.utilization)}% used`,
-    `  Resets ${formatResetTime(session.resets_at)} (${tz})${sEta ? `, ${sEta} to limit at current pace` : ''}`,
+    sReset ? `  Resets ${sReset} (${tz})${sEta ? `, ${sEta} to limit at current pace` : ''}` : `  No active 5-hour window yet`,
     '',
     'Current week (all models)',
     `  ${bar(week.utilization)} ${Math.round(week.utilization)}% used`,
-    `  Resets ${formatResetTime(week.resets_at)} (${tz})${wEta ? `, ${wEta} to limit at current pace` : ''}`,
+    wReset ? `  Resets ${wReset} (${tz})${wEta ? `, ${wEta} to limit at current pace` : ''}` : `  No active weekly window`,
   );
   footer(lines);
   return lines.join('\n');
@@ -546,9 +553,19 @@ function renderCompact(data, sessionEta, poolRows, acc, model, effort) {
   if (isApi) {
     const sub = primaryOauth();
     // Secondary segment: the subscription's usage — that's what frees up next.
-    const subPart = sub && data
-      ? ` | ${hexColor(`${sub.label} ${Math.round(data.five_hour.utilization)}%/${Math.round(data.seven_day.utilization)}% (next reset @ ${formatResetTime(data.five_hour.resets_at)})`, sub.color)}`
-      : '';
+    // The OAuth endpoint is account-wide, so it reports the subscription's real
+    // numbers even though this session runs against the gateway. While you've been
+    // on the pool the 5h window is usually 0/null (no recent sub activity), so
+    // prefer whichever reset actually exists (5h, else the always-populated 7d)
+    // and drop the "(reset …)" clause entirely when neither is valid.
+    let subPart = '';
+    if (sub && data) {
+      const fh = Math.round(data.five_hour.utilization);
+      const sd = Math.round(data.seven_day.utilization);
+      const reset = formatResetTime(data.five_hour.resets_at) || formatResetTime(data.seven_day.resets_at);
+      const resetPart = reset ? ` (resets ${reset})` : '';
+      subPart = ` | ${hexColor(`${sub.label} ${fh}%/${sd}%${resetPart}`, sub.color)}`;
+    }
     if (poolConfigured()) {
       if (!poolRows) return `${label(acc)} connecting${spinnerFrame()}`;
       if (poolExhausted(poolRows)) return bothExhaustedAlert(data);
@@ -575,7 +592,11 @@ function renderCompact(data, sessionEta, poolRows, acc, model, effort) {
   const sEta = formatEta(sessionEta);
   const sEtaPart = sEta ? `, ${sEta} to limit` : '';
   const weekStr = w.utilization >= WARN_WEEK ? amber(`${wv}%`) : `${wv}%`;
-  return withL2(`${label(acc)} ${sv}%/${weekStr} (resets ${formatResetTime(s.resets_at)}${sEtaPart})`);
+  // 5h reset may be null (no activity yet) — fall back to the 7d reset, and drop
+  // the parenthetical entirely if neither exists, rather than print a 1970 time.
+  const oReset = formatResetTime(s.resets_at) || formatResetTime(w.resets_at);
+  const oResetPart = oReset ? ` (resets ${oReset}${sEtaPart})` : '';
+  return withL2(`${label(acc)} ${sv}%/${weekStr}${oResetPart}`);
 }
 
 async function main() {
