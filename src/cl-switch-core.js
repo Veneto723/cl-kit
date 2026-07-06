@@ -577,14 +577,19 @@ function requestRemoveAccount(session, argStr) {
     ? ((cfg.accounts.find((a) => a.id !== acc.id) || {}).id || '?')
     : cfg.defaultAccount;
   const live = liveSessionsOn(acc.id);
-  // Bold BRIGHT-YELLOW banner + bold BRIGHT-RED detail, NO background — high
-  // contrast and legible on a dark terminal (black-on-red was muddy). RST after
-  // each run so nothing bleeds; CAPS + ⚠ keep it loud even if ANSI is stripped.
-  const A_BANNER = '\x1b[1;93m', A_RED = '\x1b[1;91m', A_RST = '\x1b[0m';
+  // Loud bold-BRIGHT-RED alert. Colour is re-applied PER LINE (RL) and each line is
+  // kept short — the host renders the hook message line-by-line and DROPS ANSI across
+  // a soft-wrap, so a single long coloured run only tints its first physical row.
+  // Short, self-coloured lines keep the WHOLE warning red; CAPS + ⚠ stay loud even
+  // if ANSI is stripped entirely.
+  const A_RED = '\x1b[1;91m', A_RST = '\x1b[0m';
+  const RL = (t) => `${A_RED}${t}${A_RST}`;
+  const Subj = live > 1 ? 'They' : 'It', keep = live > 1 ? 'keep' : 'keeps', drop = live > 1 ? 'drop' : 'drops', them = live > 1 ? 'them' : 'it';
   const liveWarn = live > 0
-    ? `${A_BANNER}⚠ ${live} LIVE SESSION${live > 1 ? 'S' : ''} STILL ON "${acc.id.toUpperCase()}"${A_RST}`
-      + `${A_RED} — ${live > 1 ? 'they keep' : 'it keeps'} running (removal won't stop ${live > 1 ? 'them' : 'it'}); `
-      + `${live > 1 ? 'they drop' : 'it drops'} to "${newDefault}" on next switch/restart. Move one off now: cl:switch ${newDefault} in it.${A_RST}\n`
+    ? RL(`⚠ ${live} LIVE SESSION${live > 1 ? 'S' : ''} STILL ON "${acc.id.toUpperCase()}"`) + '\n'
+      + '  ' + RL(`${Subj} ${keep} running (removal won't stop ${them}).`) + '\n'
+      + '  ' + RL(`${Subj} ${drop} to "${newDefault}" on next switch/restart.`) + '\n'
+      + '  ' + RL(`Move one off now: cl:switch ${newDefault} in it.`) + '\n'
     : '';
 
   if (!isConfirm) {
@@ -616,7 +621,10 @@ function requestRemoveAccount(session, argStr) {
     ok: true, removed: true,
     message:
       `✓ removed account "${acc.id}".${res.fixes.length ? ` (${res.fixes.join('; ')})` : ''}\n` +
-      (live > 0 ? `  ${A_RED}${live} live session${live > 1 ? 's keep' : ' keeps'} running (same key) and will drop to "${newDefault}" on the next switch/restart.${A_RST}\n` : '') +
+      (live > 0
+        ? '  ' + RL(`${live} live session${live > 1 ? 's' : ''} ${keep} running (same key);`) + '\n'
+          + '  ' + RL(`${live > 1 ? 'they' : 'it'} will drop to "${newDefault}" on next switch/restart.`) + '\n'
+        : '') +
       (res.credFile ? `  its login file was KEPT at ${res.credFile} — delete it yourself if you want it gone.\n` : '') +
       `  reverse it by restoring the backup: ${res.backup}`,
   };
