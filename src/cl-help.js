@@ -42,6 +42,12 @@ Session:
   cl:restart   /restart  reload the wrapper + relaunch this conversation
   cl:delete              delete THIS conversation → trash, start fresh (asks; then 'confirm')
 
+Trash (deleted conversations stay recoverable until you empty it):
+  cl:trash               list what's in the trash — ZERO tokens
+  cl:trash restore <id>  put one back (then resume it: cl --resume <id>)
+  cl:restore <id>        same, shorthand
+  cl:trash empty         PERMANENTLY purge the trash (asks; then 'confirm')
+
 Why two forms?
   cl:...  are plain messages caught by a hook BEFORE the model runs — they cost
           NO tokens and work even when the account is rate-limited (when /switch
@@ -53,6 +59,7 @@ In your terminal (not inside a session):
   cl                     launch
   cl --account <id>      launch on a specific account
   cl add-account <id>    guided browser login to add a subscription
+  cl trash [restore <id>|empty]   manage the deleted-conversation trash
   cl doctor              health check    ·    cl setup    reconfigure
 
 Configured accounts: ${accounts.join(', ') || '(none — run `cl setup`)'}

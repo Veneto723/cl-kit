@@ -664,7 +664,7 @@ function requestDelete(session, argStr) {
       ok: true, pending: true,
       message:
         `DELETE the CURRENT conversation (${convId.slice(0, 8)}${sizeStr})?\n` +
-        `  • it is MOVED to recoverable trash (~/.claude/backups/cl-deleted-<ts>/), never hard-deleted\n` +
+        `  • it is MOVED to recoverable trash, never hard-deleted (cl:trash to list/restore/purge)\n` +
         `  • this conversation ENDS and a fresh empty session starts in its place\n` +
         `  CONFIRM within 2 min:  cl:delete confirm     ·     or ignore this to cancel`,
     };
@@ -697,4 +697,59 @@ function requestRestart(session) {
   }
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };
+// ---- cl:trash — list / restore / permanently empty the conversation trash --
+// (~/.claude/backups/cl-deleted-*, written by cl:delete). Pure file ops that run
+// synchronously in the hook — zero tokens, no relaunch. `plain: true` results are
+// self-contained readouts (rendered uncolored, like cl:peek).
+function pendingPurgePath(session) { return path.join(CACHE_DIR, `cl-purgepending-${session || 'terminal'}.json`); }
+
+function requestTrash(session, argStr) {
+  const sync = require('./cl-sync');
+  const toks = (argStr || '').trim().split(/\s+/).filter(Boolean);
+  const sub = (toks[0] || '').toLowerCase();
+
+  if (sub === 'restore') return sync.restoreSession(toks[1] || '');
+
+  if (sub === 'empty' || sub === 'purge' || sub === 'clear') {
+    const entries = sync.listTrash();
+    if (!entries.length) return { ok: false, message: 'trash is already empty — nothing to purge.' };
+    const bytes = entries.reduce((s, e) => s + e.bytes, 0);
+    const isConfirm = toks.slice(1).some((t) => CONFIRM_WORDS.has(t.toLowerCase()));
+    if (!isConfirm) {
+      try { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(pendingPurgePath(session), JSON.stringify({ at: Date.now() })); } catch {}
+      return {
+        ok: true, pending: true,
+        message:
+          `EMPTY TRASH — PERMANENTLY delete ${entries.length} trashed conversation${entries.length > 1 ? 's' : ''} (${sync.human(bytes)})?\n` +
+          `  ⚠ NOT recoverable: this deletes the recoverable copies themselves\n` +
+          `  CONFIRM within 2 min:  cl:trash empty confirm     ·     or ignore this to cancel`,
+      };
+    }
+    let pend = null;
+    try { pend = JSON.parse(fs.readFileSync(pendingPurgePath(session), 'utf8')); } catch {}
+    if (!pend || Date.now() - pend.at > 120_000) {
+      return { ok: false, message: 'no pending confirmation (or it expired) — run `cl:trash empty` first to review what gets purged.' };
+    }
+    try { fs.unlinkSync(pendingPurgePath(session)); } catch {}
+    const r = sync.emptyTrash();
+    return r.ok
+      ? { ok: true, message: `✓ trash emptied — permanently deleted ${r.count} conversation${r.count > 1 ? 's' : ''} (${sync.human(r.bytes)}).` }
+      : { ok: false, message: `purge INCOMPLETE — ${r.failed} trash folder(s) would not delete (file in use?). cl:trash shows what's left.` };
+  }
+
+  if (sub && sub !== 'list') {
+    return { ok: false, message: `unknown trash action "${toks[0]}" — use: cl:trash · cl:trash restore <id> · cl:trash empty` };
+  }
+
+  const entries = sync.listTrash();
+  if (!entries.length) return { ok: true, plain: true, message: 'trash — empty. (cl:delete moves conversations here; nothing is hard-deleted until cl:trash empty.)' };
+  const bytes = entries.reduce((s, e) => s + e.bytes, 0);
+  const lines = [`trash — ${entries.length} deleted conversation${entries.length > 1 ? 's' : ''}, ${sync.human(bytes)} total`];
+  for (const e of entries) {
+    lines.push(`  ${e.convId.slice(0, 8)}  ${sync.human(e.bytes).padStart(9)}  deleted ${e.deletedAt}  ${e.proj}${e.sidecar ? '  (+sidecar)' : ''}`);
+  }
+  lines.push('', '  restore one:  cl:trash restore <id>        purge all:  cl:trash empty');
+  return { ok: true, plain: true, message: lines.join('\n') };
+}
+
+module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };

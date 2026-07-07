@@ -334,4 +334,76 @@ function trashSession(convId) {
   return { trashDir, moved };
 }
 
-module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession };
+// ---- trash management (cl:trash) -------------------------------------------
+// The trash is the cl-deleted-* dirs trashSession writes. Pure file ops, so
+// list / restore / empty all run inside the cl:trash hook — zero tokens. Only
+// cl-deleted-* is ever touched; other ~/.claude/backups content is not trash.
+
+// "cl-deleted-YYYYMMDD-HHMMSS" → "YYYY-MM-DD HH:MM" for display.
+function trashDirDate(name) {
+  const m = name.match(/^cl-deleted-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}$/);
+  return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : '?';
+}
+
+// Every trashed conversation, newest first:
+// { convId, proj, dir, file, sidecar, bytes, deletedAt }.
+function listTrash() {
+  const out = [];
+  let dirs = []; try { dirs = fs.readdirSync(BACKUPS).filter((d) => /^cl-deleted-/.test(d)); } catch {}
+  for (const d of dirs.sort().reverse()) {
+    let projs = []; try { projs = fs.readdirSync(path.join(BACKUPS, d)); } catch { continue; }
+    for (const proj of projs) {
+      const pd = path.join(BACKUPS, d, proj);
+      let files = [];
+      try { if (!fs.statSync(pd).isDirectory()) continue; files = fs.readdirSync(pd); } catch { continue; }
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const convId = f.slice(0, -'.jsonl'.length);
+        let bytes = 0; try { bytes = fs.statSync(path.join(pd, f)).size; } catch {}
+        let sidecar = null;
+        try { const s = path.join(pd, convId); if (fs.statSync(s).isDirectory()) sidecar = s; } catch {}
+        out.push({ convId, proj, dir: d, file: path.join(pd, f), sidecar, bytes, deletedAt: trashDirDate(d) });
+      }
+    }
+  }
+  return out;
+}
+
+// Restore ONE trashed conversation (unique id prefix) back into its project dir.
+function restoreSession(idPrefix) {
+  const pre = String(idPrefix || '').trim().toLowerCase();
+  if (pre.length < 4) return { ok: false, message: 'give at least 4 chars of the conversation id — cl:trash lists them.' };
+  const hits = listTrash().filter((e) => e.convId.toLowerCase().startsWith(pre));
+  if (!hits.length) return { ok: false, message: `nothing in trash matches "${pre}" — cl:trash lists what's there.` };
+  if (hits.length > 1) return { ok: false, message: `"${pre}" is ambiguous (${hits.map((h) => h.convId.slice(0, 8)).join(', ')}) — use more characters.` };
+  const e = hits[0];
+  const destDir = path.join(PROJECTS, e.proj);
+  const dest = path.join(destDir, e.convId + '.jsonl');
+  if (fs.existsSync(dest)) return { ok: false, message: `NOT restored — ${e.proj}\\${e.convId.slice(0, 8)}….jsonl already exists (already restored, or never really gone).` };
+  fs.mkdirSync(destDir, { recursive: true });
+  if (!moveWithRetry(e.file, dest)) return { ok: false, message: `restore FAILED — could not move the transcript back (it stays safe in ${e.dir}).` };
+  const moved = ['transcript'];
+  if (e.sidecar && moveWithRetry(e.sidecar, path.join(destDir, e.convId))) moved.push('sidecar');
+  // Drop the trash dir if this emptied it (rmdir refuses non-empty — safe).
+  try { fs.rmdirSync(path.dirname(e.file)); } catch {}
+  try { fs.rmdirSync(path.join(BACKUPS, e.dir)); } catch {}
+  return {
+    ok: true, convId: e.convId, proj: e.proj, moved,
+    message: `✓ restored ${e.convId.slice(0, 8)} (${moved.join('+')}, ${human(e.bytes)})\n  resume it from its project folder: cl --resume ${e.convId}`,
+  };
+}
+
+// PERMANENTLY delete the whole conversation trash (all cl-deleted-* dirs,
+// including empty leftovers). Returns { ok, count, bytes, failed }.
+function emptyTrash() {
+  const entries = listTrash();
+  const bytes = entries.reduce((s, e) => s + e.bytes, 0);
+  let dirs = []; try { dirs = fs.readdirSync(BACKUPS).filter((d) => /^cl-deleted-/.test(d)); } catch {}
+  let failed = 0;
+  for (const d of dirs) {
+    try { fs.rmSync(path.join(BACKUPS, d), { recursive: true, force: true }); } catch { failed++; }
+  }
+  return { ok: failed === 0, count: entries.length, bytes, failed };
+}
+
+module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession, listTrash, restoreSession, emptyTrash, human };

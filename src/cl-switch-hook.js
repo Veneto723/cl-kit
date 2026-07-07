@@ -28,7 +28,7 @@ const core = require('./cl-switch-core');
 // NOTE: delete-account / del-account MUST precede the bare `delete` alternative,
 // else `cl:delete-account` matches `delete` (+ `\b` at the hyphen) and misfires as
 // a CONVERSATION delete. They route to remove-account (account removal), not delete.
-const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|export|import|delete|peek|usage)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|export|import|delete|peek|usage|trash|restore)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -44,7 +44,7 @@ function block(reason) {
 const CLR = { red: '\x1b[1;91m', green: '\x1b[1;92m', cyan: '\x1b[1;96m', yellow: '\x1b[1;93m', rst: '\x1b[0m' };
 function alertColor(msg) {
   if (/^✓/.test(msg)) return CLR.green;                                       // completed
-  if (/REMOVE account|DELETE the CURRENT conversation|⚠/.test(msg)) return CLR.red;  // destructive
+  if (/REMOVE account|DELETE the CURRENT conversation|EMPTY TRASH|⚠/.test(msg)) return CLR.red;  // destructive
   if (/^(SWITCHING|RESTARTING|opening|adding|deleting)\b/i.test(msg)) return CLR.cyan; // in-progress
   return CLR.yellow;                                                          // refusal / error / hint
 }
@@ -89,6 +89,13 @@ function run(raw) {
   if (action === 'delete') {
     const r = core.requestDelete(session, arg || '');
     return clBlock(r.message);
+  }
+  if (action === 'trash' || action === 'restore') {
+    // Trash management — pure file ops handled synchronously here (zero tokens).
+    // cl:restore <id> is shorthand for cl:trash restore <id>. List results are
+    // self-contained readouts (plain), everything else gets the alert colours.
+    const r = core.requestTrash(session, action === 'restore' ? `restore ${arg || ''}`.trim() : (arg || ''));
+    return r.plain ? block(r.message) : clBlock(r.message);
   }
   if (action === 'export' || action === 'import') {
     // Pure file ops — run synchronously in the hook (zero tokens, no session

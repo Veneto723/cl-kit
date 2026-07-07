@@ -112,6 +112,9 @@ sessions to load new wrapper code.
 | `cl:export [sel]` | archive chat sessions to a `.tgz` (bare = current conv) | **0** |
 | `cl:import <archive>` | merge sessions from an archive (newer-wins, safe) | **0** |
 | `cl:delete` | delete THIS conversation → recoverable trash, start fresh (double-confirmed) | **0** |
+| `cl:trash` | list the deleted-conversation trash | **0** |
+| `cl:trash restore <id>` (or `cl:restore <id>`) | restore a deleted conversation from trash | **0** |
+| `cl:trash empty` | **permanently** purge the trash (double-confirmed) | **0** |
 | `cl:restart` | reload the wrapper + relaunch this conversation | **0** |
 | `/switch [n\|name]` | same picker / direct switch, from the `/` menu | small |
 | `/restart` | reload + relaunch | small |
@@ -224,6 +227,16 @@ and **never deletes the captured login file** — so removal is recoverable by
 restoring the backup. Refuses to remove the last account. If **live sessions are
 using the account**, step 1 warns you (in red) — removal never kills a session, but
 those sessions drop to the default on their next switch/restart.
+
+**Deleting a conversation & the trash — `cl:delete` / `cl:trash`:** `cl:delete`
+(double-confirmed) never hard-deletes — it MOVES the current conversation to
+`~/.claude/backups/cl-deleted-<ts>/` and starts a fresh session. `cl:trash` lists
+what's in the trash (id, size, deletion time, project); `cl:trash restore <id>`
+(or the `cl:restore <id>` shorthand) moves one back so `cl --resume <id>` works
+again from its project folder; `cl:trash empty` (double-confirmed, red warning)
+**permanently** purges the trash — the only hard-delete in the kit, and it only
+ever touches `cl-deleted-*` folders (config and account backups are never trash).
+All of it also works from the terminal: `cl trash [restore <id>|empty]`.
 
 **Auto-select the best account at launch (`features.autoBest`, default on):**
 every fresh `cl` and `cl --resume` picks the account with the most headroom so you

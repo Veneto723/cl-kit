@@ -1044,6 +1044,13 @@ async function main() {
     process.stdout.write(r.message + '\n');
     process.exit(r.ok ? 0 : 1);
   }
+  if (userArgs[0] === 'trash') {
+    // cl trash [restore <id> | empty [confirm]] — same two-step confirm as the
+    // in-session cl:trash (run `cl trash empty`, then `cl trash empty confirm`).
+    const r = core.requestTrash(process.env.CL_SESSION || '', userArgs.slice(1).join(' '));
+    process.stdout.write(r.message.replace(/cl:trash/g, 'cl trash') + '\n');
+    process.exit(r.ok ? 0 : 1);
+  }
   if (userArgs[0] === 'set-key') return cmdSetKey(userArgs.slice(1));
   if (userArgs[0] === 'doctor') return cmdDoctor();
 
@@ -1253,7 +1260,7 @@ async function main() {
       claimConv(convId);
       writeState({ account, switchCount, convId, pinnedEffort });
       process.stdout.write(res.moved.length
-        ? `\x1b[33m[cl] deleted this conversation → recoverable trash: ${res.trashDir}\x1b[0m\n\x1b[2m[cl] starting a fresh session…\x1b[0m\n`
+        ? `\x1b[33m[cl] deleted this conversation → recoverable trash: ${res.trashDir}\x1b[0m\n\x1b[2m[cl] list/restore/purge later with cl:trash — starting a fresh session…\x1b[0m\n`
         : `\x1b[33m[cl] (no transcript found to delete) — starting a fresh session…\x1b[0m\n`);
       await new Promise(r => setTimeout(r, 300));
       continue; // loop launches --session-id <new convId>
