@@ -183,7 +183,7 @@ function sweepStaleStates() {
   const DAY = 24 * 60 * 60 * 1000;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
-      if (!/^cl-(state|prefs|active|effort|flagretry|flagretry-payload|turn|convlock|rmpending|delpending|win)-.*\.json$/.test(f)) continue;
+      if (!/^cl-(state|prefs|active|effort|turn|convlock|rmpending|delpending|win)-.*\.json$/.test(f)) continue;
       const p = path.join(CACHE_DIR, f);
       // convlock files are cleaned by LIVENESS, not age: a still-running session
       // days old must keep its lock. Remove only if its owner pid is dead.
@@ -394,9 +394,6 @@ function preservedFlags(convId) {
 
 const switchTrigger    = path.join(CACHE_DIR, `cl-switch-${SESSION_ID}.trigger`);
 const restartTrigger   = path.join(CACHE_DIR, `cl-restart-${SESSION_ID}.trigger`);
-// Dropped by cl-flag-retry.js (Stop hook) when the model's safeguards flagged a
-// message and it prepared a rephrased retry: {text, model, uuid, at}.
-const flagRetryTrigger = path.join(CACHE_DIR, `cl-flagretry-${SESSION_ID}.trigger`);
 // Dropped by the cl:switch hook (or /switch) to open the interactive arrow-key
 // account picker. cl-runner kills claude, renders the picker on the freed TTY,
 // and relaunches on the chosen account — zero model tokens.
@@ -409,7 +406,7 @@ const addAcctTrigger   = path.join(CACHE_DIR, `cl-addacct-${SESSION_ID}.trigger`
 const deleteTrigger    = path.join(CACHE_DIR, `cl-delete-${SESSION_ID}.trigger`);
 
 function clearTriggers() {
-  for (const t of [switchTrigger, restartTrigger, flagRetryTrigger, pickTrigger, addAcctTrigger, deleteTrigger]) {
+  for (const t of [switchTrigger, restartTrigger, pickTrigger, addAcctTrigger, deleteTrigger]) {
     try { fs.unlinkSync(t); } catch {}
   }
 }
@@ -647,7 +644,7 @@ async function runAddWizard() {
 }
 
 // ---- one claude session ---------------------------------------------------
-// Resolves with { reason: 'switch'|'restart'|'flagretry'|'effort'|'pick'|'addaccount'|'delete'|'exit', exitCode, payload }.
+// Resolves with { reason: 'switch'|'restart'|'effort'|'pick'|'addaccount'|'delete'|'exit', exitCode, payload }.
 
 function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
   return new Promise(resolve => {
@@ -721,14 +718,6 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
         } catch {}
         clearTriggers(); killChild(child); finish('switch', undefined, { target });
       }
-      else if (fs.existsSync(flagRetryTrigger)) {
-        // Safeguard-flag auto-retry: relaunch on the original model and
-        // auto-submit the rephrased message. Read BEFORE clearTriggers.
-        let payload = null;
-        try { payload = JSON.parse(fs.readFileSync(flagRetryTrigger, 'utf8')); } catch {}
-        clearTriggers();
-        if (payload && payload.text) { killChild(child); finish('flagretry', undefined, payload); }
-      }
       // Picker resume (`cl --resume` with no id): once the statusline bridges the
       // real conversation id, check the effort that conversation remembers. A
       // plain resume drops it back to the default, so if it's re-appliable,
@@ -749,7 +738,7 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
     }, TRIGGER_POLL_MS);
 
     // Log the raw exit so a silent crash is never traceless. `done` is only true
-    // here if a switch/restart/flagretry trigger already fired — otherwise this
+    // here if a switch/restart trigger already fired — otherwise this
     // is a real claude exit (clean OR crash), captured with its code + signal.
     child.on('exit', (code, signal) => {
       if (!done) logLine(`claude exited code=${code} signal=${signal || '-'} account=${account}`);
@@ -965,7 +954,7 @@ function cmdDoctor() {
   try {
     const st = JSON.parse(fs.readFileSync(path.join(C.CLAUDE_DIR, 'settings.json'), 'utf8'));
     const has = (ev, frag) => JSON.stringify((st.hooks || {})[ev] || []).includes(frag);
-    lines.push(`hooks: notify=${has('Stop', 'cl-notify') ? '✓' : '✗'} flagRetry=${has('Stop', 'cl-flag-retry') ? '✓' : '✗'} wait=${has('Notification', 'cl-notify') ? '✓' : '✗'} fail=${has('StopFailure', 'cl-notify') ? '✓' : '✗'}`);
+    lines.push(`hooks: notify=${has('Stop', 'cl-notify') ? '✓' : '✗'} wait=${has('Notification', 'cl-notify') ? '✓' : '✗'} fail=${has('StopFailure', 'cl-notify') ? '✓' : '✗'}`);
     lines.push(`statusline: ${st.statusLine && JSON.stringify(st.statusLine).includes('usage-monitor') ? '✓' : '✗ not wired'}`);
   } catch { lines.push('settings.json: unreadable'); }
   process.stdout.write(lines.join('\n') + '\n');
@@ -1131,7 +1120,6 @@ async function main() {
   // adoption watch in runClaude / the 'effort' relaunch below).
   const explicitId = userManagesConv ? explicitConvId(passArgs) : null;
   let adoptFixDone = false; // at most ONE effort-restoring relaunch per cl process
-  let flagRetry = null;     // {text, model} — pending safeguard-flag auto-retry
 
   // DUPLICATE-LIVE-SESSION GUARD (fixes the confirmed "both sessions crash at
   // once" bug). Two cl processes resuming the SAME conversation both write its
@@ -1201,16 +1189,6 @@ async function main() {
       claudeArgs = canResume
         ? [...a, '--resume', convId, ...preservedFlags(convId), ...effFlag]
         : [...a, '--session-id', convId, ...effFlag];
-    }
-
-    // Safeguard-flag auto-retry: force the ORIGINAL model (the fallback latched
-    // the transcript's last model to the fallback, so preservedFlags would keep
-    // it) and auto-submit the rephrased message as the initial prompt.
-    if (flagRetry) {
-      const i = claudeArgs.indexOf('--model');
-      if (i !== -1) claudeArgs.splice(i, 2);
-      claudeArgs.push('--model', flagRetry.model || 'fable', flagRetry.text);
-      flagRetry = null;
     }
 
     writeState({ account, switchCount, convId, pinnedEffort });
@@ -1326,16 +1304,6 @@ async function main() {
       // The loop top re-opens THIS conversation via --resume convId (convStarted
       // is now true), so the same chat continues on the other account.
       process.stdout.write(`\x1b[36m[cl] switching to ${accountLabel(account)} — continuing conversation...\x1b[0m\n`);
-      await new Promise(r => setTimeout(r, 400));
-      continue;
-    }
-
-    if (reason === 'flagretry') {
-      // A safeguard flag dropped this conversation to the fallback model.
-      // Relaunch on the original model, auto-submitting the rephrased message.
-      flagRetry = payload;
-      writeState({ account, switchCount, convId, pinnedEffort });
-      process.stdout.write(`\x1b[35m[cl] safeguard flag — retrying rephrased message on ${payload.model || 'fable'}...\x1b[0m\n`);
       await new Promise(r => setTimeout(r, 400));
       continue;
     }

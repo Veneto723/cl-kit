@@ -32,7 +32,6 @@ One config file fits any setup:
 - **Manage accounts conversationally** — an MCP server exposes `account_add` / `remove` / `update` / `config_update` to any session.
 - **Desktop toasts** labeled with the session's `/rename` name, with colored state icons; **click a toast to focus that terminal window**.
 - **Usage statusline** — subscription 5h/7d %, reset times, pace ETA, blink warnings near the limit; gateway cost/tokens for api accounts.
-- **Safeguard-flag auto-retry** — when a benign message gets flagged and downgraded, cl rephrases and retries it on the original model.
 - **Safety rails** — refuses to open one conversation in two processes (a crash cause), warns before removing an account live sessions are using, logs every launch/exit, and backs up config before every change.
 
 ---
@@ -168,7 +167,7 @@ Everything lives in `~/.claude/cl-config.json` (created by `cl setup`):
   ],
   "switchOrder": ["max", "pool"],
   "thresholds": { "warnSessionPct": 85, "warnWeekPct": 90, "switchSessionPct": 92, "switchWeekPct": 95 },
-  "features": { "flagRetry": true, "rephraseAccount": "pool", "autoBest": true },
+  "features": { "autoBest": true },
   "poolDb": { "neonUrl": "postgresql://..." }   // optional — enables pool metrics
 }
 ```
@@ -220,7 +219,7 @@ models, not GPT ones.
 **Removing an account — `cl:remove-account <id>`** (alias **`cl:delete-account`**,
 double-confirmed): step 1 shows exactly what will happen and arms a 2-minute
 confirmation; step 2 (`… <id> confirm`) actually removes it. It backs up
-`cl-config.json` first, auto-fixes references (switch order / default / rephrase),
+`cl-config.json` first, auto-fixes references (switch order / default),
 and **never deletes the captured login file** — so removal is recoverable by
 restoring the backup. Refuses to remove the last account. If **live sessions are
 using the account**, step 1 warns you (in red) — removal never kills a session, but
@@ -349,7 +348,7 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
 
 ```
 src/            wrapper + hooks (cl-runner, cl-config, cl-signal, cl-switch-*,
-                cl-notify, cl-flag-retry, cl-help, cl-focus.*, usage-monitor,
+                cl-notify, cl-help, cl-focus.*, usage-monitor,
                 gw-usage, cl-sync, cl-setup)
 mcp/            cl MCP server (account management + pool metrics tools)
 pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)

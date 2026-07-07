@@ -117,7 +117,6 @@ $node = 'node'
 Ensure-Hook $settings 'UserPromptSubmit' "$node `"$($scripts -replace '\\','/')/cl-switch-hook.js`""
 Ensure-Hook $settings 'UserPromptSubmit' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" start"
 Ensure-Hook $settings 'Stop' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" done"
-Ensure-Hook $settings 'Stop' "$node `"$($scripts -replace '\\','/')/cl-flag-retry.js`""
 Ensure-Hook $settings 'StopFailure' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" fail"
 Ensure-Hook $settings 'Notification' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" wait"
 if (-not $settings.statusLine) {

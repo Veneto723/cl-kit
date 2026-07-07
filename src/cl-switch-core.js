@@ -545,7 +545,6 @@ function removeAccountFromConfig(C, id) {
   const fixes = [];
   if (Array.isArray(raw.switchOrder)) raw.switchOrder = raw.switchOrder.filter((x) => x !== id);
   if (raw.defaultAccount === id) { raw.defaultAccount = raw.accounts[0].id; fixes.push(`default → ${raw.defaultAccount}`); }
-  if (raw.features && raw.features.rephraseAccount === id) { raw.features.rephraseAccount = null; fixes.push('rephrase cleared'); }
   fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2));
   try { C.loadConfig(); }
   catch (e) { fs.copyFileSync(bak, C.CONFIG_PATH); throw new Error(`config rejected (${e.message}) — restored`); }
@@ -597,7 +596,7 @@ function requestRemoveAccount(session, argStr) {
         liveWarn +
         `REMOVE account "${acc.id}"${acc.label && acc.label !== acc.id.toUpperCase() ? ` (${acc.label})` : ''}` +
         ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + '\n' +
-        `  • cl-config.json is backed up first; references (switch order / default / rephrase) are auto-fixed\n` +
+        `  • cl-config.json is backed up first; references (switch order / default) are auto-fixed\n` +
         `  • its captured login file is KEPT (never deleted) so removal is recoverable\n` +
         `  CONFIRM within 2 min:  cl:remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
     };

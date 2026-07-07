@@ -179,10 +179,6 @@ function toolAccountRemove(args) {
     raw.defaultAccount = accounts[0].id;
     fixes.push(`defaultAccount reassigned to "${raw.defaultAccount}"`);
   }
-  if (raw.features && raw.features.rephraseAccount === args.id) {
-    raw.features.rephraseAccount = null;
-    fixes.push('features.rephraseAccount cleared');
-  }
   const backup = writeRaw(raw);
 
   const out = {
@@ -243,9 +239,6 @@ function toolConfigUpdate(args) {
   }
   if (args.thresholds != null) { raw.thresholds = { ...(raw.thresholds || {}), ...args.thresholds }; changed.push('thresholds'); }
   if (args.features != null) {
-    if (args.features.rephraseAccount != null && args.features.rephraseAccount !== '' && !ids.has(args.features.rephraseAccount)) {
-      throw new Error(`features.rephraseAccount "${args.features.rephraseAccount}" is not a configured account`);
-    }
     raw.features = { ...(raw.features || {}), ...args.features }; changed.push('features');
   }
   if ('poolDb' in args) {
@@ -407,7 +400,7 @@ const TOOLS = [
   },
   {
     name: 'account_remove',
-    description: 'Remove an account from the cl switcher. Refuses to remove the last account. Automatically fixes references (switchOrder, defaultAccount, features.rephraseAccount). Never deletes captured credential files. A timestamped config backup is written first.',
+    description: 'Remove an account from the cl switcher. Refuses to remove the last account. Automatically fixes references (switchOrder, defaultAccount). Never deletes captured credential files. A timestamped config backup is written first.',
     inputSchema: {
       type: 'object', required: ['id'],
       properties: { id: { type: 'string', description: 'account id to remove' } },
@@ -432,7 +425,7 @@ const TOOLS = [
   },
   {
     name: 'config_update',
-    description: 'Update cl switcher globals: defaultAccount (launch account), switchOrder (the /switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (flagRetry on/off, rephraseAccount), poolDb ({neonUrl} to set, null to remove pool metrics).',
+    description: 'Update cl switcher globals: defaultAccount (launch account), switchOrder (the /switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
     inputSchema: {
       type: 'object',
       properties: {

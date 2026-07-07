@@ -125,10 +125,7 @@ async function main() {
     accounts,
     switchOrder: accounts.map((a) => a.id),
     thresholds: { warnSessionPct: 85, warnWeekPct: 90, switchSessionPct: 92, switchWeekPct: 95 },
-    features: {
-      flagRetry: true,
-      rephraseAccount: accounts.find((a) => a.type === 'api') ? accounts.find((a) => a.type === 'api').id : null,
-    },
+    features: {},
     ...(poolDb ? { poolDb } : {}),
   };
 

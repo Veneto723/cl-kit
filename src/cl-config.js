@@ -70,7 +70,7 @@ function legacyConfig() {
     defaultAccount: 'max',
     accounts,
     thresholds: (pc && pc.thresholds) || {},
-    features: { flagRetry: true, rephraseAccount: accounts.length > 1 ? 'pool' : null },
+    features: {},
     poolDb: pc && pc.neonUrl ? { neonUrl: pc.neonUrl } : null,
     _legacy: true,
   };
@@ -91,7 +91,7 @@ function normalize(cfg) {
   const ids = new Set(out.accounts.map((a) => a.id));
   out.defaultAccount = ids.has(cfg.defaultAccount) ? cfg.defaultAccount : out.accounts[0].id;
   out.thresholds = { ...DEFAULT_THRESHOLDS, ...(cfg.thresholds || {}) };
-  out.features = { flagRetry: true, rephraseAccount: null, ...(cfg.features || {}) };
+  out.features = { ...(cfg.features || {}) };
   out.poolDb = cfg.poolDb && cfg.poolDb.neonUrl ? cfg.poolDb : null;
   out.switchOrder = (Array.isArray(cfg.switchOrder) ? cfg.switchOrder : out.accounts.map((a) => a.id))
     .filter((id) => ids.has(id));
