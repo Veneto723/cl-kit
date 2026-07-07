@@ -21,7 +21,9 @@ Switch account (keeps your conversation, preserves model/effort/mode):
 
 Add / manage accounts:
   cl:add-account                   open the WIZARD — pick Subscription or Gateway, then guided prompts
-  cl:add-account <id>              add a SUBSCRIPTION via guided browser login (in-session)
+  cl:add-account <id>              add a SUBSCRIPTION via guided browser login (in-session);
+                                   the login is saved to the account's OWN private profile
+                                   (~/.claude/cl-profiles/<id>) — accounts never share a login
   cl:add-account <id> --api --url <gateway> [--label L --color #hex --default]
                                    add a GATEWAY/POOL (like mate): verifies it, auto-detects
                                    models, DPAPI-encrypts the key (from clipboard, or --file/--key)
@@ -58,7 +60,8 @@ Why two forms?
 In your terminal (not inside a session):
   cl                     launch
   cl --account <id>      launch on a specific account
-  cl add-account <id>    guided browser login to add a subscription
+  cl add-account <id>    guided browser login to add a subscription (own profile)
+  cl capture <id>        adopt the current active login into <id>'s profile
   cl trash [restore <id>|empty]   manage the deleted-conversation trash
   cl doctor              health check    ·    cl setup    reconfigure
 

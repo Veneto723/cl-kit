@@ -138,7 +138,7 @@ native `/` menu but cost one small model turn. `/cl` documents both.
 | `cl add-account <id> --api --url <gw>` | add a gateway/pool account (same as the `cl:` form) |
 | `cl set-key <id>` | set/rotate an api account's key, DPAPI-encrypted (from clipboard / `--file` / `--stdin`) |
 | `cl peek` | usage readout of all accounts (same as `cl:peek`) |
-| `cl capture <id>` | save the currently-active login into an account |
+| `cl capture <id>` | adopt the currently-active login into an account's profile |
 | `cl setup` | (re)configure accounts |
 | `cl doctor` | print resolved config + health checks |
 
@@ -176,10 +176,13 @@ Everything lives in `~/.claude/cl-config.json` (created by `cl setup`):
 ```
 
 **Account types:**
-- **`oauth`** — a claude.ai subscription. To run *two* subscriptions, each needs a
-  captured credential file; cl swaps `~/.claude/.credentials.json` on switch so
-  sessions and transcripts stay unified. Use `cl add-account` (guided) or
-  `cl capture`.
+- **`oauth`** — a claude.ai subscription. Each account keeps its login in its **own
+  private profile** (`~/.claude/cl-profiles/<id>/`, pointed at via `CLAUDE_CONFIG_DIR`),
+  so two subscriptions **never share one `.credentials.json`** — concurrent sessions
+  on different accounts can't hijack each other's login. Conversations, skills, and
+  commands are junctioned back to `~/.claude`, so switching account keeps your chat.
+  Use `cl add-account` (guided; logs in straight into the new profile) or, to adopt
+  the currently-active login into an account, `cl capture <id>`.
 - **`api`** — any gateway. Needs `baseUrl` + one key source: `apiKey` inline,
   `apiKeyEnv` env var, `apiKeyFrom` file+regex, or **`apiKeyEnc`** (DPAPI-encrypted
   in the config — no plaintext on disk; set with `cl set-key <id>`). `modelMap`
@@ -192,11 +195,10 @@ screen to pick **Subscription** vs **Gateway/pool**, then walks you through the 
 to the two flows below, so you never need to remember the flags.
 
 **Adding a subscription — `cl add-account <id>`** (terminal) **or `cl:add-account <id>`**
-(in-session): snapshots your current login, runs `claude auth login` (browser
-OAuth), verifies you signed into a *different* account (aborts + restores if not),
-captures the credential, and registers the account. If your existing account had
-no captured credential yet, it captures that too so switching is reliable. Your
-pre-add login is restored, so the session you're on is undisturbed. Flags:
+(in-session): runs `claude auth login` (browser OAuth) with `CLAUDE_CONFIG_DIR`
+pointed at the new account's **own profile**, so the login is written privately
+there and **no other account is read, written, or disturbed**, then registers the
+account. Flags:
 `--label`, `--email` (prefill), `--color`, `--console` (API billing), `--default`.
 The `cl:` form runs it right inside a session (the wrapper takes over the terminal
 for the login, then relaunches your conversation).

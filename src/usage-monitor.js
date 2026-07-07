@@ -73,7 +73,17 @@ function switchTargetLabel(fromId) {
 }
 
 function getToken() {
-  const creds = JSON.parse(fs.readFileSync(C.CRED_PATH, 'utf8'));
+  // Each account's login now lives in its own profile dir (~/.claude/cl-profiles/
+  // <id>/.credentials.json), not the shared file. Read the token of the oauth
+  // account whose usage this endpoint reports: the active account if it's oauth,
+  // otherwise the primary oauth account (shown as the secondary "frees up" segment
+  // while an api account is active). Fall back to the shared file pre-migration /
+  // under plain `claude`.
+  const a = activeAccount();
+  const oa = (a && a.type === 'oauth') ? a : oauthPrimary();
+  let file = oa ? require('./cl-profile').credsPath(oa.id) : C.CRED_PATH;
+  if (!fs.existsSync(file)) file = C.CRED_PATH;
+  const creds = JSON.parse(fs.readFileSync(file, 'utf8'));
   return creds.claudeAiOauth.accessToken;
 }
 

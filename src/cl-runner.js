@@ -212,30 +212,36 @@ function accountLabel(id) {
   return a ? a.label : id;
 }
 
-// For oauth accounts with a captured credentials file: make that login the
-// active one before launching. Never deletes anything — the current login is
-// backed up to cache first (kept recoverable).
-function applyCredentials(acc) {
-  if (!acc || acc.type !== 'oauth' || !acc.credentials) return;
-  let next = null;
-  try { next = fs.readFileSync(acc.credentials, 'utf8'); }
-  catch {
-    process.stdout.write(`\x1b[33m[cl] account "${acc.id}": credentials file missing (${acc.credentials}) — run \`cl capture ${acc.id}\` while logged in as it. Using current login.\x1b[0m\n`);
-    return;
-  }
-  let cur = null;
-  try { cur = fs.readFileSync(C.CRED_PATH, 'utf8'); } catch {}
-  if (cur === next) return; // already the active login
+// --- credentials: per-account CLAUDE_CONFIG_DIR profile (see cl-profile.js) ----
+// The old model swapped one global ~/.claude/.credentials.json between accounts,
+// which let concurrent sessions on different accounts hijack/corrupt each other's
+// login. That system is gone: each account now has its OWN config dir (its own
+// private .credentials.json + .claude.json), pointed at via CLAUDE_CONFIG_DIR.
+// Nothing is shared or swapped, so there is nothing to race on.
+const P = require('./cl-profile');
+
+// One-time migration: give existing accounts a login in their new profile so
+// nobody has to re-authenticate. Runs once (guarded by a marker), safe & idempotent
+// (seedCreds only ever fills an EMPTY profile). For each oauth account: prefer its
+// old captured `credentials` file; otherwise adopt the live ~/.claude/.credentials.json
+// for the account that owns it (matched by email via `claude auth status`, else the
+// default/only oauth account). Never overwrites a profile that already has a login.
+function migrateProfilesOnce() {
+  const marker = path.join(P.PROFILES_DIR, '.migrated');
+  try { if (fs.existsSync(marker)) return; } catch {}
   try {
-    if (cur != null) {
-      fs.mkdirSync(CACHE_DIR, { recursive: true });
-      fs.writeFileSync(path.join(CACHE_DIR, `cl-cred-backup-${Date.now()}.json`), cur);
-    }
-    fs.writeFileSync(C.CRED_PATH, next);
-    process.stdout.write(`\x1b[2m[cl] activated claude.ai login for "${acc.id}"\x1b[0m\n`);
-  } catch (e) {
-    process.stdout.write(`\x1b[33m[cl] credential swap failed (${e.message}) — using current login.\x1b[0m\n`);
-  }
+    const oauth = cfg.accounts.filter((a) => a.type === 'oauth');
+    // 1. captured-file logins → their profile.
+    for (const a of oauth) if (a.credentials) P.seedCreds(a.id, a.credentials);
+    // 2. the live shared login → the account that owns it (or the default oauth).
+    let liveOwner = null;
+    const st = authStatus(); // identity currently in ~/.claude/.credentials.json
+    if (st && st.email) liveOwner = oauth.find((a) => a.email && a.email.toLowerCase() === st.email.toLowerCase());
+    if (!liveOwner) liveOwner = oauth.find((a) => a.id === cfg.defaultAccount) || (oauth.length === 1 ? oauth[0] : null);
+    if (liveOwner) P.seedCreds(liveOwner.id, C.CRED_PATH);
+    fs.mkdirSync(P.PROFILES_DIR, { recursive: true });
+    fs.writeFileSync(marker, new Date().toISOString());
+  } catch {}
 }
 
 // Env for the claude child under `accountId`; throws if an api key is missing.
@@ -243,6 +249,11 @@ function buildEnv(accountId) {
   const acc = C.findAccount(cfg, accountId);
   const env = C.accountEnv(acc, process.env);
   env.CL_SESSION = SESSION_ID;
+  // Point Claude Code at THIS account's isolated config dir (its own credentials +
+  // .claude.json), while the "brain" (projects/commands/skills/…) is junctioned
+  // back to the real ~/.claude so conversations stay shared across accounts. This
+  // is what makes concurrent sessions on different accounts safe.
+  env.CLAUDE_CONFIG_DIR = P.ensureProfile(accountId);
   // Never leak the respawn marker into claude (and its subshells); otherwise a
   // nested `cl` would think it's a /restart and reuse this SESSION_ID.
   delete env.CL_RESPAWNED;
@@ -761,6 +772,10 @@ function killChild(child) {
 
 // ---- subcommands ------------------------------------------------------------
 
+// Adopt the CURRENT active login (~/.claude/.credentials.json) into an account's
+// own profile dir — a manual migration/repair tool for the profile model. (Fresh
+// accounts are normally established by logging in directly into the profile via
+// `cl add-account` / cl:switch → /login.)
 function cmdCapture(id) {
   const acc = C.findAccount(cfg, id);
   if (!acc || acc.type !== 'oauth') {
@@ -770,27 +785,21 @@ function cmdCapture(id) {
   let cur;
   try { cur = fs.readFileSync(C.CRED_PATH, 'utf8'); }
   catch { process.stderr.write('[cl] capture: no active claude.ai login found (.credentials.json missing).\n'); process.exit(1); }
-  let dest = acc.credentials;
-  if (!dest) {
-    dest = path.join(C.CLAUDE_DIR, 'cl-credentials', `${acc.id}.json`);
-    // Persist the default path into the config so switches know where to look.
-    try {
-      const raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8'));
-      const a = (raw.accounts || []).find((x) => x.id === acc.id);
-      if (a) { a.credentials = dest; fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2)); }
-    } catch {}
-  }
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, cur);
-  process.stdout.write(`[cl] captured the CURRENT claude.ai login as account "${acc.id}" → ${dest}\n`);
-  process.stdout.write(`[cl] tip: to add ANOTHER subscription end-to-end, use \`cl add-account <id>\` (it drives the login for you).\n`);
+  try { if (!JSON.parse(cur).claudeAiOauth.accessToken) throw 0; }
+  catch { process.stderr.write('[cl] capture: the active login is not a claude.ai OAuth login.\n'); process.exit(1); }
+  const dir = P.ensureProfile(acc.id);
+  fs.writeFileSync(P.credsPath(acc.id), cur);
+  process.stdout.write(`[cl] adopted the CURRENT claude.ai login into account "${acc.id}"'s profile → ${dir}\n`);
+  process.stdout.write(`[cl] tip: to add ANOTHER subscription end-to-end, use \`cl add-account <id>\` (it drives the login into its own profile).\n`);
   process.exit(0);
 }
 
-// The identity of the login currently in ~/.claude/.credentials.json.
-function authStatus() {
+// The identity of a claude.ai login. With no arg: the shared ~/.claude login.
+// With a profile dir: the login inside that account's CLAUDE_CONFIG_DIR profile.
+function authStatus(configDir) {
   try {
-    const r = spawnSync(CLAUDE_BIN, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 20_000, windowsHide: true });
+    const env = configDir ? { ...process.env, CLAUDE_CONFIG_DIR: configDir } : process.env;
+    const r = spawnSync(CLAUDE_BIN, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 20_000, windowsHide: true, env });
     const j = JSON.parse((r.stdout || '').trim());
     return j && j.loggedIn ? j : null;
   } catch { return null; }
@@ -831,83 +840,41 @@ function doAddAccount(argv) {
   }
   if (C.findAccount(reloadCfg(), id)) { process.stderr.write(`[cl] account "${id}" already exists (see \`cl doctor\`).\n`); return { code: 1 }; }
 
-  // 1. Snapshot the CURRENT login so we can (a) detect a real account change and
-  //    (b) restore it afterward — adding an account must not disturb the session
-  //    you're currently on.
-  const before = authStatus();
-  let backup = null;
-  try { backup = fs.readFileSync(C.CRED_PATH, 'utf8'); } catch {}
-
+  // Log in DIRECTLY into this account's OWN profile dir (CLAUDE_CONFIG_DIR). The
+  // login is written to the profile's private .credentials.json — no other
+  // account's login is read, written, or restored. Nothing shared to disturb.
+  const profile = P.ensureProfile(id);
   process.stdout.write(
     `\x1b[36m[cl] Adding account "${id}".\x1b[0m\n` +
-    `\x1b[2m    A Claude sign-in will open in your browser. Log in as the account you want to ADD\n` +
-    `    (a DIFFERENT one${before ? ` than the current ${before.email}` : ''}). This returns automatically when done.\x1b[0m\n\n`);
+    `\x1b[2m    A Claude sign-in will open in your browser. Log in as the account you want to ADD.\n` +
+    `    The login is saved privately to this account's profile — every other account stays untouched.\x1b[0m\n\n`);
 
-  // 2. Drive the native login (interactive: browser + terminal).
   const loginArgs = ['auth', 'login', has('--console') ? '--console' : '--claudeai'];
   const email = opt('--email'); if (email) loginArgs.push('--email', email);
-  const r = spawnSync(CLAUDE_BIN, loginArgs, { stdio: 'inherit', windowsHide: true });
+  const r = spawnSync(CLAUDE_BIN, loginArgs, { stdio: 'inherit', windowsHide: true, env: { ...process.env, CLAUDE_CONFIG_DIR: profile } });
 
-  // 3. Verify a DIFFERENT account is now active.
-  const after = authStatus();
-  const restore = () => { if (backup != null) { try { fs.writeFileSync(C.CRED_PATH, backup); } catch {} } };
-  if (r.status !== 0 || !after) {
-    restore();
-    process.stderr.write(`\x1b[31m[cl] login did not complete — no account added. (your previous login is unchanged)\x1b[0m\n`);
+  // Verify the login actually landed in this profile.
+  if (r.status !== 0 || !P.hasCreds(id)) {
+    process.stderr.write(`\x1b[31m[cl] login did not complete — no account added. (no other account was touched)\x1b[0m\n`);
     return { code: 1 };
   }
-  if (before && after.email && before.email === after.email) {
-    restore();
-    process.stderr.write(`\x1b[33m[cl] you logged in as the SAME account (${after.email}) — nothing to add. Log in as a DIFFERENT subscription. (previous login restored)\x1b[0m\n`);
-    return { code: 1 };
-  }
+  const who = authStatus(profile); // identity now inside this profile
 
-  // 4. Capture the new account's credential.
-  const credDir = path.join(C.CLAUDE_DIR, 'cl-credentials');
-  fs.mkdirSync(credDir, { recursive: true });
-  const credPath = path.join(credDir, `${id}.json`);
-  try { fs.writeFileSync(credPath, fs.readFileSync(C.CRED_PATH, 'utf8')); }
-  catch (e) { restore(); process.stderr.write(`\x1b[31m[cl] failed to capture credential: ${e.message}\x1b[0m\n`); return { code: 1 }; }
-
-  // 5. Register the account.
   const acc = {
     id,
-    label: opt('--label') || (after.email ? after.email.split('@')[0].slice(0, 12) : id).toUpperCase(),
+    label: opt('--label') || ((who && who.email) ? who.email.split('@')[0].slice(0, 12) : id).toUpperCase(),
     color: opt('--color') || '#D97757',
     type: 'oauth',
-    email: after.email || null,
-    subscriptionType: after.subscriptionType || null,
-    credentials: credPath,
+    email: (who && who.email) || null,
+    subscriptionType: (who && who.subscriptionType) || null,
   };
   let cfgBak;
   try { cfgBak = addAccountToConfig(acc, has('--default')); }
-  catch (e) { restore(); process.stderr.write(`\x1b[31m[cl] ${e.message}\x1b[0m\n`); return { code: 1 }; }
-
-  // 6. If a PRE-EXISTING oauth account still "uses the active login" (no captured
-  //    credential), the login we just did would break its switching (a no-op swap
-  //    would leave the new account's creds in place). Capture the pre-login active
-  //    account into it so BOTH are reliably switchable.
-  reloadCfg();
-  const orphan = cfg.accounts.find((a) => a.type === 'oauth' && a.id !== id && !a.credentials);
-  let orphanNote = '';
-  if (orphan && backup != null && before) {
-    try {
-      const op = path.join(credDir, `${orphan.id}.json`);
-      fs.writeFileSync(op, backup);
-      const raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8'));
-      const a = raw.accounts.find((x) => x.id === orphan.id);
-      if (a) { a.credentials = op; if (!a.email) a.email = before.email; fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2)); }
-      orphanNote = `\n[cl] also captured your existing "${orphan.id}" (${before.email}) so switching between the two is reliable.`;
-    } catch {}
-  }
-
-  // 7. Restore the pre-login active credential so the current session is undisturbed.
-  restore();
+  catch (e) { process.stderr.write(`\x1b[31m[cl] ${e.message}\x1b[0m\n`); return { code: 1 }; }
   reloadCfg(); // the new account is now switchable
 
   process.stdout.write(
     `\n\x1b[32m[cl] ✓ added account "${id}"${acc.email ? ` (${acc.email}, ${acc.subscriptionType || 'subscription'})` : ''}.\x1b[0m` +
-    orphanNote +
     `\n[cl] use it:  cl:switch ${id}  (or /switch ${id})\n` +
     `[cl] config backed up at ${cfgBak}\n`);
   return { code: 0 };
@@ -937,9 +904,9 @@ function cmdDoctor() {
       try { C.resolveApiKey(a); detail = a.baseUrl; }
       catch (e) { status = '✗'; detail = e.message; }
     } else {
-      if (a.credentials) detail = fs.existsSync(a.credentials) ? `credentials captured` : `credentials NOT captured (run \`cl capture ${a.id}\`)`;
-      else detail = 'uses active login';
-      if (a.credentials && !fs.existsSync(a.credentials)) status = '⚠';
+      // oauth: the login lives in the account's own CLAUDE_CONFIG_DIR profile.
+      if (P.hasCreds(a.id)) detail = 'signed in · own profile';
+      else { status = '⚠'; detail = `NO login yet — cl:switch ${a.id} then /login (or cl capture ${a.id})`; }
     }
     lines.push(`  [${a.type}] ${a.id} "${a.label}" ${status} ${detail}`);
   }
@@ -1055,7 +1022,7 @@ async function main() {
   if (userArgs[0] === 'doctor') return cmdDoctor();
 
   let respawning = process.env.CL_RESPAWNED === '1';
-  if (!respawning) sweepStaleStates(); // only the original launch; not re-execs
+  if (!respawning) { sweepStaleStates(); migrateProfilesOnce(); } // only the original launch; not re-execs
   // Snapshot the terminal window now, while it is still foreground (before claude
   // takes over the TTY), so a clicked toast can focus it later. Once per process.
   captureLaunchWinPid();
@@ -1202,7 +1169,8 @@ async function main() {
     // Seed the sticky baseline with what we ACTUALLY applied, so the statusline
     // never claims an effort the session isn't really at.
     if (effConv) seedEffort(effConv, applied);
-    applyCredentials(C.findAccount(cfg, account)); // multi-subscription swap (no-op otherwise)
+    // Credentials are isolated per account via CLAUDE_CONFIG_DIR (set in buildEnv →
+    // P.ensureProfile); there is no shared login to swap.
     process.stdout.write(`\x1b[2m[cl] starting on ${accountLabel(account)}...\x1b[0m\n`);
 
     // Watch for conversation adoption only on a picker resume (no id known
