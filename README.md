@@ -107,10 +107,12 @@ icons and registers the `cl-focus:` protocol; `install.sh` skips those Windows-o
 extras.
 
 **Gateway keys off Windows:** the DPAPI-encrypted `apiKeyEnc` is Windows-only. On
-Linux/macOS, `cl set-key` / the add-account wizard store the key in a `0600` file
-under `~/.claude/cl-keys/` (referenced via `apiKeyFrom`) — file-permission
-protection rather than OS encryption (keychain-backed storage is planned). You can
-also always use `apiKeyEnv` (an env var) or `apiKeyFrom` (file + regex) directly.
+Linux/macOS, `cl set-key` / the add-account wizard store the key in the **OS keychain**
+(macOS Keychain / Linux libsecret, referenced by `apiKeyKeychain`) when a secret
+service is available — verified by a store-and-read-back round-trip. If none is
+available (headless box, locked keychain), it falls back to a `0600` file under
+`~/.claude/cl-keys/` (via `apiKeyFrom`). You can also always use `apiKeyEnv` (an env
+var) or `apiKeyFrom` (file + regex) directly.
 
 To update later: `git pull`, re-run the installer, and `/restart` any live sessions.
 
@@ -397,7 +399,8 @@ install.ps1     Windows installer · install.sh  Linux/macOS installer (idempote
 - **Cross-platform core; Windows-only extras.** Windows, macOS, and Linux all run
   the switcher, credential isolation, usage, and trash (CI-verified). Desktop toasts,
   click-to-focus, and DPAPI key encryption are Windows-only and degrade cleanly
-  elsewhere (toasts no-op; keys use a `0600` file or `apiKeyEnv`/`apiKeyFrom`).
+  elsewhere (toasts no-op; keys use the OS keychain, a `0600` file, or
+  `apiKeyEnv`/`apiKeyFrom`).
 - All caches/state live under `~/.claude/cache/cl-*`; stale files are swept
   automatically (state daily, effort memories after 7 days, conversation locks by
   process liveness).

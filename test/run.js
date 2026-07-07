@@ -190,11 +190,22 @@ try {
   ok('key field is platform-appropriate',
     process.platform === 'win32' ? !!stored.fields.apiKeyEnc : !!(stored.fields.apiKeyFrom && stored.fields.apiKeyFrom.file));
   const acc = { id: 'gwtest', type: 'api', baseUrl: 'https://x', ...stored.fields };
-  ok('resolveApiKey round-trips the stored key', C.resolveApiKey(acc) === 'sk-portable-42');
-  if (process.platform !== 'win32') {
+  ok('resolveApiKey round-trips the stored key (keychain or file, whichever backed it)', C.resolveApiKey(acc) === 'sk-portable-42');
+  if (process.platform !== 'win32' && stored.fields.apiKeyFrom) {
     const st = fs.statSync(stored.fields.apiKeyFrom.file);
-    ok('POSIX key file is mode 0600', (st.mode & 0o777) === 0o600);
+    ok('POSIX file fallback is mode 0600', (st.mode & 0o777) === 0o600);
   }
+
+  // keychain helpers must be callable and type-safe on every OS (they no-op on
+  // Windows and degrade to false/null when there's no secret service). Probe with
+  // cleanup so a dev's real keychain is never left polluted.
+  const probeId = 'cltest-keychain-probe';
+  const kStored = plat.keychainStore(probeId, 'sk-kc-probe');
+  ok('keychainStore returns a boolean', typeof kStored === 'boolean');
+  const kGot = plat.keychainGet(probeId);
+  ok('keychainGet returns string or null', kGot === null || typeof kGot === 'string');
+  if (kStored) ok('keychain round-trips when it reports success', kGot === 'sk-kc-probe');
+  ok('keychainDelete returns a boolean', typeof plat.keychainDelete(probeId) === 'boolean');
 } catch (e) { ok('cl-platform + storeApiKey work', false, e.message); }
 
 // ---- 8. cl-wire-settings — installer settings merge (idempotent) -------------

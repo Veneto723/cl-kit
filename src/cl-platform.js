@@ -32,4 +32,61 @@ function clipboardHint() {
   return 'the clipboard may be empty — or pass --file <path> / --stdin';
 }
 
-module.exports = { readClipboard, clipboardHint };
+// ---- OS keychain (macOS Keychain / Linux libsecret) -------------------------
+// Store/read an api key in the OS secret store so it's not a plaintext file.
+// keychainStore returns true on success; keychainGet returns the secret or null.
+// Both DEGRADE to false/null (never throw) when the tool or a secret service
+// isn't available, so callers can fall back to the 0600 file. Windows uses DPAPI
+// elsewhere, so these are POSIX-only.
+const KEYCHAIN_SERVICE = 'cl-kit';
+
+function keychainStore(id, key) {
+  try {
+    if (process.platform === 'darwin') {
+      // -U updates an existing item. (macOS has no stdin path for the value, so it
+      // rides argv — briefly visible to `ps`; acceptable vs a plaintext file.)
+      execFileSync('security', ['add-generic-password', '-U', '-s', KEYCHAIN_SERVICE, '-a', String(id), '-w', key],
+        { stdio: 'ignore', timeout: 15000 });
+      return true;
+    }
+    if (process.platform === 'linux') {
+      // secret-tool reads the secret from stdin — never on the command line.
+      execFileSync('secret-tool', ['store', '--label', `cl-kit ${id}`, 'service', KEYCHAIN_SERVICE, 'account', String(id)],
+        { input: key, stdio: ['pipe', 'ignore', 'ignore'], timeout: 15000 });
+      return true;
+    }
+  } catch { /* no tool / no secret service / locked keychain */ }
+  return false;
+}
+
+function keychainGet(id) {
+  try {
+    if (process.platform === 'darwin') {
+      const out = execFileSync('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', String(id), '-w'],
+        { encoding: 'utf8', timeout: 15000 });
+      return out.replace(/\r?\n$/, '');
+    }
+    if (process.platform === 'linux') {
+      const out = execFileSync('secret-tool', ['lookup', 'service', KEYCHAIN_SERVICE, 'account', String(id)],
+        { encoding: 'utf8', timeout: 15000 });
+      return out; // secret-tool lookup emits the secret with no trailing newline
+    }
+  } catch { /* not found / unavailable */ }
+  return null;
+}
+
+function keychainDelete(id) {
+  try {
+    if (process.platform === 'darwin') {
+      execFileSync('security', ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', String(id)], { stdio: 'ignore', timeout: 15000 });
+      return true;
+    }
+    if (process.platform === 'linux') {
+      execFileSync('secret-tool', ['clear', 'service', KEYCHAIN_SERVICE, 'account', String(id)], { stdio: 'ignore', timeout: 15000 });
+      return true;
+    }
+  } catch { /* not present / unavailable */ }
+  return false;
+}
+
+module.exports = { readClipboard, clipboardHint, keychainStore, keychainGet, keychainDelete };

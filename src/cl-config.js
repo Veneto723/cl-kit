@@ -134,8 +134,8 @@ function dpapiDecrypt(b64) {
   return out.replace(/\r?\n$/, ''); // strip only PowerShell's trailing newline
 }
 
-// The API key for an `api` account. Order: inline > env var > DPAPI blob > file.
-// Throws with a clear message if unresolvable — callers surface it.
+// The API key for an `api` account. Order: inline > env var > DPAPI blob (win) >
+// OS keychain > file. Throws with a clear message if unresolvable — callers surface it.
 function resolveApiKey(acc) {
   if (acc.apiKey) return acc.apiKey;
   if (acc.apiKeyEnv && process.env[acc.apiKeyEnv]) return process.env[acc.apiKeyEnv];
@@ -149,6 +149,11 @@ function resolveApiKey(acc) {
     if (k) return k;
     throw new Error(`account "${acc.id}": apiKeyEnc decrypted to empty — re-run \`cl set-key ${acc.id}\`.`);
   }
+  if (acc.apiKeyKeychain) {
+    const k = require('./cl-platform').keychainGet(acc.id);
+    if (k) return k;
+    throw new Error(`account "${acc.id}": OS keychain entry missing/locked — unlock it, or re-run \`cl set-key ${acc.id}\`.`);
+  }
   if (acc.apiKeyFrom && acc.apiKeyFrom.file) {
     const file = expandHome(acc.apiKeyFrom.file);
     const text = fs.readFileSync(file, 'utf8'); // throws if missing
@@ -156,7 +161,7 @@ function resolveApiKey(acc) {
     if (m && m[1]) return m[1];
     throw new Error(`apiKeyFrom regex matched nothing in ${file}`);
   }
-  throw new Error(`account "${acc.id}": no apiKey / apiKeyEnv / apiKeyFrom configured`);
+  throw new Error(`account "${acc.id}": no apiKey / apiKeyEnv / apiKeyKeychain / apiKeyFrom configured`);
 }
 
 // The claude executable. Config override > ~/.local/bin/claude[.exe] > PATH.
@@ -170,14 +175,21 @@ function claudeBin(cfg) {
 
 // Store an api account's key AT REST and return the config field(s) to persist
 // (plus a short human note). Windows: DPAPI blob in the config (apiKeyEnc), bound
-// to this user+machine. POSIX: a 0600 file under ~/.claude/cl-keys/ referenced via
-// apiKeyFrom — file-permission protection (not OS encryption; keychain-backed
-// storage is a planned enhancement). Callers delete the other key sources.
+// to this user+machine. POSIX: prefer the OS keychain (macOS Keychain / Linux
+// libsecret, referenced by apiKeyKeychain) when it actually works — verified by a
+// store+read-back round-trip — else fall back to a 0600 file under ~/.claude/cl-keys/
+// (file-permission protection, not encryption). Callers delete the other key sources.
 function storeApiKey(id, key) {
   if (process.platform === 'win32') {
     const enc = dpapiEncrypt(key);
     if (dpapiDecrypt(enc) !== key) throw new Error('DPAPI round-trip mismatch');
     return { fields: { apiKeyEnc: enc }, note: 'DPAPI-encrypted in config (this Windows user+machine)' };
+  }
+  // POSIX: try the OS keychain, but only trust it if a round-trip read confirms it
+  // (a locked/absent secret service silently falls through to the file).
+  const plat = require('./cl-platform');
+  if (plat.keychainStore(id, key) && plat.keychainGet(id) === key) {
+    return { fields: { apiKeyKeychain: true }, note: `stored in the OS keychain (${process.platform === 'darwin' ? 'macOS Keychain' : 'libsecret'})` };
   }
   const dir = path.join(CLAUDE_DIR, 'cl-keys');
   fs.mkdirSync(dir, { recursive: true });
@@ -185,7 +197,7 @@ function storeApiKey(id, key) {
   const file = path.join(dir, `${id}.key`);
   fs.writeFileSync(file, key, { mode: 0o600 });
   try { fs.chmodSync(file, 0o600); } catch {}
-  return { fields: { apiKeyFrom: { file, regex: '(\\S+)' } }, note: `stored 0600 at ${file} (file-perms only — not encrypted; keychain support planned)` };
+  return { fields: { apiKeyFrom: { file, regex: '(\\S+)' } }, note: `stored 0600 at ${file} (file-perms only — keychain unavailable)` };
 }
 
 // Env for spawning claude under `account`. api → gateway vars; oauth → make

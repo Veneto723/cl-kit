@@ -972,7 +972,7 @@ function cmdSetKey(argv) {
   catch (e) { process.stderr.write(`[cl] cl-config.json unreadable: ${e.message}\n`); process.exit(1); }
   fs.copyFileSync(C.CONFIG_PATH, bak);
   const a = (raw.accounts || []).find((x) => x.id === id);
-  delete a.apiKey; delete a.apiKeyEnv; delete a.apiKeyFrom; delete a.apiKeyEnc;
+  delete a.apiKey; delete a.apiKeyEnv; delete a.apiKeyFrom; delete a.apiKeyEnc; delete a.apiKeyKeychain;
   Object.assign(a, stored.fields);
   fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2));
   try {
