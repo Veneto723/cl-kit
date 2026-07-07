@@ -206,6 +206,14 @@ try {
   ok('keychainGet returns string or null', kGot === null || typeof kGot === 'string');
   if (kStored) ok('keychain round-trips when it reports success', kGot === 'sk-kc-probe');
   ok('keychainDelete returns a boolean', typeof plat.keychainDelete(probeId) === 'boolean');
+
+  // desktop notify: routes per-OS, returns a boolean, never throws. Only INVOKE it
+  // where it can't pop a real toast on someone's desktop — Windows (guaranteed
+  // no-op) or headless CI — so `npm test` on a dev's Mac/Linux stays quiet.
+  ok('notify is a function', typeof plat.notify === 'function');
+  if (process.platform === 'win32' || process.env.CI) {
+    ok('notify returns a boolean (never throws)', typeof plat.notify('cl-kit test', 'suite') === 'boolean');
+  }
 } catch (e) { ok('cl-platform + storeApiKey work', false, e.message); }
 
 // ---- 8. cl-wire-settings — installer settings merge (idempotent) -------------
