@@ -30,3 +30,19 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Run portable test suite
         run: node test/run.js
+      - name: Installer smoke (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          mkdir -p "$HOME/.claude"
+          bash install.sh
+          test -x "$HOME/.local/bin/cl" || { echo "launcher not created/executable"; exit 1; }
+          node -e '
+            const fs=require("fs"), p=process.env.HOME+"/.claude/settings.json";
+            const s=JSON.parse(fs.readFileSync(p,"utf8"));
+            const j=JSON.stringify(s);
+            if(!/cl-switch-hook\.js/.test(j) || !/usage-monitor\.js/.test(j) || !/cl-signal\.js/.test(j)) { console.error("settings not wired"); process.exit(1); }
+            console.log("installer smoke OK: launcher + hooks + statusline + allow-rule");
+          '

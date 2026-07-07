@@ -952,27 +952,28 @@ function cmdSetKey(argv) {
     } else if (argv.includes('--stdin')) {
       src = 'stdin'; key = fs.readFileSync(0, 'utf8').trim();
     } else {
-      key = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
-        { encoding: 'utf8', windowsHide: true, timeout: 15000 }).stdout || '';
+      const clip = require('./cl-platform').readClipboard();
+      if (clip == null) { process.stderr.write(`[cl] no clipboard tool available — ${require('./cl-platform').clipboardHint()}\n`); process.exit(1); }
+      key = clip;
     }
   } catch (e) { process.stderr.write(`[cl] could not read key from ${src}: ${e.message}\n`); process.exit(1); }
   key = (key || '').trim();
   if (!key) { process.stderr.write(`[cl] no key found in ${src} (clipboard empty? try --file <path> or --stdin)\n`); process.exit(1); }
   if (!/^sk-/.test(key)) process.stderr.write(`[cl] note: key from ${src} doesn't start with "sk-" (len ${key.length}) — proceeding.\n`);
 
-  // 2. encrypt + verify the round-trip before touching the config
-  let enc;
-  try { enc = C.dpapiEncrypt(key); if (C.dpapiDecrypt(enc) !== key) throw new Error('DPAPI round-trip mismatch'); }
-  catch (e) { process.stderr.write(`[cl] DPAPI encrypt failed: ${e.message}\n`); process.exit(1); }
+  // 2. store the key at rest (DPAPI on Windows; 0600 file on POSIX) before touching config
+  let stored;
+  try { stored = C.storeApiKey(id, key); }
+  catch (e) { process.stderr.write(`[cl] could not store key: ${e.message}\n`); process.exit(1); }
 
-  // 3. backup -> write apiKeyEnc + drop other key sources -> validate -> rollback on fail
+  // 3. backup -> write the stored key fields + drop other key sources -> validate -> rollback on fail
   const bak = C.CONFIG_PATH + '.bak-' + Date.now();
   let raw; try { raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8')); }
   catch (e) { process.stderr.write(`[cl] cl-config.json unreadable: ${e.message}\n`); process.exit(1); }
   fs.copyFileSync(C.CONFIG_PATH, bak);
   const a = (raw.accounts || []).find((x) => x.id === id);
-  delete a.apiKey; delete a.apiKeyEnv; delete a.apiKeyFrom;
-  a.apiKeyEnc = enc;
+  delete a.apiKey; delete a.apiKeyEnv; delete a.apiKeyFrom; delete a.apiKeyEnc;
+  Object.assign(a, stored.fields);
   fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2));
   try {
     const k = C.resolveApiKey(C.findAccount(C.loadConfig(), id));
@@ -981,9 +982,11 @@ function cmdSetKey(argv) {
     fs.copyFileSync(bak, C.CONFIG_PATH);
     process.stderr.write(`[cl] validation failed — restored backup. ${e.message}\n`); process.exit(1);
   }
-  process.stdout.write(`[cl] ✓ "${id}" key stored DPAPI-encrypted in cl-config.json (apiKeyEnc); apiKey/apiKeyEnv/apiKeyFrom removed.\n`);
+  process.stdout.write(`[cl] ✓ "${id}" key stored — ${stored.note}; other key sources removed.\n`);
   process.stdout.write(`     ${key.slice(0, 7)}…${key.slice(-4)} (len ${key.length}) · backup ${path.basename(bak)}\n`);
-  process.stdout.write(`     DPAPI is per user+machine — on another PC run \`cl set-key ${id}\` there too. If you kept a plaintext copy, delete it now.\n`);
+  process.stdout.write(`     ${process.platform === 'win32'
+    ? `DPAPI is per user+machine — on another PC run \`cl set-key ${id}\` there too.`
+    : `The key file is machine-local — copy it or re-run \`cl set-key ${id}\` on another machine.`} If you kept a plaintext copy, delete it now.\n`);
   process.exit(0);
 }
 

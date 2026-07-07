@@ -175,6 +175,51 @@ try {
   ok('summarizeGatewayUsage tolerates null/non-string model rows', !!s);
 } catch (e) { ok('gw-usage works', false, e.message); }
 
+// ---- 7. cl-platform + storeApiKey (the Tier-1 cross-platform shim) -----------
+section('cl-platform + storeApiKey (per-OS key storage)');
+try {
+  const plat = require(path.join(SRC, 'cl-platform.js'));
+  const clip = plat.readClipboard();
+  ok('readClipboard returns a string or null (never throws)', clip === null || typeof clip === 'string');
+  ok('clipboardHint is a string', typeof plat.clipboardHint() === 'string');
+
+  // storeApiKey uses DPAPI on Windows, a 0600 file on POSIX — and resolveApiKey
+  // must round-trip either way. (CI proves both: windows-latest vs ubuntu/macos.)
+  const stored = C.storeApiKey('gwtest', 'sk-portable-42');
+  ok('storeApiKey returns fields + note', stored && stored.fields && typeof stored.note === 'string');
+  ok('key field is platform-appropriate',
+    process.platform === 'win32' ? !!stored.fields.apiKeyEnc : !!(stored.fields.apiKeyFrom && stored.fields.apiKeyFrom.file));
+  const acc = { id: 'gwtest', type: 'api', baseUrl: 'https://x', ...stored.fields };
+  ok('resolveApiKey round-trips the stored key', C.resolveApiKey(acc) === 'sk-portable-42');
+  if (process.platform !== 'win32') {
+    const st = fs.statSync(stored.fields.apiKeyFrom.file);
+    ok('POSIX key file is mode 0600', (st.mode & 0o777) === 0o600);
+  }
+} catch (e) { ok('cl-platform + storeApiKey work', false, e.message); }
+
+// ---- 8. cl-wire-settings — installer settings merge (idempotent) -------------
+section('cl-wire-settings (installer hook wiring)');
+try {
+  const scriptsDir = path.join(CLAUDE, 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const wire = path.join(SRC, 'cl-wire-settings.js');
+  // start from a user settings.json with a pre-existing key to confirm we merge, not clobber
+  writeJSON(path.join(CLAUDE, 'settings.json'), { theme: 'dark', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node other.js' }] }] } });
+  const r1 = spawnSync(process.execPath, [wire, scriptsDir], { encoding: 'utf8' });
+  ok('cl-wire-settings runs', r1.status === 0, (r1.stderr || '').split('\n')[0]);
+  const s = JSON.parse(fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8'));
+  const cmds = (ev) => (s.hooks[ev] || []).flatMap((g) => (g.hooks || []).map((x) => x.command)).join(' | ');
+  ok('preserves the user\'s existing settings + hook', s.theme === 'dark' && cmds('Stop').includes('other.js'));
+  ok('wires UserPromptSubmit (switch-hook + notify start)', cmds('UserPromptSubmit').includes('cl-switch-hook.js') && cmds('UserPromptSubmit').includes('cl-notify.js'));
+  ok('wires Stop/StopFailure/Notification cl-notify', cmds('Stop').includes('cl-notify.js') && cmds('StopFailure').includes('cl-notify.js') && cmds('Notification').includes('cl-notify.js'));
+  ok('sets statusline + switch allow-rule', /usage-monitor\.js/.test(JSON.stringify(s.statusLine)) && s.permissions.allow.some((a) => a.includes('cl-signal.js')));
+  // idempotent: a second run must not duplicate hooks
+  spawnSync(process.execPath, [wire, scriptsDir], { encoding: 'utf8' });
+  const s2 = JSON.parse(fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8'));
+  const stopCount = (s2.hooks.Stop || []).flatMap((g) => g.hooks || []).filter((x) => x.command.includes('cl-notify.js')).length;
+  ok('re-run is idempotent (no duplicate hooks)', stopCount === 1);
+} catch (e) { ok('cl-wire-settings works', false, e.message); }
+
 // ---- PROBE: OS-specific touchpoints (informational — never fails build) ------
 section('platform probe (informational — what a full port would wire up)');
 function has(cmd, args) { try { const r = spawnSync(cmd, args || ['--version'], { encoding: 'utf8', timeout: 5000, windowsHide: true }); return r.status === 0 || (r.stdout || r.stderr || '').length > 0; } catch { return false; } }

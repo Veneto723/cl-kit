@@ -69,30 +69,50 @@ cl usage — peek
 
 ## Requirements
 
-- **Windows 11** (toasts, window-focus, `taskkill`, and registry integration are Windows-specific)
+- **Windows 11, macOS, or Linux.** The core — account switching, per-account
+  credential isolation, usage statusline, trash, the zero-token `cl:` commands — is
+  cross-platform (verified in CI on Windows/Ubuntu/macOS). A few extras are
+  Windows-only: desktop toasts, click-to-focus, and DPAPI key encryption (see the
+  note under Install).
 - **Node.js**
 - **Claude Code** — the `claude` CLI on your PATH
 
 ## Install
 
+**Windows:**
 ```powershell
-git clone https://github.com/<you>/cl-kit.git    # private repo → gh auth login first
+git clone https://github.com/<you>/cl-kit.git
 cd cl-kit
 powershell -ExecutionPolicy Bypass -File install.ps1
 # open a NEW terminal (the installer added ~/.local/bin to PATH), then:
-cl setup      # define your accounts
-cl doctor     # verify
-cl            # launch
+cl setup   # define your accounts
+cl doctor  # verify
+cl         # launch
 ```
 
-`install.ps1` is re-runnable and idempotent. It deploys scripts + commands into
-`~/.claude`, adds `cl` to your user PATH, installs and registers the MCP server,
-generates the toast icons, registers the `cl-focus:` protocol, and **merges**
-hooks + statusline into `settings.json` (backing it up first — it never removes
-your existing entries).
+**Linux / macOS:**
+```sh
+git clone https://github.com/<you>/cl-kit.git
+cd cl-kit
+bash install.sh
+# ensure ~/.local/bin is on PATH (the installer prints the exact line if not), then:
+cl setup && cl doctor && cl
+```
 
-To update later: `git pull` then re-run `install.ps1`, and `/restart` any live
-sessions to load new wrapper code.
+Both installers are re-runnable and idempotent: they deploy scripts + commands into
+`~/.claude`, add a `cl` launcher to `~/.local/bin`, install and register the MCP
+server, and **merge** hooks + statusline into `settings.json` (backing it up first —
+never removing your existing entries). `install.ps1` additionally generates toast
+icons and registers the `cl-focus:` protocol; `install.sh` skips those Windows-only
+extras.
+
+**Gateway keys off Windows:** the DPAPI-encrypted `apiKeyEnc` is Windows-only. On
+Linux/macOS, `cl set-key` / the add-account wizard store the key in a `0600` file
+under `~/.claude/cl-keys/` (referenced via `apiKeyFrom`) — file-permission
+protection rather than OS encryption (keychain-backed storage is planned). You can
+also always use `apiKeyEnv` (an env var) or `apiKeyFrom` (file + regex) directly.
+
+To update later: `git pull`, re-run the installer, and `/restart` any live sessions.
 
 ---
 
@@ -362,18 +382,22 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
 ## Repo layout
 
 ```
-src/            wrapper + hooks (cl-runner, cl-config, cl-signal, cl-switch-*,
-                cl-notify, cl-help, cl-focus.*, usage-monitor,
-                gw-usage, cl-sync, cl-setup)
+src/            wrapper + hooks (cl-runner, cl-config, cl-platform, cl-profile,
+                cl-signal, cl-switch-*, cl-notify, cl-help, cl-focus.*,
+                cl-wire-settings, usage-monitor, gw-usage, cl-sync, cl-setup)
 mcp/            cl MCP server (account management + pool metrics tools)
 pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)
-commands/       slash commands (/switch, /restart, /pool, /cl)
-install.ps1     deploy + wire everything into ~/.claude (idempotent)
+commands/       slash commands (/switch, /restart, /cl)
+test/           portable cross-platform test suite (run.js; `npm test`)
+install.ps1     Windows installer · install.sh  Linux/macOS installer (idempotent)
 ```
 
 ## Notes & limitations
 
-- Windows 11 only.
+- **Cross-platform core; Windows-only extras.** Windows, macOS, and Linux all run
+  the switcher, credential isolation, usage, and trash (CI-verified). Desktop toasts,
+  click-to-focus, and DPAPI key encryption are Windows-only and degrade cleanly
+  elsewhere (toasts no-op; keys use a `0600` file or `apiKeyEnv`/`apiKeyFrom`).
 - All caches/state live under `~/.claude/cache/cl-*`; stale files are swept
   automatically (state daily, effort memories after 7 days, conversation locks by
   process liveness).

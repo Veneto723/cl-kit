@@ -110,6 +110,9 @@ function nextAccount(cfg, currentId, targetId) {
 // and a copied config is useless on any other machine/user. Secret is passed via
 // env (not argv) so it never appears in a command line. Windows-only (cl is).
 function runPowerShell(script, extraEnv) {
+  if (process.platform !== 'win32') {
+    throw new Error(`DPAPI is Windows-only — on ${process.platform}, store an api key with a cross-platform source (apiKeyEnv or apiKeyFrom); \`cl set-key\` does this for you here.`);
+  }
   return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     env: { ...process.env, ...extraEnv }, encoding: 'utf8', windowsHide: true, timeout: 20000,
   });
@@ -137,6 +140,9 @@ function resolveApiKey(acc) {
   if (acc.apiKey) return acc.apiKey;
   if (acc.apiKeyEnv && process.env[acc.apiKeyEnv]) return process.env[acc.apiKeyEnv];
   if (acc.apiKeyEnc) {
+    if (process.platform !== 'win32') {
+      throw new Error(`account "${acc.id}": apiKeyEnc is a Windows-only DPAPI blob and can't be read on ${process.platform}. Give this account a cross-platform key instead — \`cl set-key ${acc.id}\` (stores a 0600 file), or set apiKeyEnv / apiKeyFrom. See the README.`);
+    }
     let k; try { k = dpapiDecrypt(acc.apiKeyEnc); } catch (e) {
       throw new Error(`account "${acc.id}": apiKeyEnc DPAPI decrypt failed — the blob is bound to the Windows user+machine that created it. Re-run \`cl set-key ${acc.id}\` on THIS machine. (${String(e.message).split('\n')[0]})`);
     }
@@ -153,12 +159,33 @@ function resolveApiKey(acc) {
   throw new Error(`account "${acc.id}": no apiKey / apiKeyEnv / apiKeyFrom configured`);
 }
 
-// The claude executable. Config override > ~/.local/bin/claude.exe > PATH.
+// The claude executable. Config override > ~/.local/bin/claude[.exe] > PATH.
 function claudeBin(cfg) {
   if (cfg && cfg.claudeBin) return expandHome(cfg.claudeBin);
-  const local = path.join(os.homedir(), '.local', 'bin', 'claude.exe');
+  const name = process.platform === 'win32' ? 'claude.exe' : 'claude';
+  const local = path.join(os.homedir(), '.local', 'bin', name);
   if (fs.existsSync(local)) return local;
   return 'claude'; // rely on PATH
+}
+
+// Store an api account's key AT REST and return the config field(s) to persist
+// (plus a short human note). Windows: DPAPI blob in the config (apiKeyEnc), bound
+// to this user+machine. POSIX: a 0600 file under ~/.claude/cl-keys/ referenced via
+// apiKeyFrom — file-permission protection (not OS encryption; keychain-backed
+// storage is a planned enhancement). Callers delete the other key sources.
+function storeApiKey(id, key) {
+  if (process.platform === 'win32') {
+    const enc = dpapiEncrypt(key);
+    if (dpapiDecrypt(enc) !== key) throw new Error('DPAPI round-trip mismatch');
+    return { fields: { apiKeyEnc: enc }, note: 'DPAPI-encrypted in config (this Windows user+machine)' };
+  }
+  const dir = path.join(CLAUDE_DIR, 'cl-keys');
+  fs.mkdirSync(dir, { recursive: true });
+  try { fs.chmodSync(dir, 0o700); } catch {}
+  const file = path.join(dir, `${id}.key`);
+  fs.writeFileSync(file, key, { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch {}
+  return { fields: { apiKeyFrom: { file, regex: '(\\S+)' } }, note: `stored 0600 at ${file} (file-perms only — not encrypted; keychain support planned)` };
 }
 
 // Env for spawning claude under `account`. api → gateway vars; oauth → make
@@ -189,5 +216,5 @@ function accountEnv(acc, base) {
 module.exports = {
   CLAUDE_DIR, CONFIG_PATH, CACHE_DIR, CRED_PATH, SCRIPTS_DIR,
   loadConfig, findAccount, nextAccount, resolveApiKey, claudeBin, accountEnv, expandHome,
-  dpapiEncrypt, dpapiDecrypt,
+  dpapiEncrypt, dpapiDecrypt, storeApiKey,
 };

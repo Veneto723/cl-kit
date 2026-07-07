@@ -348,11 +348,9 @@ function readAddKey(tokens) {
       return { key: (m ? m[0] : raw.trim()), src: file };
     } catch (e) { return { key: '', src: file, error: e.message }; }
   }
-  try {
-    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
-      { encoding: 'utf8', windowsHide: true, timeout: 15000 });
-    return { key: (out || '').trim(), src: 'clipboard' };
-  } catch (e) { return { key: '', src: 'clipboard', error: e.message }; }
+  const out = require('./cl-platform').readClipboard();
+  if (out == null) return { key: '', src: 'clipboard', error: `no clipboard tool available — ${require('./cl-platform').clipboardHint()}` };
+  return { key: out.trim(), src: 'clipboard' };
 }
 
 // GET <base>/v1/models with the key → { ok, models[] } or { ok:false, error }.
@@ -361,7 +359,9 @@ function probeGatewayModels(baseUrl, key) {
   try {
     // Send `anthropic-version` (like Claude Code does) so a dual Claude+GPT gateway
     // keyed to ONE universal key returns its CLAUDE models here, not GPT ones.
-    out = execFileSync('curl.exe', ['-sS', '-m', '20',
+    // curl ships as curl.exe on Win10+, curl on macOS/Linux.
+    const curl = process.platform === 'win32' ? 'curl.exe' : 'curl';
+    out = execFileSync(curl, ['-sS', '-m', '20',
       '-H', `Authorization: Bearer ${key}`, '-H', 'anthropic-version: 2023-06-01',
       `${baseUrl.replace(/\/+$/, '')}/v1/models`],
       { encoding: 'utf8', windowsHide: true, timeout: 25000 });
@@ -456,14 +456,14 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
     detail = `models: ${Object.entries(modelMap).map(([k, v]) => `${k}→${v}`).join(', ')}`;
   }
 
-  // DPAPI-encrypt the key (no plaintext on disk), round-trip before committing.
-  let enc; try { enc = C.dpapiEncrypt(key); if (C.dpapiDecrypt(enc) !== key) throw new Error('round-trip mismatch'); }
-  catch (e) { return { ok: false, message: `DPAPI encrypt failed: ${e.message}` }; }
+  // Store the key at rest (DPAPI on Windows; 0600 file on POSIX) before committing.
+  let stored; try { stored = C.storeApiKey(id, key); }
+  catch (e) { return { ok: false, message: `could not store key: ${e.message}` }; }
 
   const mergedHeaders = { 'x-title': 'claude', ...headers }; // user headers override the default
   const acct = {
     id, label: label || id.toUpperCase(), type: 'api',
-    baseUrl: baseUrl.replace(/\/+$/, ''), apiKeyEnc: enc,
+    baseUrl: baseUrl.replace(/\/+$/, ''), ...stored.fields,
     headers: mergedHeaders, disableConnectors: true,
   };
   if (Object.keys(modelMap).length) acct.modelMap = modelMap;
@@ -486,7 +486,7 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
   return {
     ok: true,
     message: `✓ added gateway account "${id}" (${acct.label}) → ${acct.baseUrl}\n` +
-      `  key ${key.slice(0, 7)}…${key.slice(-4)} DPAPI-encrypted (from ${keySrc}) · ${detail}${extraHdr}` +
+      `  key ${key.slice(0, 7)}…${key.slice(-4)} ${stored.note} (from ${keySrc}) · ${detail}${extraHdr}` +
       `${makeDefault ? '\n  set as the default account' : ''}\n  use it: cl:switch ${id}`,
   };
 }
