@@ -586,6 +586,83 @@ function removeAccountFromConfig(C, id) {
   return { backup: bak, fixes, credFile };
 }
 
+// Rename an account in cl-config.json: id + (one-name) label + all references
+// (switchOrder / default / rephrase). Backup + validate + rollback on error.
+// Returns the backup path. Does NOT move the profile dir — the caller does that
+// (cl-profile.renameProfile) so the two stay in step.
+function renameAccountInConfig(C, oldId, newId) {
+  const bak = C.CONFIG_PATH + '.bak-' + Date.now();
+  const raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8'));
+  const a = (raw.accounts || []).find((x) => x.id === oldId);
+  if (!a) throw new Error(`account "${oldId}" not found`);
+  if ((raw.accounts || []).some((x) => x.id === newId)) throw new Error(`account "${newId}" already exists`);
+  fs.copyFileSync(C.CONFIG_PATH, bak);
+  a.id = newId;
+  if (!a.label || a.label === oldId) a.label = newId; // keep the single name in sync
+  if (Array.isArray(raw.switchOrder)) raw.switchOrder = raw.switchOrder.map((x) => (x === oldId ? newId : x));
+  if (raw.defaultAccount === oldId) raw.defaultAccount = newId;
+  if (raw.features && raw.features.rephraseAccount === oldId) raw.features.rephraseAccount = newId;
+  fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(raw, null, 2));
+  try { C.loadConfig(); }
+  catch (e) { fs.copyFileSync(bak, C.CONFIG_PATH); throw new Error(`config rejected (${e.message}) — restored`); }
+  return bak;
+}
+
+// Perform a full rename NOW (config + profile dir). Move the profile dir FIRST so
+// a config/profile split can't happen: if the config edit then fails, move it back.
+// Returns { backup }. Throws on failure (nothing left half-done).
+function doRename(C, oldId, newId) {
+  const P = require('./cl-profile');
+  const moved = P.renameProfile(oldId, newId); // login folder old → new (may be false if none yet)
+  let backup;
+  try { backup = renameAccountInConfig(C, oldId, newId); }
+  catch (e) { if (moved) { try { P.renameProfile(newId, oldId); } catch {} } throw e; } // roll the dir back
+  return { backup };
+}
+
+// Rename an account. `argStr`:  "<new>" renames the CURRENT session's account;
+// "<old> <new>" renames a named one. Renaming an account that has a LIVE session
+// (its profile dir is open) must go through cl-runner — it kills claude, moves the
+// dir, then relaunches — so for the CURRENT session we drop a rename trigger; a
+// live OTHER account is refused (close it first). Otherwise we rename in-place now.
+function requestRename(session, argStr) {
+  if (!session) return { ok: false, message: 'NOT running under the cl wrapper (launch with `cl`).' };
+  let C, cfg;
+  try { C = require('./cl-config'); cfg = C.loadConfig(); }
+  catch (e) { return { ok: false, message: `cl config unreadable (${e.message}).` }; }
+
+  const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return { ok: false, message: 'usage: cl:rename [<old>] <new>  — e.g. `cl:rename work` renames THIS session\'s account, or `cl:rename work personal`.' };
+  const current = currentAccount(C, cfg, session);
+  const oldId = tokens.length >= 2 ? tokens[0] : current;
+  const newId = tokens.length >= 2 ? tokens[1] : tokens[0];
+
+  if (!/^[a-z][a-z0-9_-]*$/i.test(newId)) return { ok: false, message: `invalid new name "${newId}" — use letters/digits/dash/underscore, starting with a letter.` };
+  const acc = C.findAccount(cfg, oldId);
+  if (!acc) return { ok: false, message: `no account "${oldId}". Configured: ${cfg.accounts.map((a) => a.id).join(', ')}.` };
+  if (oldId === newId) return { ok: false, message: `"${oldId}" is already its name — nothing to rename.` };
+  if (C.findAccount(cfg, newId)) return { ok: false, message: `"${newId}" already exists — pick a different name.` };
+
+  const live = liveSessionsOn(oldId);
+  if (oldId === current) {
+    // The account THIS session is on — its profile dir is open, so cl-runner must
+    // do it (kill claude → move dir → relaunch on the new name).
+    try {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      fs.writeFileSync(path.join(CACHE_DIR, `cl-rename-${session}.trigger`), JSON.stringify({ oldId, newId, at: Date.now() }));
+      return { ok: true, viaRunner: true, message: `renaming "${oldId}" → "${newId}" — relaunching this session on the new name…` };
+    } catch (e) { return { ok: false, message: `rename signal FAILED — ${e.message}` }; }
+  }
+  if (live > 0) {
+    return { ok: false, message: `"${oldId}" has ${live} other live session(s) — its login folder is in use. Close them (or run \`cl:rename ${newId}\` from that session) first.` };
+  }
+  // No live session on it → safe to rename right here.
+  try {
+    const { backup } = doRename(C, oldId, newId);
+    return { ok: true, renamed: true, message: `✓ renamed "${oldId}" → "${newId}". Its login + conversations are preserved. (config backup: ${backup})` };
+  } catch (e) { return { ok: false, message: `rename FAILED — ${e.message}` }; }
+}
+
 // Two-step removal. `argStr` = "<id>" (step 1: arm + show impact) or
 // "<id> confirm" (step 2: verify the fresh pending marker, then remove).
 // Returns { ok, pending?, removed?, message }.
@@ -797,4 +874,4 @@ function requestTrash(session, argStr) {
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };
+module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };

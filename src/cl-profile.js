@@ -111,4 +111,17 @@ function seedCreds(accId, srcPath) {
   } catch { return false; }
 }
 
-module.exports = { PROFILES_DIR, profileDir, credsPath, ensureProfile, hasCreds, seedCreds, SHARED_DIRS };
+// Move an account's profile dir old → new (preserving its login when the account
+// is renamed). The junctions inside point at ABSOLUTE ~/.claude targets, so they
+// survive the move. Caller must ensure no live process holds oldDir open (Windows
+// won't rename an open dir) — cl-runner renames only after killing claude. Returns
+// true if a dir was moved, false if there was nothing to move.
+function renameProfile(oldId, newId) {
+  const oldDir = profileDir(oldId), newDir = profileDir(newId);
+  if (!fs.existsSync(oldDir)) return false;
+  if (fs.existsSync(newDir)) throw new Error(`profile dir for "${newId}" already exists`);
+  fs.renameSync(oldDir, newDir);
+  return true;
+}
+
+module.exports = { PROFILES_DIR, profileDir, credsPath, ensureProfile, hasCreds, seedCreds, renameProfile, SHARED_DIRS };

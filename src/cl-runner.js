@@ -419,9 +419,13 @@ const addAcctTrigger   = path.join(CACHE_DIR, `cl-addacct-${SESSION_ID}.trigger`
 // Dropped by the cl:delete hook (after confirm): carries { convId }. cl-runner
 // kills claude, moves the transcript to recoverable trash, and starts fresh.
 const deleteTrigger    = path.join(CACHE_DIR, `cl-delete-${SESSION_ID}.trigger`);
+// Dropped by the cl:rename hook when renaming THIS session's account: carries
+// { oldId, newId }. cl-runner kills claude (releases the open profile dir), moves
+// the profile dir + updates config, then relaunches this conversation on the new name.
+const renameTrigger    = path.join(CACHE_DIR, `cl-rename-${SESSION_ID}.trigger`);
 
 function clearTriggers() {
-  for (const t of [switchTrigger, restartTrigger, pickTrigger, addAcctTrigger, deleteTrigger]) {
+  for (const t of [switchTrigger, restartTrigger, pickTrigger, addAcctTrigger, deleteTrigger, renameTrigger]) {
     try { fs.unlinkSync(t); } catch {}
   }
 }
@@ -723,6 +727,13 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
         try { payload = JSON.parse(fs.readFileSync(deleteTrigger, 'utf8')); } catch {}
         clearTriggers(); killChild(child); finish('delete', undefined, payload || {});
       }
+      else if (fs.existsSync(renameTrigger)) {
+        // Rename this session's account: kill claude (releases the open profile
+        // dir), then cl-runner moves the dir + updates config and relaunches.
+        let payload = null;
+        try { payload = JSON.parse(fs.readFileSync(renameTrigger, 'utf8')); } catch {}
+        clearTriggers(); killChild(child); finish('rename', undefined, payload || {});
+      }
       else if (fs.existsSync(switchTrigger)) {
         // The trigger may carry a target account id (from `cl:switch <id>`).
         let target = null;
@@ -1006,6 +1017,14 @@ async function main() {
     process.exit(r.status ?? 0);
   }
   if (userArgs[0] === 'capture') return cmdCapture(userArgs[1]);
+  if (userArgs[0] === 'rename') {
+    // Terminal rename of a NOT-currently-open account (offline). Renaming the
+    // account a live session is on must be done from that session (cl:rename).
+    if (userArgs.length < 3) { process.stderr.write('[cl] usage: cl rename <old> <new>\n'); process.exit(1); }
+    try { const { backup } = require('./cl-switch-core').doRename(C, userArgs[1], userArgs[2]);
+      process.stdout.write(`[cl] ✓ renamed "${userArgs[1]}" → "${userArgs[2]}" (login + conversations preserved; config backup ${backup})\n`); process.exit(0); }
+    catch (e) { process.stderr.write(`[cl] rename failed — ${e.message}\n`); process.exit(1); }
+  }
   if (userArgs[0] === 'add-account' || userArgs[0] === 'add') return cmdAddAccount(userArgs.slice(1));
   if (userArgs[0] === 'export' || userArgs[0] === 'import') {
     const sync = require('./cl-sync');
@@ -1301,6 +1320,24 @@ async function main() {
       writeState({ account, switchCount, convId, pinnedEffort });
       await new Promise(r => setTimeout(r, 200));
       continue; // loop top relaunches --resume convId on `account`
+    }
+
+    if (reason === 'rename') {
+      // claude is dead → the profile dir handles are released → safe to move it.
+      const oldId = (payload && payload.oldId) || account;
+      const newId = payload && payload.newId;
+      try {
+        require('./cl-switch-core').doRename(C, oldId, newId); // move profile dir + update config
+        if (account === oldId) account = newId;
+        reloadCfg();
+        process.stdout.write(`\x1b[32m[cl] renamed "${oldId}" → "${newId}" — relaunching on the new name…\x1b[0m\n`);
+      } catch (e) {
+        logLine(`rename failed ${oldId}->${newId}: ${e.message}`);
+        process.stdout.write(`\x1b[31m[cl] rename failed — ${e.message}. Staying on "${account}".\x1b[0m\n`);
+      }
+      writeState({ account, switchCount, convId, pinnedEffort });
+      await new Promise(r => setTimeout(r, 400));
+      continue; // loop top relaunches --resume convId on `account` (new profile)
     }
 
     if (reason === 'switch') {

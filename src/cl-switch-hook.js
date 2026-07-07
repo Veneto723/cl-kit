@@ -30,7 +30,7 @@ const core = require('./cl-switch-core');
 // NOTE: delete-account / del-account MUST precede the bare `delete` alternative,
 // else `cl:delete-account` matches `delete` (+ `\b` at the hyphen) and misfires as
 // a CONVERSATION delete. They route to remove-account (account removal), not delete.
-const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|export|import|delete|peek|usage|trash|restore|help|cl)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|help|cl)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -91,6 +91,10 @@ function run(raw) {
   if (action === 'remove-account' || action === 'rm-account' || action === 'remove'
       || action === 'delete-account' || action === 'del-account') {
     const r = core.requestRemoveAccount(session, arg || '');
+    return clBlock(r.message);
+  }
+  if (action === 'rename') {
+    const r = core.requestRename(session, arg || '');
     return clBlock(r.message);
   }
   if (action === 'delete') {
