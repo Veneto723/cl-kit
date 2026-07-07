@@ -71,9 +71,10 @@ cl usage — peek
 
 - **Windows 11, macOS, or Linux.** The core — account switching, per-account
   credential isolation, usage statusline, trash, the zero-token `cl:` commands — is
-  cross-platform (verified in CI on Windows/Ubuntu/macOS). A few extras are
-  Windows-only: desktop toasts, click-to-focus, and DPAPI key encryption (see the
-  note under Install).
+  cross-platform (verified in CI on Windows/Ubuntu/macOS). Desktop toasts work
+  everywhere too (WinRT on Windows, `osascript` on macOS, `notify-send` on Linux).
+  Only two extras stay Windows-only: click-to-focus (raising the terminal from a
+  toast) and DPAPI key encryption (see the note under Install).
 - **Node.js**
 - **Claude Code** — the `claude` CLI on your PATH
 
@@ -397,10 +398,11 @@ install.ps1     Windows installer · install.sh  Linux/macOS installer (idempote
 ## Notes & limitations
 
 - **Cross-platform core; Windows-only extras.** Windows, macOS, and Linux all run
-  the switcher, credential isolation, usage, and trash (CI-verified). Desktop toasts,
-  click-to-focus, and DPAPI key encryption are Windows-only and degrade cleanly
-  elsewhere (toasts no-op; keys use the OS keychain, a `0600` file, or
-  `apiKeyEnv`/`apiKeyFrom`).
+  the switcher, credential isolation, usage, and trash (CI-verified). Desktop toasts
+  work on all three (WinRT / `osascript` / `notify-send`, silently no-op if no
+  notifier). Only **click-to-focus** (raising the terminal from a toast) and **DPAPI**
+  key encryption stay Windows-only; keys elsewhere use the OS keychain, a `0600`
+  file, or `apiKeyEnv`/`apiKeyFrom`.
 - All caches/state live under `~/.claude/cache/cl-*`; stale files are swept
   automatically (state daily, effort memories after 7 days, conversation locks by
   process liveness).

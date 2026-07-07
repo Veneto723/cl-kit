@@ -74,6 +74,13 @@ function fmtDur(ms) {
 // the ToastText02 template because templates can't carry appLogoOverride.
 const ICONS_DIR = path.join(__dirname, 'icons');
 function toast(title, text, kind, focusPid) {
+  // POSIX: no WinRT and no cl-focus: click-to-focus protocol — show a plain desktop
+  // notification via the OS notifier (notify-send / osascript), degrading to a
+  // silent no-op if none is available. (Icons + click-to-focus are Windows-only.)
+  if (process.platform !== 'win32') {
+    try { if (!require('./cl-platform').notify(title, text)) trace('toast-skip no notifier'); } catch (e) { trace(`toast-error ${String(e && e.message).slice(0, 120)}`); }
+    return;
+  }
   const q = (s) => String(s).replace(/'/g, "''"); // PowerShell single-quote escape
   const xe = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); // XML escape
   const iconFile = path.join(ICONS_DIR, `${kind || 'done'}.png`);

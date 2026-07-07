@@ -89,4 +89,28 @@ function keychainDelete(id) {
   return false;
 }
 
-module.exports = { readClipboard, clipboardHint, keychainStore, keychainGet, keychainDelete };
+// ---- desktop notifications (Linux/macOS) ------------------------------------
+// Show a plain desktop notification. macOS → osascript; Linux → notify-send.
+// Windows toasts are richer (WinRT + click-to-focus) and handled in cl-notify.js,
+// so this is POSIX-only and returns false on win32. Returns true if shown, false
+// if no notifier is available; never throws. Title/body are passed as ARGV (no
+// shell / no AppleScript string interpolation), so quotes in them can't break out.
+function notify(title, body) {
+  const t = String(title == null ? '' : title);
+  const b = String(body == null ? '' : body);
+  try {
+    if (process.platform === 'darwin') {
+      execFileSync('osascript',
+        ['-e', 'on run {t, b}', '-e', 'display notification b with title t', '-e', 'end run', t, b],
+        { stdio: 'ignore', timeout: 10000 });
+      return true;
+    }
+    if (process.platform === 'linux') {
+      execFileSync('notify-send', [t, b], { stdio: 'ignore', timeout: 10000 });
+      return true;
+    }
+  } catch { /* no notifier / headless — caller degrades to silence */ }
+  return false;
+}
+
+module.exports = { readClipboard, clipboardHint, keychainStore, keychainGet, keychainDelete, notify };
