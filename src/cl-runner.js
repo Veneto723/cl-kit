@@ -633,9 +633,7 @@ async function runAddWizard() {
     if (/^https?:\/\/.+/i.test(url.trim())) { url = url.trim(); break; }
     out.write('  \x1b[31m✗ enter a full http(s):// URL\x1b[0m\n');
   }
-  let label = await promptLine(`Label [${id.toUpperCase()}]: `);
-  if (label === null) return cancel();
-  label = label.trim() || id.toUpperCase();
+  const label = id; // one name per account: the id you typed is the display name
 
   out.write('\r\n  \x1b[1mCopy your API key to the clipboard now\x1b[0m \x1b[2m(never shown or typed)\x1b[0m\n');
   const go = await promptLine('  press Enter to read the key (or Esc to cancel): ');
@@ -867,7 +865,9 @@ function doAddAccount(argv) {
 
   const acc = {
     id,
-    label: opt('--label') || ((who && who.email) ? who.email.split('@')[0].slice(0, 12) : id).toUpperCase(),
+    // One name per account: the id the user typed IS the display name. (--label
+    // stays as an optional override; email is kept only as metadata, not shown.)
+    label: opt('--label') || id,
     color: opt('--color') || '#D97757',
     type: 'oauth',
     email: (who && who.email) || null,

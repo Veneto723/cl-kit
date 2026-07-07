@@ -64,7 +64,7 @@ function normalize(cfg) {
     .filter((a) => a && a.id && (a.type === 'oauth' || a.type === 'api'))
     .map((a) => ({
       color: a.type === 'api' ? '#2DD4BF' : '#D97757',
-      label: String(a.id).toUpperCase(),
+      label: String(a.id),
       disableConnectors: a.type === 'api',
       ...a,
       credentials: a.credentials ? expandHome(a.credentials) : null,
