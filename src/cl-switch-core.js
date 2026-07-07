@@ -595,7 +595,10 @@ function renameAccountInConfig(C, oldId, newId) {
   const raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8'));
   const a = (raw.accounts || []).find((x) => x.id === oldId);
   if (!a) throw new Error(`account "${oldId}" not found`);
-  if ((raw.accounts || []).some((x) => x.id === newId)) throw new Error(`account "${newId}" already exists`);
+  // Case-insensitive collision (Windows/macOS profile dirs collide on case) — but
+  // exclude oldId itself so a case-only rename (work → Work) is allowed.
+  if ((raw.accounts || []).some((x) => x.id !== oldId && String(x.id).toLowerCase() === String(newId).toLowerCase()))
+    throw new Error(`"${newId}" collides with an existing account (names are case-insensitive on this filesystem)`);
   fs.copyFileSync(C.CONFIG_PATH, bak);
   a.id = newId;
   if (!a.label || a.label === oldId) a.label = newId; // keep the single name in sync
@@ -641,7 +644,10 @@ function requestRename(session, argStr) {
   const acc = C.findAccount(cfg, oldId);
   if (!acc) return { ok: false, message: `no account "${oldId}". Configured: ${cfg.accounts.map((a) => a.id).join(', ')}.` };
   if (oldId === newId) return { ok: false, message: `"${oldId}" is already its name — nothing to rename.` };
-  if (C.findAccount(cfg, newId)) return { ok: false, message: `"${newId}" already exists — pick a different name.` };
+  // Collision check is case-INSENSITIVE (dirs collide on case), but ignores oldId
+  // itself so recasing the same account (work → Work) is allowed.
+  const clash = cfg.accounts.find((x) => x.id !== oldId && x.id.toLowerCase() === newId.toLowerCase());
+  if (clash) return { ok: false, message: `"${newId}" collides with existing account "${clash.id}" (names are case-insensitive here) — pick a different name.` };
 
   const live = liveSessionsOn(oldId);
   if (oldId === current) {

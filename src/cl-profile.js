@@ -119,8 +119,19 @@ function seedCreds(accId, srcPath) {
 function renameProfile(oldId, newId) {
   const oldDir = profileDir(oldId), newDir = profileDir(newId);
   if (!fs.existsSync(oldDir)) return false;
-  if (fs.existsSync(newDir)) throw new Error(`profile dir for "${newId}" already exists`);
-  fs.renameSync(oldDir, newDir);
+  // A case-ONLY change (work → Work) is legal even though a case-insensitive
+  // filesystem (Windows/macOS) reports newDir as already existing — it's the SAME
+  // dir. Rename through a temp name so the on-disk casing actually flips (a direct
+  // case-only rename is a no-op on some filesystems).
+  const caseOnly = oldId !== newId && String(oldId).toLowerCase() === String(newId).toLowerCase();
+  if (!caseOnly && fs.existsSync(newDir)) throw new Error(`profile dir for "${newId}" already exists`);
+  if (caseOnly) {
+    const tmp = profileDir(`${oldId}.rncase-${process.pid}`);
+    fs.renameSync(oldDir, tmp);
+    fs.renameSync(tmp, newDir);
+  } else {
+    fs.renameSync(oldDir, newDir);
+  }
   return true;
 }
 
