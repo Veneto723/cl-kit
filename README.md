@@ -139,14 +139,20 @@ To update later: `git pull`, re-run the installer, and `cl:restart` any live ses
 | `cl:trash restore <id>` (or `cl:restore <id>`) | restore a deleted conversation from trash | **0** |
 | `cl:trash empty` | **permanently** purge the trash (double-confirmed) | **0** |
 | `cl:restart` | reload the wrapper + relaunch this conversation | **0** |
-| `/cl` | print this cheat sheet | small |
+| `cl:help` (`cl:cl`) | print this cheat sheet | **0** |
 
 The `cl:` forms are plain messages caught by a hook **before** the model runs —
 that's why they cost nothing and keep working when the account is rate-limited (a
 slash command's bash can't get past the safety classifier, because the classifier
 runs on the exhausted account). That deadlock is exactly why `cl:switch` /
-`cl:restart` replaced the old `/switch` and `/restart` slash commands, which are
-removed. `/cl` (the one remaining slash command) prints this cheat sheet.
+`cl:restart` / `cl:help` replaced the old `/switch`, `/restart`, and `/cl` slash
+commands — cl-kit ships **no slash commands** now; everything is a zero-token
+`cl:` sentinel.
+
+> Trade-off: `cl:` sentinels are plain text, so they don't get the `/` menu's
+> autocomplete (Claude Code's completion is hardcoded to `/` and `@`, with no
+> extension point for a custom prefix). Zero-token + rate-limit-immune is the
+> deliberate choice over typeahead.
 
 **In your terminal** (not inside a session):
 
@@ -390,7 +396,6 @@ src/            wrapper + hooks (cl-runner, cl-config, cl-platform, cl-profile,
                 cl-wire-settings, usage-monitor, gw-usage, cl-sync, cl-setup)
 mcp/            cl MCP server (account management + pool metrics tools)
 pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)
-commands/       /cl slash command (switching/restart use zero-token cl:switch / cl:restart)
 test/           portable cross-platform test suite (run.js; `npm test`)
 install.ps1     Windows installer · install.sh  Linux/macOS installer (idempotent)
 ```
@@ -408,8 +413,11 @@ install.ps1     Windows installer · install.sh  Linux/macOS installer (idempote
   process liveness).
 - `cl:switch` is the token-free interactive path. Slash commands can't match it:
   a *custom* slash command always costs a small model turn (Claude Code reserves
-  the instant path for built-ins), which is why the old `/switch` and `/restart`
-  were removed in favor of the zero-token `cl:` sentinels.
+  the instant path for built-ins), which is why the old `/switch`, `/restart`, and
+  `/cl` were all removed in favor of zero-token `cl:` sentinels. The one thing the
+  `/` menu offers that `cl:` can't is **autocomplete** — Claude Code's in-input
+  completion is hardcoded to `/` and `@` with no extension point for a custom
+  prefix, so that typeahead is the price of the zero-token/rate-limit-immune path.
 - **`apiKeyEnc` is per user+machine** — a DPAPI blob only decrypts on the Windows
   account and machine that created it. Moving `cl-config.json` to another PC won't
   decrypt it; run `cl set-key <id>` there to re-encrypt. It's not defense against

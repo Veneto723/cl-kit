@@ -1,9 +1,7 @@
 #!/usr/bin/env node
-// cl-help: builds the cl command cheat sheet. Two callers:
-//   - the `cl:help` sentinel (via cl-switch-hook) — ZERO tokens, the primary way in;
-//   - the `/cl` slash command — costs a small model turn, but IS in the native
-//     `/` menu, so it's the discoverable bootstrap that points you at cl:help.
-// Exported as renderHelp() so both share one source of truth.
+// cl-help: builds the cl command cheat sheet. Rendered by the `cl:help` (alias
+// `cl:cl`) sentinel via cl-switch-hook — caught before any model turn, so it's
+// ZERO tokens. Exported as renderHelp(); also runnable directly for debugging.
 'use strict';
 
 const C = require('./cl-config');
@@ -15,7 +13,7 @@ function renderHelp() {
 
   return `cl — commands
 =============
-  cl:help   this cheat sheet — ZERO tokens   (or /cl, from the / menu)
+  cl:help   this cheat sheet — ZERO tokens   (alias: cl:cl)
 
 Switch account (keeps your conversation, preserves model/effort/mode):
   cl:switch              open the interactive picker — ZERO tokens
@@ -56,10 +54,8 @@ Why the cl: forms?
   cl:...  are plain messages caught by a hook BEFORE the model runs — they cost
           NO tokens and work even when the account is rate-limited (a slash command
           can't, because its bash needs a safety classifier that runs on the same
-          exhausted account). This is why cl:switch / cl:restart / cl:help replaced
-          the old /switch and /restart slash commands.
-  /cl     the one remaining slash command — same sheet from the / menu (costs a
-          small turn); kept only so cl:help is discoverable. Prefer cl:help.
+          exhausted account). That's why everything here is a cl: sentinel — there
+          are no cl slash commands anymore.
 
 In your terminal (not inside a session):
   cl                     launch
@@ -74,5 +70,5 @@ Configured accounts: ${accounts.join(', ') || '(none — run `cl setup`)'}
 }
 
 module.exports = renderHelp;
-// Direct run (the /cl slash command shells out to this): print to stdout.
+// Direct run (debugging): print to stdout.
 if (require.main === module) process.stdout.write(renderHelp());

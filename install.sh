@@ -58,9 +58,8 @@ else
   say "  cl -> $bin  (NOT on PATH — add it, e.g.:  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc  then open a new shell)"
 fi
 
-# 4. slash commands
-cp "$kit"/commands/*.md "$commands"/ 2>/dev/null || true
-say "  commands -> $commands (/cl — switching/restart use zero-token cl:switch / cl:restart)"
+# 4. no slash commands — every cl action is a zero-token cl: sentinel (cl:switch,
+#    cl:restart, cl:peek, cl:help, …) caught by the UserPromptSubmit hook.
 
 # 5. settings.json: hooks + statusline (shared Node wiring)
 node "$scripts/cl-wire-settings.js" "$scripts"

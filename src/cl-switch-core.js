@@ -541,7 +541,7 @@ function requestAddAccount(session, argStr) {
   try {
     const C = require('./cl-config');
     if (C.findAccount(C.loadConfig(), id)) {
-      return { ok: false, message: `account "${id}" already exists — pick a different id (see /cl or cl doctor).` };
+      return { ok: false, message: `account "${id}" already exists — pick a different id (see cl:help or cl doctor).` };
     }
   } catch {}
 

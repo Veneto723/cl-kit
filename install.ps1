@@ -65,9 +65,8 @@ if (($userPath -split ';') -notcontains $bin) {
   Write-Host "  cl.cmd  -> $bin  (already on PATH)"
 }
 
-# 3. slash commands
-Copy-Item (Join-Path $kit 'commands\*.md') $commands -Force
-Write-Host "  commands -> $commands (/cl — switching/restart use zero-token cl:switch / cl:restart)"
+# 3. no slash commands — every cl action is a zero-token cl: sentinel (cl:switch,
+#    cl:restart, cl:peek, cl:help, …) caught by the UserPromptSubmit hook.
 
 # 4. toast icons
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts 'icons\make-icons.ps1') | Out-Null
