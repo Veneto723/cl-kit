@@ -24,9 +24,9 @@ const SHARED_DIRS = ['projects', 'sessions', 'commands', 'todos', 'skills', 'age
 // from the home one so a fresh profile still has the user's servers.
 const HOME_CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 // settings.json keys cl OWNS and must propagate into every profile so the zero-
-// token cl: hooks, the usage statusline, and the cl-signal allow-rule all work
-// inside a profiled session. Everything else (theme, model, per-account /config)
-// is left to Claude Code / the user per profile.
+// token cl: hooks, the usage statusline, and the user's permission allow-list all
+// work inside a profiled session. Everything else (theme, model, per-account
+// /config) is left to Claude Code / the user per profile.
 const CL_SETTINGS_KEYS = ['hooks', 'statusLine', 'permissions'];
 
 function profileDir(accId) { return path.join(PROFILES_DIR, String(accId)); }

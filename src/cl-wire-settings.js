@@ -63,11 +63,9 @@ if (!settings.statusLine) {
   settings.statusLine = { type: 'command', command: `node "${S}/usage-monitor.js" --compact` };
 }
 
-// pre-approve /switch's !-bash signal so it works in auto mode without a prompt.
-settings.permissions = settings.permissions || {};
-if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
-const allowRule = 'Bash(node "$HOME/.claude/scripts/cl-signal.js":*)';
-if (!settings.permissions.allow.includes(allowRule)) settings.permissions.allow.push(allowRule);
+// (No Bash allow-rule needed: switching/restarting is done via the zero-token
+// `cl:switch` / `cl:restart` sentinels caught by the UserPromptSubmit hook — no
+// !-bash, no classifier. The old /switch /restart slash commands were removed.)
 
 fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-process.stdout.write(`settings.json wired (hooks + statusline + switch allow-rule)${fs.existsSync(settingsPath + '.bak-cl-kit') ? ' — backup at settings.json.bak-cl-kit' : ''}\n`);
+process.stdout.write(`settings.json wired (hooks + statusline)${fs.existsSync(settingsPath + '.bak-cl-kit') ? ' — backup at settings.json.bak-cl-kit' : ''}\n`);

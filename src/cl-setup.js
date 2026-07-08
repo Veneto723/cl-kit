@@ -32,7 +32,7 @@ async function askId(q, taken, def) {
 }
 
 async function buildOauth(taken, suggestedId, suggestedLabel) {
-  const id = await askId('  account id (short, used in /switch)', taken, suggestedId);
+  const id = await askId('  account id (short, used in cl:switch)', taken, suggestedId);
   const label = (await ask(`  display label (${suggestedLabel || id.toUpperCase()}): `)) || suggestedLabel || id.toUpperCase();
   const color = (await ask('  statusline color hex (#D97757): ')) || '#D97757';
   console.log('  (if this is a SECOND subscription, run `cl capture ' + id + '` later while logged in as it)');
@@ -40,7 +40,7 @@ async function buildOauth(taken, suggestedId, suggestedLabel) {
 }
 
 async function buildApi(taken, suggestedId) {
-  const id = await askId('  account id (short, used in /switch)', taken, suggestedId);
+  const id = await askId('  account id (short, used in cl:switch)', taken, suggestedId);
   const label = (await ask(`  display label (${id.toUpperCase()}): `)) || id.toUpperCase();
   const color = (await ask('  statusline color hex (#2DD4BF): ')) || '#2DD4BF';
   let baseUrl = '';

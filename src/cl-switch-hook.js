@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // cl-switch-hook: a UserPromptSubmit hook that lets you switch/restart a cl
 // session by TYPING a plain message — with NO Bash permission classifier in the
-// path. This is the escape hatch for the deadlock where the current account is
-// rate-limited: `/switch`'s !-bash needs the classifier (which runs on that same
-// dead account) to be approved, so it can't run exactly when you need it most.
-// Hooks run locally in the Claude Code harness, never call a model, and so work
-// at 100% rate-limit.
+// path. It's the ONLY switch path (the old /switch and /restart slash commands were
+// removed) precisely because it sidesteps a deadlock: a slash command's !-bash
+// needs the safety classifier, which runs on the CURRENT account — so when that
+// account is rate-limited, it can't run exactly when you need it most. Hooks run
+// locally in the Claude Code harness, never call a model, and so work at 100%
+// rate-limit.
 //
 // Triggers (the whole prompt, case-insensitive, leading /! optional):
 //   cl:switch            → cycle to the next account

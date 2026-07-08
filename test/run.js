@@ -232,7 +232,8 @@ try {
   ok('preserves the user\'s existing settings + hook', s.theme === 'dark' && cmds('Stop').includes('other.js'));
   ok('wires UserPromptSubmit (switch-hook + notify start)', cmds('UserPromptSubmit').includes('cl-switch-hook.js') && cmds('UserPromptSubmit').includes('cl-notify.js'));
   ok('wires Stop/StopFailure/Notification cl-notify', cmds('Stop').includes('cl-notify.js') && cmds('StopFailure').includes('cl-notify.js') && cmds('Notification').includes('cl-notify.js'));
-  ok('sets statusline + switch allow-rule', /usage-monitor\.js/.test(JSON.stringify(s.statusLine)) && s.permissions.allow.some((a) => a.includes('cl-signal.js')));
+  ok('sets statusline', /usage-monitor\.js/.test(JSON.stringify(s.statusLine)));
+  ok('no cl-signal allow-rule (slash commands removed)', !JSON.stringify(s.permissions || {}).includes('cl-signal.js'));
   // idempotent: a second run must not duplicate hooks
   spawnSync(process.execPath, [wire, scriptsDir], { encoding: 'utf8' });
   const s2 = JSON.parse(fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8'));

@@ -60,9 +60,9 @@ fi
 
 # 4. slash commands
 cp "$kit"/commands/*.md "$commands"/ 2>/dev/null || true
-say "  commands -> $commands (/switch /restart /cl)"
+say "  commands -> $commands (/cl — switching/restart use zero-token cl:switch / cl:restart)"
 
-# 5. settings.json: hooks + statusline + switch allow-rule (shared Node wiring)
+# 5. settings.json: hooks + statusline (shared Node wiring)
 node "$scripts/cl-wire-settings.js" "$scripts"
 
 say ""

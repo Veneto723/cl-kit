@@ -115,7 +115,7 @@ available (headless box, locked keychain), it falls back to a `0600` file under
 `~/.claude/cl-keys/` (via `apiKeyFrom`). You can also always use `apiKeyEnv` (an env
 var) or `apiKeyFrom` (file + regex) directly.
 
-To update later: `git pull`, re-run the installer, and `/restart` any live sessions.
+To update later: `git pull`, re-run the installer, and `cl:restart` any live sessions.
 
 ---
 
@@ -139,15 +139,14 @@ To update later: `git pull`, re-run the installer, and `/restart` any live sessi
 | `cl:trash restore <id>` (or `cl:restore <id>`) | restore a deleted conversation from trash | **0** |
 | `cl:trash empty` | **permanently** purge the trash (double-confirmed) | **0** |
 | `cl:restart` | reload the wrapper + relaunch this conversation | **0** |
-| `/switch [n\|name]` | same picker / direct switch, from the `/` menu | small |
-| `/restart` | reload + relaunch | small |
 | `/cl` | print this cheat sheet | small |
 
 The `cl:` forms are plain messages caught by a hook **before** the model runs —
-that's why they cost nothing and keep working when the account is rate-limited
-(when `/switch`'s bash can't get past the safety classifier, because the
-classifier runs on the exhausted account). The `/` forms are discoverable in the
-native `/` menu but cost one small model turn. `/cl` documents both.
+that's why they cost nothing and keep working when the account is rate-limited (a
+slash command's bash can't get past the safety classifier, because the classifier
+runs on the exhausted account). That deadlock is exactly why `cl:switch` /
+`cl:restart` replaced the old `/switch` and `/restart` slash commands, which are
+removed. `/cl` (the one remaining slash command) prints this cheat sheet.
 
 **In your terminal** (not inside a session):
 
@@ -292,7 +291,7 @@ statusline and the `pool_status` / `pool_next_reset` MCP tools.
 `account_list` / `account_add` / `account_remove` / `account_update` /
 `config_update` — e.g. *"add my work gateway at https://… with the key in env
 WORK_KEY"*. Every write backs up `cl-config.json`, validates before committing,
-and never echoes secrets. Changes are `/switch`-able immediately, no restart.
+and never echoes secrets. Changes are `cl:switch`-able immediately, no restart.
 
 ---
 
@@ -302,14 +301,14 @@ and never echoes secrets. Changes are `/switch`-able immediately, no restart.
   owns the real terminal — its slash menus and differential renderer work exactly
   as designed. cl coordinates out-of-band via trigger files, never by intercepting
   keystrokes.
-- **Switching is manual, via triggers.** `/switch`'s bash (or the `cl:switch`
-  hook) drops a per-session trigger file; the wrapper polls for it, kills claude,
-  and relaunches the *same conversation* (`--resume <uuid>`) on the other account,
-  re-applying model / permission-mode / effort. There is **no** usage-based
-  auto-switching.
+- **Switching is manual, via triggers.** The `cl:switch` hook drops a per-session
+  trigger file; the wrapper polls for it, kills claude, and relaunches the *same
+  conversation* (`--resume <uuid>`) on the other account, re-applying model /
+  permission-mode / effort. There is **no** usage-based auto-switching.
 - **Zero-token path via hooks.** `cl:switch` / `cl:restart` are caught by a
   `UserPromptSubmit` hook that blocks the prompt before any model turn — so they
-  cost nothing and are immune to the rate-limit deadlock that stops `/switch`.
+  cost nothing and are immune to the rate-limit deadlock that stopped the old
+  `/switch` slash command (whose bash needed a classifier on the dead account).
 - **The interactive picker** is rendered by the wrapper itself (not the model):
   it kills claude to free the TTY, draws an arrow-key menu with raw-mode stdin +
   ANSI, and relaunches on your choice. This is the closest a custom tool can get
@@ -365,12 +364,13 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
 ## Troubleshooting
 
 - **`cl:switch` didn't open the picker / was treated as a normal message** — the
-  running wrapper predates the code change. `/restart` the session (it re-execs
+  running wrapper predates the code change. `cl:restart` the session (it re-execs
   the wrapper from disk). Any time cl-runner.js changes, live sessions need one
-  `/restart`; hooks and the statusline reload on their own.
-- **`/switch` errors with "cannot determine the safety of Bash"** — the account is
-  rate-limited, so the classifier `/switch`'s bash needs is unavailable. Use
-  `cl:switch` instead (it never touches the classifier).
+  `cl:restart`; hooks and the statusline reload on their own.
+- **Switching while rate-limited** — `cl:switch` / `cl:restart` are caught by a
+  hook before the model runs, so they work even when the account is exhausted.
+  (The removed `/switch` slash command couldn't: its bash needed a safety
+  classifier that runs on the same dead account — the deadlock these forms fix.)
 - **No toast appeared** — toasts only fire for turns ≥ 30s (tune with
   `CL_NOTIFY_MIN_MS`, `0` = every turn). Check `~/.claude/cache/cl-notify.log` for
   the decision (`toast` / `skip` / `wait` / `fail`).
@@ -386,11 +386,11 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
 
 ```
 src/            wrapper + hooks (cl-runner, cl-config, cl-platform, cl-profile,
-                cl-signal, cl-switch-*, cl-notify, cl-help, cl-focus.*,
+                cl-switch-*, cl-conv, cl-notify, cl-help, cl-focus.*,
                 cl-wire-settings, usage-monitor, gw-usage, cl-sync, cl-setup)
 mcp/            cl MCP server (account management + pool metrics tools)
 pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)
-commands/       slash commands (/switch, /restart, /cl)
+commands/       /cl slash command (switching/restart use zero-token cl:switch / cl:restart)
 test/           portable cross-platform test suite (run.js; `npm test`)
 install.ps1     Windows installer · install.sh  Linux/macOS installer (idempotent)
 ```
@@ -406,9 +406,10 @@ install.ps1     Windows installer · install.sh  Linux/macOS installer (idempote
 - All caches/state live under `~/.claude/cache/cl-*`; stale files are swept
   automatically (state daily, effort memories after 7 days, conversation locks by
   process liveness).
-- `cl:switch` is the token-free interactive path; `/switch` is a slash command so
-  it always costs a small model turn (Claude Code has no way to make a *custom*
-  command instant — that path is reserved for built-ins).
+- `cl:switch` is the token-free interactive path. Slash commands can't match it:
+  a *custom* slash command always costs a small model turn (Claude Code reserves
+  the instant path for built-ins), which is why the old `/switch` and `/restart`
+  were removed in favor of the zero-token `cl:` sentinels.
 - **`apiKeyEnc` is per user+machine** — a DPAPI blob only decrypts on the Windows
   account and machine that created it. Moving `cl-config.json` to another PC won't
   decrypt it; run `cl set-key <id>` there to re-encrypt. It's not defense against

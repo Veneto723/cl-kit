@@ -16,8 +16,6 @@ process.stdout.write(`cl — commands
 Switch account (keeps your conversation, preserves model/effort/mode):
   cl:switch              open the interactive picker — ZERO tokens
   cl:switch ${example.padEnd(12)} switch straight to an account (by name or number)
-  /switch                same picker, from the / menu (costs a small model turn)
-  /switch ${example.padEnd(13)} switch directly, from the / menu
 
 Add / manage accounts:
   cl:add-account                   open the WIZARD — pick Subscription or Gateway, then guided prompts
@@ -41,7 +39,7 @@ See usage:
   cl:peek                usage of ALL accounts + where a launch would land — ZERO tokens
 
 Session:
-  cl:restart   /restart  reload the wrapper + relaunch this conversation
+  cl:restart             reload the wrapper + relaunch this conversation — ZERO tokens
   cl:delete              delete THIS conversation → trash, start fresh (asks; then 'confirm')
 
 Trash (deleted conversations stay recoverable until you empty it):
@@ -50,12 +48,13 @@ Trash (deleted conversations stay recoverable until you empty it):
   cl:restore <id>        same, shorthand
   cl:trash empty         PERMANENTLY purge the trash (asks; then 'confirm')
 
-Why two forms?
+Why the cl: forms?
   cl:...  are plain messages caught by a hook BEFORE the model runs — they cost
-          NO tokens and work even when the account is rate-limited (when /switch
-          can't, because its bash needs a classifier on the exhausted account).
-  /...    are discoverable in the / menu but cost one small model turn.
-  Tip: prefer the cl: forms; use / when you want to browse the menu.
+          NO tokens and work even when the account is rate-limited (a slash command
+          can't, because its bash needs a safety classifier that runs on the same
+          exhausted account). This is why cl:switch / cl:restart replaced the old
+          /switch and /restart slash commands.
+  /cl     the only slash command kept — lists this cheat sheet from the / menu.
 
 In your terminal (not inside a session):
   cl                     launch

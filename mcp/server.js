@@ -101,8 +101,8 @@ function shapeAccount(a, cfg) {
 }
 
 // Running cl sessions keep their launch-time config for env building, but
-// /switch RE-READS the config, so new/edited accounts are switchable at once.
-const LIVE_NOTE = 'Effective immediately for /switch and the statusline; sessions already running on an EDITED account pick up env changes on their next /switch or /restart.';
+// cl:switch RE-READS the config, so new/edited accounts are switchable at once.
+const LIVE_NOTE = 'Effective immediately for cl:switch and the statusline; sessions already running on an EDITED account pick up env changes on their next cl:switch or cl:restart.';
 
 // ---- account tools --------------------------------------------------------------
 
@@ -187,7 +187,7 @@ function toolAccountRemove(args) {
     remaining: (raw.accounts || []).map((a) => a.id),
     migratedLegacyConfig: migrated,
     backup,
-    note: LIVE_NOTE + ' Sessions currently RUNNING on the removed account keep working until they exit or /switch.',
+    note: LIVE_NOTE + ' Sessions currently RUNNING on the removed account keep working until they exit or cl:switch.',
   };
   if (removed.type === 'oauth' && removed.credentials && fs.existsSync(removed.credentials)) {
     out.credentialsFile = removed.credentials;
@@ -374,12 +374,12 @@ const TOOLS = [
   },
   {
     name: 'account_add',
-    description: 'Add an account to the cl switcher. type "oauth" = a claude.ai subscription login (capture it later with `cl capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately /switch-able.',
+    description: 'Add an account to the cl switcher. type "oauth" = a claude.ai subscription login (capture it later with `cl capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately switchable with cl:switch.',
     inputSchema: {
       type: 'object',
       required: ['id', 'type'],
       properties: {
-        id: { type: 'string', description: 'short id used in /switch <id> (alphanumeric, - _)' },
+        id: { type: 'string', description: 'short id used in cl:switch <id> (alphanumeric, - _)' },
         type: { type: 'string', enum: ['oauth', 'api'] },
         label: { type: 'string', description: 'statusline label (default: ID uppercased)' },
         color: { type: 'string', description: 'statusline hex color, e.g. #2DD4BF' },
@@ -425,7 +425,7 @@ const TOOLS = [
   },
   {
     name: 'config_update',
-    description: 'Update cl switcher globals: defaultAccount (launch account), switchOrder (the /switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
+    description: 'Update cl switcher globals: defaultAccount (launch account), switchOrder (the cl:switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
     inputSchema: {
       type: 'object',
       properties: {

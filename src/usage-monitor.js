@@ -65,7 +65,7 @@ function primaryOauth() {
   return cfg ? cfg.accounts.find((a) => a.type === 'oauth') || null : null;
 }
 
-// What /switch would move to — used to word the warning nudges.
+// What cl:switch would move to — used to word the warning nudges.
 function switchTargetLabel(fromId) {
   if (!cfg) return null;
   const next = C.nextAccount(cfg, fromId, null);
@@ -372,7 +372,7 @@ function poolExhausted(rows) {
 
 // The dead-end: on the pool, every pool account is in cooldown. If the oauth
 // subscription is also exhausted there's nothing to do but wait for its reset;
-// otherwise the escape is a manual /switch back. `data` = cached oauth usage.
+// otherwise the escape is a manual cl:switch back. `data` = cached oauth usage.
 function bothExhaustedAlert(data) {
   const sub = primaryOauth();
   const subLabel = sub ? sub.label : 'subscription';
@@ -385,7 +385,7 @@ function bothExhaustedAlert(data) {
     return criticalAlert(`⛔ POOL + ${subLabel} both exhausted${reset}`);
   }
   const mx = Math.round(data.five_hour.utilization);
-  return criticalAlert(`⛔ POOL exhausted — /switch back to ${subLabel} (${mx}%)`);
+  return criticalAlert(`⛔ POOL exhausted — cl:switch back to ${subLabel} (${mx}%)`);
 }
 
 // Projects minutes-to-limit from the observed rate of change of `key` over
@@ -463,7 +463,7 @@ const EFFORT_INITIAL_TAIL = 2_000_000; // bound the first scan of a long/resumed
 // { effort, offset }. Each render scans ONLY the new transcript bytes since last
 // time for the genuine /effort echo and remembers the value. This never loses the
 // setting to a fixed-window truncation. cl-runner SEEDS this file at each launch,
-// so a launch with no echo line (e.g. right after a /switch) is still known.
+// so a launch with no echo line (e.g. right after a cl:switch) is still known.
 function trackEffort() {
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
   if (!sid) return null;
@@ -571,7 +571,7 @@ function renderFull(data, sessionEta, weekEta, poolRows, acc, model, effort) {
   const target = switchTargetLabel(acc.id);
   const lines = [`Account: ${label(acc)}`];
   if ((over || nearSession) && target) {
-    lines.push('', blinkAlert(over ? `⚠ ${acc.label} limit reached — /switch to ${target} now` : `⚠ Nearing ${acc.label} limit — /switch to ${target}`));
+    lines.push('', blinkAlert(over ? `⚠ ${acc.label} limit reached — cl:switch to ${target} now` : `⚠ Nearing ${acc.label} limit — cl:switch to ${target}`));
   }
   const sReset = formatResetTime(session.resets_at);
   const wReset = formatResetTime(week.resets_at);
@@ -637,7 +637,7 @@ function renderCompact(data, sessionEta, poolRows, acc, model, effort) {
   const nearSession = s.utilization >= WARN_SESSION && s.utilization < SWITCH_SESSION;
   const target = switchTargetLabel(acc.id);
   if ((over || nearSession) && target) {
-    const lbl = over ? `limit reached — /switch to ${target}` : `nearing limit — /switch to ${target}`;
+    const lbl = over ? `limit reached — cl:switch to ${target}` : `nearing limit — cl:switch to ${target}`;
     return withL2(blinkAlert(`⚠ ${acc.label} ${sv}%/${wv}% ${lbl}`));
   }
 

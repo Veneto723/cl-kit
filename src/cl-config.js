@@ -92,7 +92,7 @@ function findAccount(cfg, id) {
   return cfg.accounts.find((a) => a.id === id) || null;
 }
 
-// The account /switch moves to: an explicit valid target, else the next id in
+// The account cl:switch moves to: an explicit valid target, else the next id in
 // switchOrder after `currentId` (cyclic).
 function nextAccount(cfg, currentId, targetId) {
   const target = findAccount(cfg, targetId);

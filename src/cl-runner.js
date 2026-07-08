@@ -6,9 +6,12 @@
 //
 // Switching is MANUAL mid-session, driven by trigger files (not keystroke
 // interception):
-//   - /switch [account] and /restart are REAL Claude Code slash commands whose
-//     `!`-bash drops a per-session trigger file (see commands/*.md + cl-signal.js).
-//     This runner polls for its own session's trigger.
+//   - `cl:switch [account]` / `cl:restart` are plain-text sentinels caught by the
+//     UserPromptSubmit hook (cl-switch-hook.js -> cl-switch-core.js), which drops a
+//     per-session trigger file BEFORE any model turn (zero tokens, classifier-immune).
+//     This runner polls for its own session's trigger. (The old /switch and
+//     /restart slash commands were removed — they cost a model turn and
+//     deadlocked when rate-limited.)
 //   - There is NO MID-SESSION auto-switch (removed — it was disruptive).
 //   - At LAUNCH/RESUME only, cl auto-selects the best account: prefer a
 //     subscription while it has headroom, fall to the most-available pool only
@@ -262,7 +265,7 @@ function buildEnv(accountId) {
 }
 
 // ---- preserve mode/model/effort across a switch ---------------------------
-// On respawn we re-apply the session's current choices so a /switch or /restart
+// On respawn we re-apply the session's current choices so a cl:switch or cl:restart
 // doesn't reset them. model + permissionMode come from the transcript tail;
 // effort from the sticky per-conversation file the statusline maintains.
 
@@ -406,7 +409,7 @@ function preservedFlags(convId) {
 
 const switchTrigger    = path.join(CACHE_DIR, `cl-switch-${SESSION_ID}.trigger`);
 const restartTrigger   = path.join(CACHE_DIR, `cl-restart-${SESSION_ID}.trigger`);
-// Dropped by the cl:switch hook (or /switch) to open the interactive arrow-key
+// Dropped by the cl:switch hook to open the interactive arrow-key
 // account picker. cl-runner kills claude, renders the picker on the freed TTY,
 // and relaunches on the chosen account — zero model tokens.
 const pickTrigger      = path.join(CACHE_DIR, `cl-pick-${SESSION_ID}.trigger`);
@@ -697,8 +700,9 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
       resolve({ reason, exitCode, payload });
     };
 
-    // Poll for slash-command triggers (this session only): /switch and /restart
-    // each drop a per-session trigger file (via cl-signal.js) that we act on here.
+    // Poll for this session's trigger files: cl:switch / cl:restart (and the other
+    // cl: sentinels) each drop a per-session trigger file via the UserPromptSubmit
+    // hook (cl-switch-core), which we act on here.
     // Switching is MANUAL-only — there is no automatic usage-based switching.
     const t0 = Date.now();
     let adoptPending = !!watchAdopt;
@@ -722,7 +726,7 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
         clearTriggers(); killChild(child); finish('delete', undefined, payload || {});
       }
       else if (fs.existsSync(switchTrigger)) {
-        // The trigger may carry a target account id (from `/switch <id>`).
+        // The trigger may carry a target account id (from `cl:switch <id>`).
         let target = null;
         try {
           const raw = fs.readFileSync(switchTrigger, 'utf8');
@@ -876,7 +880,7 @@ function doAddAccount(argv) {
 
   process.stdout.write(
     `\n\x1b[32m[cl] ✓ added account "${id}"${acc.email ? ` (${acc.email}, ${acc.subscriptionType || 'subscription'})` : ''}.\x1b[0m` +
-    `\n[cl] use it:  cl:switch ${id}  (or /switch ${id})\n` +
+    `\n[cl] use it:  cl:switch ${id}\n` +
     `[cl] config backed up at ${cfgBak}\n`);
   return { code: 0 };
 }

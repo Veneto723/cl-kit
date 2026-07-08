@@ -67,7 +67,7 @@ if (($userPath -split ';') -notcontains $bin) {
 
 # 3. slash commands
 Copy-Item (Join-Path $kit 'commands\*.md') $commands -Force
-Write-Host "  commands -> $commands (/switch /restart /cl)"
+Write-Host "  commands -> $commands (/cl — switching/restart use zero-token cl:switch / cl:restart)"
 
 # 4. toast icons
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts 'icons\make-icons.ps1') | Out-Null
@@ -124,14 +124,9 @@ if (-not $settings.statusLine) {
     type = 'command'; command = "node `"$scripts\usage-monitor.js`" --compact"
   }) -Force
 }
-# allow /switch's !-bash without the classifier (so it works in auto mode, and
-# is pre-approved rather than prompted). Narrow rule = carries into auto mode.
-if (-not $settings.permissions) { $settings | Add-Member -NotePropertyName permissions -NotePropertyValue ([pscustomobject]@{ allow = @() }) -Force }
-if (-not $settings.permissions.allow) { $settings.permissions | Add-Member -NotePropertyName allow -NotePropertyValue @() -Force }
-$allowRule = 'Bash(node "$HOME/.claude/scripts/cl-signal.js":*)'
-if ($settings.permissions.allow -notcontains $allowRule) {
-  $settings.permissions.allow = @($settings.permissions.allow) + $allowRule
-}
+# (No Bash allow-rule: switching/restart use the zero-token cl:switch / cl:restart
+# sentinels caught by the UserPromptSubmit hook — no !-bash, no classifier. The
+# old /switch /restart slash commands that needed the allow-rule were removed.)
 
 # Write UTF-8 *without* BOM: PS 5.1's `Set-Content -Encoding utf8` prepends a BOM
 # that Node's JSON.parse (used by cl-runner / doctor) rejects as invalid JSON.

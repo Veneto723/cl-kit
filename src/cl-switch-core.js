@@ -1,11 +1,13 @@
 // cl-switch-core: the shared validate + drop-trigger logic for switching/
-// restarting a cl session. Used by BOTH entry points:
-//   - cl-signal.js       (the /switch and /restart slash commands' !-bash)
-//   - cl-switch-hook.js  (a UserPromptSubmit hook — classifier-immune fallback
-//                          that works even when the account is rate-limited)
+// restarting a cl session. Entry point:
+//   - cl-switch-hook.js  (a UserPromptSubmit hook catching the zero-token cl:
+//                          sentinels — classifier-immune, works even when the
+//                          account is rate-limited)
+// (The old cl-signal.js / /switch / /restart slash-command path was removed; the
+// cl: hook is now the single way in.)
 //
-// Keeping it in one module means the two paths can never disagree about what a
-// valid switch is or where the trigger file goes.
+// Keeping the logic in one module means there's one definition of what a valid
+// switch is and where the trigger file goes.
 'use strict';
 
 const fs   = require('fs');
@@ -245,7 +247,7 @@ function renderMenu(cfg, current, lead) {
     return `  ${i + 1}. ${a.id}${a.label && a.label !== a.id.toUpperCase() ? ` (${a.label})` : ''} [${a.type}]${mark}`;
   });
   return `${lead}\n${rows.join('\n')}\n` +
-    `Pick by number or name: \`/switch <n|name>\`  (or \`cl:switch <n|name>\` — works even when rate-limited).`;
+    `Pick by number or name: \`cl:switch <n|name>\` — zero tokens, works even when rate-limited.`;
 }
 
 // Resolve a target token to an account: a 1-based menu number, or an id/name.
