@@ -337,6 +337,40 @@ try {
     process.env.CL_DONE_GATE = 'note';
     const r3 = D.onTaskCompleted({ task_id: '9', task_subject: 'x', cwd: repo }, 'no-role-session');
     ok('no role -> no note, no crash', !r3.posted && r3.block === false);
+
+    // NO REPO, NO GATE. "there is no git here" != "git says you committed nothing".
+    // Caught live: a cwd that drifted to a non-repo made strict refuse EVERY completion.
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'norepo-'));
+    process.env.CL_DONE_GATE = 'strict';
+    const r4 = D.onTaskCompleted({ task_id: '1', task_subject: 'x', cwd: bare }, S);
+    ok('strict does NOT block outside a git repo', r4.block === false);
+    fs.rmSync(bare, { recursive: true, force: true });
+
+    // An ORPHANED baseline sha (rebase/amend) must fall back to the task's birth time,
+    // not silently become "unknown" and block a legitimately committed task. The task
+    // FILE is the fallback, so the fixture must actually have one — point CLAUDE_CONFIG_DIR
+    // at a sandbox rather than fake it.
+    const bl = D.readBaseline(room, S, '7', path.join(repo, 'seed.txt'));
+    ok('readBaseline returns BOTH a sha and a birth time', bl.sha === base && typeof bl.born === 'string');
+
+    const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-'));
+    const prevCfg = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = cfg;
+    try {
+      fs.mkdirSync(path.join(cfg, 'tasks', S), { recursive: true });
+      fs.writeFileSync(path.join(cfg, 'tasks', S, '10.json'), '{"id":"10"}');   // born NOW
+      D.recordBaseline(room, S, '10', 'dead1234beefdead1234beefdead1234beefdead'); // never existed
+      fs.writeFileSync(path.join(repo, 'after.js'), 'work');
+      g('add', '-A'); g('commit', '-qm', 'work done after the task was born');
+
+      process.env.CL_DONE_GATE = 'strict';
+      const r5 = D.onTaskCompleted({ task_id: '10', task_subject: 'orphaned baseline', cwd: repo }, S);
+      ok('an orphaned baseline sha falls back to birth time, does not block', r5.block === false);
+      ok('and it still posts PROVEN, with the real sha', r5.posted === true && r5.proven === true);
+    } finally {
+      if (prevCfg === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prevCfg;
+      fs.rmSync(cfg, { recursive: true, force: true });
+    }
   } finally {
     delete process.env.CL_DONE_GATE;
     try { fs.unlinkSync(roleFile); } catch {}

@@ -103,20 +103,24 @@ function recordBaseline(room, session, taskId, sha) {
   } catch { return false; }
 }
 
-// Prefer the sha captured at TaskCreated. Fall back to when the task FILE was born —
-// which works for tasks that already existed before this hook was ever installed, and
-// needs no cooperation from anybody.
+// Two independent baselines, because either can go missing:
+//   sha  — captured at TaskCreated. Exact. But it can be ORPHANED by a rebase/amend,
+//          after which `git log <sha>..HEAD` fails and we'd learn nothing.
+//   born — when the task FILE was created. Always available, and it works for tasks
+//          that predate the hook ever being installed. Coarser (clock, not graph).
+// The caller tries the sha first and falls back to the timestamp.
 function readBaseline(room, session, taskId, taskFile) {
+  const out = { sha: null, born: null };
   try {
     const b = JSON.parse(fs.readFileSync(baselineFile(room, session, taskId), 'utf8'));
-    if (b && b.sha) return b.sha;
+    if (b && b.sha) out.sha = b.sha;
   } catch {}
   try {
     const st = fs.statSync(taskFile);
     const born = st.birthtime && st.birthtime.getTime() > 0 ? st.birthtime : st.mtime;
-    return born.toISOString();
+    out.born = born.toISOString();
   } catch {}
-  return null;
+  return out;
 }
 
 function taskFilePath(session, taskId) {
@@ -185,8 +189,19 @@ function onTaskCompleted(payload, session) {
   if (g === 'off') return { block: false };
 
   const room = R.resolveRoom(payload.cwd || process.cwd());
-  const baseline = readBaseline(room, session, payload.task_id, taskFilePath(session, payload.task_id));
-  const evidence = evidenceSince(room.root, baseline);
+
+  // NO REPO, NO GATE. "There is no git here" and "git says you committed nothing" are
+  // completely different facts, and conflating them is a trap: a session whose cwd has
+  // drifted outside a repo (or a project simply not under git) would have EVERY task
+  // completion refused, with a bewildering "no commit found". A gate that fires where
+  // it cannot possibly gather evidence is not strict, it is broken.
+  if (!head(room.root)) return { block: false };
+
+  const base = readBaseline(room, session, payload.task_id, taskFilePath(session, payload.task_id));
+  // Prefer the exact sha; fall back to the task's birth time when that sha is unknown
+  // to git (an amend or rebase orphaned it) or was never recorded.
+  let evidence = base.sha ? evidenceSince(room.root, base.sha) : null;
+  if (evidence === null && base.born) evidence = evidenceSince(room.root, base.born);
   const v = verdict(evidence, g);
 
   if (v.block) return { block: true, stderr: `[cl] ${v.reason}` };
