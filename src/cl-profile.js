@@ -18,7 +18,14 @@ const C = require('./cl-config');
 const PROFILES_DIR = path.join(C.CLAUDE_DIR, 'cl-profiles');
 // The "brain" — junctioned back to ~/.claude so every account shares it. (Windows
 // directory junctions need no admin, unlike file symlinks.)
-const SHARED_DIRS = ['projects', 'sessions', 'commands', 'todos', 'skills', 'agents', 'plugins'];
+//
+// `tasks` is Claude Code's TaskCreate/TaskUpdate list: <config>/tasks/<session-id>/<id>.json
+// plus a .lock. It belongs here for the same reason `sessions` and `todos` do — a
+// conversation resumed on another account is the SAME conversation and must keep its
+// task list. Without it, `cl:switch` silently showed an EMPTY task list, because the
+// new profile had no tasks/<session-id>/ of its own. (Observed: session 6665bfca had 4
+// tasks under ~/.claude/tasks and an empty dir under cl-profiles/max/tasks.)
+const SHARED_DIRS = ['projects', 'sessions', 'commands', 'todos', 'tasks', 'skills', 'agents', 'plugins'];
 // Claude Code's main state file lives at the HOME ROOT (~/.claude.json); under
 // CLAUDE_CONFIG_DIR it moves to <dir>/.claude.json. We seed MCP servers + trust
 // from the home one so a fresh profile still has the user's servers.
@@ -37,6 +44,39 @@ function isLinkTo(p, target) {
     if (!fs.lstatSync(p).isSymbolicLink()) return false;
     return path.resolve(fs.readlinkSync(p)) === path.resolve(target);
   } catch { return false; }
+}
+
+// A REAL directory sitting where a shared junction belongs holds real user data — a
+// profile that ran before its dir joined SHARED_DIRS. Move its contents into the shared
+// dir, then junction. This USED to be `fs.rmSync(link, {recursive:true, force:true})`,
+// which silently ate whatever was there; adding `tasks` to SHARED_DIRS would have
+// deleted every profile's task lists on the next launch.
+//
+// Two structural guarantees, not two promises:
+//   * The shared copy ALWAYS wins a name collision; the profile's copy is parked under
+//     cl-backup/ rather than overwritten. Nothing is compared, merged, or judged.
+//   * The final call is `rmdirSync` (NON-recursive), which fails unless the directory is
+//     already empty. So the only way we can remove `link` is if every child was moved out
+//     first. A partial move leaves the dir intact and we skip junctioning it.
+// Returns true when `link` is clear and safe to replace with a junction.
+function adoptIntoShared(link, target, accId, name) {
+  let st;
+  try { st = fs.lstatSync(link); } catch { return true; }        // nothing there — go
+  if (st.isSymbolicLink()) { try { fs.unlinkSync(link); return true; } catch { return false; } }
+  if (!st.isDirectory()) return false;                            // a FILE — never touch it
+
+  let entries; try { entries = fs.readdirSync(link); } catch { return false; }
+  for (const e of entries) {
+    const from = path.join(link, e);
+    const to = path.join(target, e);
+    try {
+      if (!fs.existsSync(to)) { fs.renameSync(from, to); continue; }
+      const bak = path.join(C.CLAUDE_DIR, 'cl-backup', 'profile-merge', String(accId), name);
+      fs.mkdirSync(bak, { recursive: true });
+      fs.renameSync(from, path.join(bak, e));                     // shared wins; keep ours
+    } catch { return false; }                                     // stuck — leave it whole
+  }
+  try { fs.rmdirSync(link); return true; } catch { return false; } // empty-only, by design
 }
 
 // Sync cl's hooks + statusLine + permissions into the profile's settings.json
@@ -79,7 +119,7 @@ function ensureProfile(accId) {
     if (isLinkTo(link, target)) continue;
     try {
       if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
-      try { const st = fs.lstatSync(link); if (st.isSymbolicLink()) fs.unlinkSync(link); else fs.rmSync(link, { recursive: true, force: true }); } catch {}
+      if (!adoptIntoShared(link, target, accId, d)) continue;   // couldn't clear it safely
       fs.symlinkSync(target, link, 'junction');
     } catch {}
   }
@@ -135,4 +175,4 @@ function renameProfile(oldId, newId) {
   return true;
 }
 
-module.exports = { PROFILES_DIR, profileDir, credsPath, ensureProfile, hasCreds, seedCreds, renameProfile, SHARED_DIRS };
+module.exports = { PROFILES_DIR, profileDir, credsPath, ensureProfile, hasCreds, seedCreds, renameProfile, SHARED_DIRS, adoptIntoShared };

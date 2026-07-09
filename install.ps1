@@ -125,6 +125,10 @@ Ensure-Hook $settings 'UserPromptSubmit' "$node `"$($scripts -replace '\\','/')/
 Ensure-Hook $settings 'Stop' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" done"
 Ensure-Hook $settings 'StopFailure' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" fail"
 Ensure-Hook $settings 'Notification' "$node `"$($scripts -replace '\\','/')/cl-notify.js`" wait"
+# the fridge's git-derived "done": baseline HEAD on task creation, diff it on completion.
+# Fires in an ordinary session — no agent team, no experimental flag.
+Ensure-Hook $settings 'TaskCreated' "$node `"$($scripts -replace '\\','/')/cl-done.js`""
+Ensure-Hook $settings 'TaskCompleted' "$node `"$($scripts -replace '\\','/')/cl-done.js`""
 if (-not $settings.statusLine) {
   $settings | Add-Member -NotePropertyName statusLine -NotePropertyValue ([pscustomobject]@{
     type = 'command'; command = "node `"$scripts\usage-monitor.js`" --compact"

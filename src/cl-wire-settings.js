@@ -39,12 +39,19 @@ if (raw != null) {
 
 // The hooks cl owns, per event. cl-switch-hook FIRST on UserPromptSubmit so the
 // classifier-immune switch fallback runs before anything else.
+// TaskCreated/TaskCompleted drive the fridge's git-derived "done" (cl-done.js). They
+// fire in an ORDINARY session — no agent team, no experimental flag — because the hook
+// call inside TaskUpdate sits outside any teams check. TaskCreated records the HEAD sha
+// as a baseline; TaskCompleted diffs against it and posts the sticky note. Default mode
+// is 'note' (never blocks); features.doneGate = 'strict' turns it into a real gate.
 const HOOKS = [
   { event: 'UserPromptSubmit', script: 'cl-switch-hook.js', arg: '' },
   { event: 'UserPromptSubmit', script: 'cl-notify.js', arg: 'start' },
   { event: 'Stop', script: 'cl-notify.js', arg: 'done' },
   { event: 'StopFailure', script: 'cl-notify.js', arg: 'fail' },
   { event: 'Notification', script: 'cl-notify.js', arg: 'wait' },
+  { event: 'TaskCreated', script: 'cl-done.js', arg: '' },
+  { event: 'TaskCompleted', script: 'cl-done.js', arg: '' },
 ];
 
 settings.hooks = settings.hooks || {};

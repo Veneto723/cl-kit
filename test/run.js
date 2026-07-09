@@ -234,6 +234,21 @@ try {
   ok('wires Stop/StopFailure/Notification cl-notify', cmds('Stop').includes('cl-notify.js') && cmds('StopFailure').includes('cl-notify.js') && cmds('Notification').includes('cl-notify.js'));
   ok('sets statusline', /usage-monitor\.js/.test(JSON.stringify(s.statusLine)));
   ok('no cl-signal allow-rule (slash commands removed)', !JSON.stringify(s.permissions || {}).includes('cl-signal.js'));
+  ok('wires TaskCreated -> cl-done (baseline the HEAD sha)', cmds('TaskCreated').includes('cl-done.js'));
+  ok('wires TaskCompleted -> cl-done (the git-derived gate)', cmds('TaskCompleted').includes('cl-done.js'));
+
+  // install.ps1 wires the SAME hooks by hand. If the two lists drift, a fresh install
+  // silently lacks whatever the newer one added — which is exactly how the gate would
+  // "work on this machine" and nowhere else.
+  const ps = fs.readFileSync(path.join(ROOT, 'install.ps1'), 'utf8');
+  const wireSrc = fs.readFileSync(wire, 'utf8');
+  const events = [...wireSrc.matchAll(/event:\s*'([A-Za-z]+)',\s*script:\s*'([\w.-]+)'/g)]
+    .map(([, ev, sc]) => `${ev}:${sc}`);
+  const missing = events.filter((e) => {
+    const [ev, sc] = e.split(':');
+    return !new RegExp(`Ensure-Hook \\$settings '${ev}'[^\\n]*${sc.replace('.', '\\.')}`).test(ps);
+  });
+  ok(`install.ps1 wires every hook cl-wire-settings does (${events.length})`, missing.length === 0, `missing: ${missing.join(', ')}`);
   // idempotent: a second run must not duplicate hooks
   spawnSync(process.execPath, [wire, scriptsDir], { encoding: 'utf8' });
   const s2 = JSON.parse(fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8'));
@@ -247,6 +262,133 @@ try {
   ok('refuses malformed settings.json (non-zero exit)', rbad.status !== 0);
   ok('leaves the malformed file untouched (no silent clobber)', fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8') === bad);
 } catch (e) { ok('cl-wire-settings works', false, e.message); }
+
+// ---- cl-done (derive "done" from git, not from the agent's word) ---------------
+section('cl-done (git-derived completion)');
+try {
+  const D = require(path.join(SRC, 'cl-done.js'));
+  const RM = require(path.join(SRC, 'cl-room.js'));
+  const F = require(path.join(SRC, 'cl-fridge.js'));
+  const { execFileSync } = require('child_process');
+
+  // --- the judgement, pure (no repo needed) ---
+  const withCommit = { commits: [{ sha: 'abc1234', subject: 'do it' }], files: ['a.js'] };
+  const noCommit = { commits: [], files: [] };
+  ok("'off' does nothing at all", D.verdict(withCommit, 'off').post === false && D.verdict(noCommit, 'off').block === false);
+  ok("'note' posts a proven completion", D.verdict(withCommit, 'note').post === true && D.verdict(withCommit, 'note').proven === true);
+  ok("'note' NEVER blocks, even unproven", D.verdict(noCommit, 'note').block === false && D.verdict(noCommit, 'note').post === true);
+  ok("'note' flags the unproven one", D.verdict(noCommit, 'note').proven === false);
+  ok("'strict' blocks an unevidenced completion", D.verdict(noCommit, 'strict').block === true);
+  ok("'strict' lets a committed one through", D.verdict(withCommit, 'strict').block === false);
+  ok('unknown evidence (null) counts as UNPROVEN, never as proven', D.verdict(null, 'strict').block === true && D.verdict(null, 'note').proven === false);
+
+  // --- evidence, against a REAL git repo ---
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'done-'));
+  const g = (...a) => execFileSync('git', a, { cwd: repo, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
+  g('init', '-q');
+  g('config', 'user.email', 't@t.t'); g('config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'seed.txt'), 'x');
+  g('add', '-A'); g('commit', '-qm', 'seed');
+  const base = D.head(repo);
+  ok('head() reads a real sha', /^[0-9a-f]{40}$/.test(base || ''));
+  ok('no commits since baseline -> proven=false', D.evidenceSince(repo, base).commits.length === 0);
+
+  fs.writeFileSync(path.join(repo, 'feature.js'), 'ship it');
+  g('add', '-A'); g('commit', '-qm', 'add feature: P-014');
+  const ev = D.evidenceSince(repo, base);
+  ok('one commit since baseline is found', ev.commits.length === 1);
+  ok('the commit SUBJECT survives (split on 0x1F, not on spaces)', ev.commits[0].subject === 'add feature: P-014');
+  ok('the changed FILES are derived', ev.files.includes('feature.js'));
+  ok('a bogus baseline yields null, never a false positive', D.evidenceSince(repo, 'deadbeef') === null);
+
+  // --- baselines are keyed by SESSION, because task ids restart at 1 per session ---
+  const room = RM.resolveRoom(repo);
+  ok('two sessions\' task "1" do not collide',
+    D.baselineFile(room, 'sess-A', '1') !== D.baselineFile(room, 'sess-B', '1'));
+
+  // --- end to end: a completion posts a note carrying the sha ---
+  const S = 'cldonetest';
+  const roleFile = F.roleFile(S);
+  fs.mkdirSync(path.dirname(roleFile), { recursive: true });
+  fs.writeFileSync(roleFile, JSON.stringify({ room: room.root, role: 'coding' }));
+  try {
+    D.recordBaseline(room, S, '7', base);
+    process.env.CL_DONE_GATE = 'note';
+    const r = D.onTaskCompleted({ task_id: '7', task_subject: 'Implement P-014', cwd: repo }, S);
+    ok('a proven completion posts a note', r.posted === true && r.proven === true && r.block === false);
+    const notes = RM.allNotes(room);
+    const n = notes[notes.length - 1];
+    ok('the note is FROM the completing role', n.from === 'coding');
+    ok('the note is a broadcast (any roommate sees it)', n.to === null);
+    ok('the note names the task', /Implement P-014/.test(n.body));
+    ok('the note CARRIES THE SHA as evidence', typeof n.refs.sha === 'string' && n.refs.sha.length >= 7);
+    ok('the note carries the changed files', n.refs.files.includes('feature.js'));
+
+    // strict mode, nothing committed since -> the tick is refused
+    const base2 = D.head(repo);
+    D.recordBaseline(room, S, '8', base2);
+    process.env.CL_DONE_GATE = 'strict';
+    const r2 = D.onTaskCompleted({ task_id: '8', task_subject: 'Claim without committing', cwd: repo }, S);
+    ok('strict REFUSES a completion with no commit', r2.block === true);
+    ok('and tells the agent why, on stderr', /no commit found/.test(r2.stderr));
+    ok('and posts NOTHING when it blocks', RM.allNotes(room).length === notes.length);
+
+    // a session with no role stays silent rather than inventing a sender
+    process.env.CL_DONE_GATE = 'note';
+    const r3 = D.onTaskCompleted({ task_id: '9', task_subject: 'x', cwd: repo }, 'no-role-session');
+    ok('no role -> no note, no crash', !r3.posted && r3.block === false);
+  } finally {
+    delete process.env.CL_DONE_GATE;
+    try { fs.unlinkSync(roleFile); } catch {}
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+} catch (e) { ok('cl-done works', false, e.message); }
+
+// ---- cl-profile: adoptIntoShared (migrate a real dir into the shared one) -------
+// Regression: `tasks` joined SHARED_DIRS. The old code did rmSync(recursive) on the
+// profile's REAL dir before junctioning — which would have DELETED every profile's
+// task lists on the next launch. Nothing may ever be destroyed here.
+section('cl-profile (adoptIntoShared: migrate, never clobber)');
+try {
+  const P = require(path.join(SRC, 'cl-profile.js'));
+  ok('tasks is shared (so cl:switch keeps the task list)', P.SHARED_DIRS.includes('tasks'));
+
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'adopt-'));
+  const shared = path.join(base, 'shared');
+  const link = path.join(base, 'profile', 'tasks');
+  fs.mkdirSync(path.join(shared, 'sess-A'), { recursive: true });   // shared has real work
+  fs.writeFileSync(path.join(shared, 'sess-A', '44.json'), '{"id":"44"}');
+  fs.mkdirSync(path.join(link, 'sess-A'), { recursive: true });     // profile: empty shell
+  fs.writeFileSync(path.join(link, 'sess-A', '.lock'), '');
+  fs.mkdirSync(path.join(link, 'sess-B'), { recursive: true });     // profile: unique work
+  fs.writeFileSync(path.join(link, 'sess-B', '1.json'), '{"id":"1"}');
+
+  // C.CLAUDE_DIR drives the backup path; point it at our sandbox for the duration.
+  const C = require(path.join(SRC, 'cl-config.js'));
+  const realClaudeDir = C.CLAUDE_DIR;
+  Object.defineProperty(C, 'CLAUDE_DIR', { value: base, configurable: true });
+  const cleared = P.adoptIntoShared(link, shared, 'acct1', 'tasks');
+  Object.defineProperty(C, 'CLAUDE_DIR', { value: realClaudeDir, configurable: true });
+
+  ok('reports the link is clear', cleared === true);
+  ok('the real dir is gone (rmdir succeeded => it was empty)', !fs.existsSync(link));
+  ok('unique session MOVED into shared', fs.existsSync(path.join(shared, 'sess-B', '1.json')));
+  ok('collision: the SHARED copy survives untouched',
+    fs.readFileSync(path.join(shared, 'sess-A', '44.json'), 'utf8') === '{"id":"44"}');
+  const bak = path.join(base, 'cl-backup', 'profile-merge', 'acct1', 'tasks', 'sess-A');
+  ok('collision: the profile copy is PARKED, not deleted', fs.existsSync(path.join(bak, '.lock')));
+
+  // A FILE where the junction goes must never be removed.
+  const f = path.join(base, 'afile');
+  fs.writeFileSync(f, 'precious');
+  ok('refuses to clear a FILE', P.adoptIntoShared(f, shared, 'acct1', 'x') === false);
+  ok('the file is untouched', fs.readFileSync(f, 'utf8') === 'precious');
+
+  // Nothing there at all -> clear to junction.
+  ok('missing link is trivially clear', P.adoptIntoShared(path.join(base, 'nope'), shared, 'a', 'x') === true);
+
+  fs.rmSync(base, { recursive: true, force: true });
+} catch (e) { ok('cl-profile adoptIntoShared works', false, e.message); }
 
 // ---- cl-conv (convId reconciliation — the "switch resumes a new session" fix) --
 section('cl-conv (convId reconciliation)');

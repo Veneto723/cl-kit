@@ -50,6 +50,15 @@ The fridge — sticky notes between sessions working in the same folder:
                          (a room = the git repo root you started in. The statusline
                           shows "📌 N from research" when notes are waiting.)
 
+  Completing a task POSTS ITSELF. When an agent marks a task done, cl diffs the repo
+  against the HEAD sha it recorded when the task was created, and sticks a note on the
+  fridge carrying the commit sha and the changed files. Nobody has to remember to say
+  "P-014 is done" — the tick IS the message, and it comes with evidence.
+    features.doneGate in cl-config.json (or CL_DONE_GATE):
+      note    default — always posts; an uncommitted "done" is posted, flagged UNVERIFIED
+      strict  REFUSES to mark a task done when no commit backs it (the agent is told why)
+      off     no notes, no gate
+
 See usage:
   cl:peek                usage of ALL accounts + where a launch would land — ZERO tokens
 
