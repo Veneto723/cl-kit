@@ -1060,6 +1060,13 @@ async function main() {
     process.stdout.write(msg + '\n');
     process.exit(r.ok ? 0 : 1);
   }
+  // `cl watch [role]` — a LONG-RUNNING watcher: prints a line per new delegation so a
+  // background task / Monitor can wake an idle DELEGATE session. Never returns on its
+  // own (loops until killed), so it must come after the quick subcommands.
+  if (userArgs[0] === 'watch') {
+    require('./cl-watch').run(userArgs[1], process.cwd());
+    return; // the interval keeps the process alive
+  }
 
   let respawning = process.env.CL_RESPAWNED === '1';
   if (!respawning) { sweepStaleStates(); migrateProfilesOnce(); } // only the original launch; not re-execs

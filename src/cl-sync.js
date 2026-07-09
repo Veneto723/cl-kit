@@ -4,7 +4,8 @@
 // cl:export / cl:import hook — zero model tokens, no session disruption.
 //
 //   cl:export                → the CURRENT conversation only (fast)
-//   cl:export all            → every session (bigger/slower)
+//   cl:export all            → every session in the CURRENT project folder
+//   cl:export global         → every session on this machine (bigger/slower; alias *)
 //   cl:export <project|id>   → one project's sessions, or one session (id prefix)
 //   cl:export --since <days> → sessions touched in the last N days
 //   cl:export ... --out <f>  → choose the archive path (default ~/cl-export-<ts>.tgz)
@@ -113,6 +114,35 @@ function currentConv(session) {
   }
   return null;
 }
+
+// The session's LAUNCH cwd (which is what Claude Code names the project dir after —
+// not the shell's current cwd, which drifts).
+function stateCwd(session) {
+  try { return JSON.parse(fs.readFileSync(path.join(CACHE, `cl-state-${session}.json`), 'utf8')).cwd || null; } catch { return null; }
+}
+
+// Claude Code names a project dir after the cwd with every non-alphanumeric replaced
+// by '-'  (E:\ -> "E--",  E:\cl-kit -> "E--cl-kit"). Only a FALLBACK: the encoding is
+// Claude Code's to change, so we prefer to look up the dir that actually holds this
+// conversation.
+const encodeProject = (cwd) => String(cwd).replace(/[^A-Za-z0-9]/g, '-');
+
+// Which project folder are we "in"? Exact path: find the dir holding the CURRENT
+// conversation. Fallback: encode the launch cwd (then the shell cwd) and accept it only
+// if such a project dir really exists. Returns null when it can't be determined.
+function currentProject(session, all) {
+  const cur = currentConv(session);
+  if (cur) {
+    const hit = all.find((s) => s.id === cur);
+    if (hit) return hit.project;
+  }
+  for (const cwd of [stateCwd(session), process.cwd()]) {
+    if (!cwd) continue;
+    const enc = encodeProject(cwd);
+    if (all.some((s) => s.project === enc)) return enc;
+  }
+  return null;
+}
 // Session ids currently OPEN in a live cl process (never overwrite these).
 function liveConvIds() {
   const live = new Set();
@@ -156,14 +186,24 @@ function doExport(session, argStr) {
   } else if (!sel || sel.toLowerCase() === 'current' || sel === '.') {
     const cur = currentConv(session);
     selected = all.filter((s) => s.id === cur); what = 'current conversation';
-    if (!selected.length) return { ok: false, message: 'no current conversation found — try `cl:export all` or `cl:export <project|id>`.' };
-  } else if (sel.toLowerCase() === 'all' || sel === '*') {
-    selected = all; what = 'all sessions';
+    if (!selected.length) return { ok: false, message: 'no current conversation found — try `cl:export all` (this project) or `cl:export global`.' };
+  } else if (sel.toLowerCase() === 'all') {
+    // `all` = every session in THIS project folder (the common case). Everything on the
+    // machine is `global` — an explicit word, because that archive can be huge.
+    const proj = currentProject(session, all);
+    if (!proj) {
+      return { ok: false, message: 'could not tell which project folder you are in — run `cl:export global`, or name a project dir (see ~/.claude/projects).' };
+    }
+    selected = all.filter((s) => s.project === proj);
+    what = `all sessions in project "${proj}"`;
+    if (!selected.length) return { ok: false, message: `no sessions found in project "${proj}".` };
+  } else if (sel.toLowerCase() === 'global' || sel === '*') {
+    selected = all; what = 'ALL sessions (every project on this machine)';
   } else {
     // project dir name, or session id / id-prefix
     selected = all.filter((s) => s.project === sel || s.id === sel || s.id.startsWith(sel));
     what = `"${sel}"`;
-    if (!selected.length) return { ok: false, message: `nothing matched "${sel}". Use \`cl:export all\`, a project dir name, or a session id.` };
+    if (!selected.length) return { ok: false, message: `nothing matched "${sel}". Use \`cl:export all\` (this project), \`cl:export global\` (everything), a project dir name, or a session id.` };
   }
 
   const totalBytes = selected.reduce((a, s) => a + s.size, 0);
@@ -462,4 +502,4 @@ function emptyTrash() {
   return { ok: failed === 0, count: entries.length, bytes, failed };
 }
 
-module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession, listTrash, restoreSession, emptyTrash, transcriptMeta, human };
+module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession, listTrash, restoreSession, emptyTrash, transcriptMeta, human, currentProject, encodeProject };

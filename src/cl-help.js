@@ -36,7 +36,9 @@ Add / manage accounts:
 
 Move chats between PCs (discrete export/import — no realtime sync):
   cl:export              archive the CURRENT conversation → ~/cl-export-<ts>.tgz
-  cl:export all          archive every session   ·   cl:export <project|id>
+  cl:export all          archive every session in THIS project folder
+  cl:export global       archive every session on this machine (everything)
+  cl:export <project|id> archive one project's sessions, or one conversation
   cl:import <archive>    merge sessions in (newer-wins; live chats protected)
 
 The fridge — sticky notes between sessions working in the same folder:
@@ -99,7 +101,10 @@ TYPE the cl: form, which the hook eats before the model):
   cl note all "<text>"   broadcast a note to every roommate
   cl note <role> "<text>" leave a note for one roommate
   cl notes               read your unread notes
-  (the share-with-roommate skill teaches the agent WHEN to broadcast)
+  cl watch [role]        (long-running) print a line per incoming delegation, so a
+                         BACKGROUND task / Monitor can WAKE an idle delegate session
+  (skills: share-with-roommate = WHEN to broadcast · fridge-responder = how a
+   research session stays responsive to delegations)
 
 Configured accounts: ${accounts.join(', ') || '(none — run `cl setup`)'}
 `;

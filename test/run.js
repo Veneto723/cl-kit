@@ -184,6 +184,45 @@ try {
   ok('emptyTrash purges', e.ok && sync.listTrash().length === 0);
 } catch (e) { ok('cl-sync works', false, e.message); }
 
+// ---- cl-sync export selectors: `all` = THIS project, `global` = everything -------
+section('cl-sync (export selectors)');
+try {
+  const sync = require(path.join(SRC, 'cl-sync.js'));
+
+  // Claude Code names a project dir after the cwd, non-alphanumerics -> '-'
+  ok('encodeProject: drive root', sync.encodeProject('E:\\') === 'E--');
+  ok('encodeProject: nested dir', sync.encodeProject('E:\\cl-kit') === 'E--cl-kit');
+  ok('encodeProject: deep path', sync.encodeProject('C:\\Users\\yanyu\\AppData\\Local\\Temp') === 'C--Users-yanyu-AppData-Local-Temp');
+
+  const fake = [
+    { project: 'E--', id: 'conv-here', size: 1 },
+    { project: 'E--', id: 'conv-sibling', size: 1 },
+    { project: 'E--whalephone', id: 'conv-other', size: 1 },
+  ];
+  const cacheDir = path.join(CLAUDE, 'cache');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const S = 'expsess';
+
+  // exact path: the dir holding the CURRENT conversation wins (no encoding guess)
+  fs.writeFileSync(path.join(cacheDir, `cl-state-${S}.json`), JSON.stringify({ convId: 'conv-here', cwd: 'E:\\somewhere-else' }));
+  ok('currentProject uses the dir holding the current conversation', sync.currentProject(S, fake) === 'E--');
+
+  // fallback: no convId -> encode the LAUNCH cwd, accepted only if that dir exists
+  fs.writeFileSync(path.join(cacheDir, `cl-state-${S}.json`), JSON.stringify({ cwd: 'E:\\whalephone' }));
+  ok('currentProject falls back to the encoded launch cwd', sync.currentProject(S, fake) === 'E--whalephone');
+
+  // fallback rejects a cwd with no matching project dir
+  fs.writeFileSync(path.join(cacheDir, `cl-state-${S}.json`), JSON.stringify({ cwd: 'Z:\\nothing-here' }));
+  ok('currentProject returns null when it cannot tell', sync.currentProject(S, fake) === null);
+
+  // and doExport refuses `all` (rather than guessing) when the project is unknown
+  const r = sync.doExport(S, 'all');
+  ok('`cl:export all` refuses when the project is undeterminable', r.ok === false && /which project folder/.test(r.message));
+  ok('  and it points at `cl:export global`', /cl:export global/.test(r.message));
+
+  try { fs.unlinkSync(path.join(cacheDir, `cl-state-${S}.json`)); } catch {}
+} catch (e) { ok('cl-sync export selectors work', false, e.message); }
+
 // ---- 5. cl-switch-core — peek + trash rendering ------------------------------
 section('cl-switch-core');
 try {
@@ -620,6 +659,45 @@ try {
   fs.rmSync(repo, { recursive: true, force: true });
   try { fs.unlinkSync(path.join(CLAUDE, 'cache', `cl-role-${S}.json`)); } catch {}
 } catch (e) { ok('cl-runner fridge CLI works', false, e.message); }
+
+// ---- cl-watch (wake a delegate session on an incoming delegation) ---------------
+// A delegate (e.g. research) can't be pushed to while idle; it runs `cl watch` in the
+// background so a delegation prints a line that re-invokes it. This tests the emit
+// logic: each unread note once, own notes excluded, the read cursor never touched.
+section('cl-watch (delegation waker)');
+try {
+  const W = require(path.join(SRC, 'cl-watch.js'));
+  const RM = require(path.join(SRC, 'cl-room.js'));
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'clwatch-'));
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const room = RM.resolveRoom(repo); RM.ensureRoom(room);
+
+  ok('resolveRole prefers an explicit arg', W.resolveRole('research', 'sess', room) === 'research');
+  ok('resolveRole with no arg + no session -> null', W.resolveRole('', '', room) === null);
+
+  RM.appendNote(room, { from: 'android', to: 'research', body: 'investigate the tap drop' });
+  RM.appendNote(room, { from: 'android', to: null, body: 'broadcast: bumped node' });   // to:null = real broadcast
+  RM.appendNote(room, { from: 'research', to: 'android', body: 'my own note' });
+
+  const out = []; const emitted = new Set();
+  W.poll(room, 'research', emitted, (l) => out.push(l));
+  ok('emits the addressed delegation', out.some((l) => /from android: investigate the tap drop/.test(l)));
+  ok('emits a real broadcast (to:null)', out.some((l) => /broadcast: bumped node/.test(l)));
+  ok('does NOT emit the watcher\'s own note', !out.some((l) => /my own note/.test(l)));
+  ok('emits exactly the two for-me notes', out.length === 2);
+
+  const dup = []; W.poll(room, 'research', emitted, (l) => dup.push(l));
+  ok('a second poll re-emits nothing (each note once)', dup.length === 0);
+  ok('watching never advances the read cursor (cl notes still delivers)',
+    RM.readCursor(room, 'research') === 0 && RM.unreadFor(room, 'research').count === 2);
+
+  // a high-priority delegation is flagged
+  RM.appendNote(room, { from: 'android', to: 'research', priority: 'high', body: 'URGENT: prod is down' });
+  const hi = []; W.poll(room, 'research', emitted, (l) => hi.push(l));
+  ok('a [!] delegation is flagged in the emit', hi.length === 1 && /\[!\]/.test(hi[0]));
+
+  fs.rmSync(repo, { recursive: true, force: true });
+} catch (e) { ok('cl-watch works', false, e.message); }
 
 // ---- cl-profile: adoptIntoShared (migrate a real dir into the shared one) -------
 // Regression: `tasks` joined SHARED_DIRS. The old code did rmSync(recursive) on the

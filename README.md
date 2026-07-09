@@ -437,7 +437,9 @@ realtime sync daemon, no concurrency risk):
 
 ```
 cl:export                 # archive the CURRENT conversation → ~/cl-export-<ts>.tgz
-cl:export all             # every session   ·   cl:export <project|id>   ·   --since <days>
+cl:export all             # every session in THIS project folder
+cl:export global          # every session on this machine (everything)
+cl:export <project|id>    # one project's sessions, or one conversation   ·   --since <days>
 cl:export ... --out <f>   # choose the archive path
 cl:import <archive.tgz>   # merge into ~/.claude/projects  ( --dry-run / --force / --skip-existing )
 ```
