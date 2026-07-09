@@ -384,9 +384,8 @@ function probeGatewayModels(baseUrl, key) {
   try {
     // Send `anthropic-version` (like Claude Code does) so a dual Claude+GPT gateway
     // keyed to ONE universal key returns its CLAUDE models here, not GPT ones.
-    // curl ships as curl.exe on Win10+, curl on macOS/Linux.
-    const curl = process.platform === 'win32' ? 'curl.exe' : 'curl';
-    out = execFileSync(curl, ['-sS', '-m', '20',
+    // curl ships as curl.exe on Win10+.
+    out = execFileSync('curl.exe', ['-sS', '-m', '20',
       '-H', `Authorization: Bearer ${key}`, '-H', 'anthropic-version: 2023-06-01',
       `${baseUrl.replace(/\/+$/, '')}/v1/models`],
       { encoding: 'utf8', windowsHide: true, timeout: 25000 });

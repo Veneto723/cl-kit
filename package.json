@@ -2,7 +2,10 @@
   "name": "cl-kit",
   "version": "2.0.0",
   "private": true,
-  "description": "Universal Claude Code account switcher & session manager (cl)",
+  "description": "Claude Code account switcher & session manager (cl) for Windows 11",
+  "os": [
+    "win32"
+  ],
   "scripts": {
     "test": "node test/run.js"
   }

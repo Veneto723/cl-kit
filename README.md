@@ -69,18 +69,14 @@ cl usage — peek
 
 ## Requirements
 
-- **Windows 11, macOS, or Linux.** The core — account switching, per-account
-  credential isolation, usage statusline, trash, the zero-token `cl:` commands — is
-  cross-platform (verified in CI on Windows/Ubuntu/macOS). Desktop toasts work
-  everywhere too (WinRT on Windows, `osascript` on macOS, `notify-send` on Linux).
-  Only two extras stay Windows-only: click-to-focus (raising the terminal from a
-  toast) and DPAPI key encryption (see the note under Install).
+- **Windows 11.** cl-kit is Windows-only — DPAPI key encryption, WinRT toasts with
+  click-to-focus, and directory junctions for per-account credential isolation all
+  lean on Windows. (It used to be cross-platform; that was dropped as untested weight.)
 - **Node.js**
 - **Claude Code** — the `claude` CLI on your PATH
 
 ## Install
 
-**Windows:**
 ```powershell
 git clone https://github.com/<you>/cl-kit.git
 cd cl-kit
@@ -91,29 +87,16 @@ cl doctor  # verify
 cl         # launch
 ```
 
-**Linux / macOS:**
-```sh
-git clone https://github.com/<you>/cl-kit.git
-cd cl-kit
-bash install.sh
-# ensure ~/.local/bin is on PATH (the installer prints the exact line if not), then:
-cl setup && cl doctor && cl
-```
+The installer is re-runnable and idempotent: it deploys scripts + commands into
+`~/.claude`, adds a `cl` launcher to `~/.local/bin`, installs and registers the MCP
+server, generates toast icons, registers the `cl-focus:` click-to-focus protocol, and
+**merges** hooks + statusline into `settings.json` (backing it up first — never
+removing your existing entries).
 
-Both installers are re-runnable and idempotent: they deploy scripts + commands into
-`~/.claude`, add a `cl` launcher to `~/.local/bin`, install and register the MCP
-server, and **merge** hooks + statusline into `settings.json` (backing it up first —
-never removing your existing entries). `install.ps1` additionally generates toast
-icons and registers the `cl-focus:` protocol; `install.sh` skips those Windows-only
-extras.
-
-**Gateway keys off Windows:** the DPAPI-encrypted `apiKeyEnc` is Windows-only. On
-Linux/macOS, `cl set-key` / the add-account wizard store the key in the **OS keychain**
-(macOS Keychain / Linux libsecret, referenced by `apiKeyKeychain`) when a secret
-service is available — verified by a store-and-read-back round-trip. If none is
-available (headless box, locked keychain), it falls back to a `0600` file under
-`~/.claude/cl-keys/` (via `apiKeyFrom`). You can also always use `apiKeyEnv` (an env
-var) or `apiKeyFrom` (file + regex) directly.
+**Gateway keys:** by default `cl set-key` / the add-account wizard store the key as a
+DPAPI-encrypted `apiKeyEnc` blob in the config, bound to this Windows user+machine (a
+copied config is useless elsewhere). You can also point an account at an env var
+(`apiKeyEnv`) or a file + regex (`apiKeyFrom`) instead.
 
 To update later: `git pull`, re-run the installer, and `cl:restart` any live sessions.
 
@@ -229,9 +212,10 @@ above everything else, plus a desktop toast:
 
 `cl:anchors` lists them; `cl:anchors reseal` re-baselines after you've fixed the docs.
 
-Honest limits. This is a **fingerprint, not a parse** — cl-kit has zero dependencies and
-must run on Windows, macOS and Linux, so tree-sitter (which is the *right* answer, see
-[fiberplane/drift](https://github.com/fiberplane/drift)) is out. It finds the first line
+Honest limits. This is a **fingerprint, not a parse** — cl-kit has zero dependencies, so
+tree-sitter (which is the *right* answer, see
+[fiberplane/drift](https://github.com/fiberplane/drift), and would need native prebuilds)
+is out. It finds the first line
 that defines the symbol and hashes the block down to the next line indented no deeper.
 So: a **rename** reports "gone", not "renamed"; a **reformat** reports "changed" even
 when the meaning didn't. It over-reports rather than under-reports, which is the right
@@ -486,18 +470,16 @@ src/            wrapper + hooks (cl-runner, cl-config, cl-platform, cl-profile,
                 cl-wire-settings, usage-monitor, gw-usage, cl-sync, cl-setup)
 mcp/            cl MCP server (account management + pool metrics tools)
 pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)
-test/           portable cross-platform test suite (run.js; `npm test`)
-install.ps1     Windows installer · install.sh  Linux/macOS installer (idempotent)
+test/           test suite (run.js; `npm test`) — Windows, incl. a real DPAPI round-trip
+install.ps1     Windows 11 installer (idempotent)
 ```
 
 ## Notes & limitations
 
-- **Cross-platform core; Windows-only extras.** Windows, macOS, and Linux all run
-  the switcher, credential isolation, usage, and trash (CI-verified). Desktop toasts
-  work on all three (WinRT / `osascript` / `notify-send`, silently no-op if no
-  notifier). Only **click-to-focus** (raising the terminal from a toast) and **DPAPI**
-  key encryption stay Windows-only; keys elsewhere use the OS keychain, a `0600`
-  file, or `apiKeyEnv`/`apiKeyFrom`.
+- **Windows 11 only.** DPAPI key encryption, WinRT toasts with click-to-focus, and
+  the directory junctions behind per-account credential isolation all lean on Windows.
+  (It was tri-platform once; that support was untested weight and got removed.) Keys
+  are a DPAPI `apiKeyEnc` blob by default, or `apiKeyEnv` / `apiKeyFrom`.
 - All caches/state live under `~/.claude/cache/cl-*`; stale files are swept
   automatically (state daily, effort memories after 7 days, conversation locks by
   process liveness).

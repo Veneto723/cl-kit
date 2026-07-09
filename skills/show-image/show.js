@@ -8,7 +8,7 @@
 // Usage:  node show.js <path-to-image> [--dry]
 //   --dry   print the command that WOULD run, without opening anything.
 //
-// Cross-platform, zero dependencies. Windows: `start` · macOS: `open` · Linux: `xdg-open`.
+// Windows 11, zero dependencies. Opens with `start` via cmd.exe.
 'use strict';
 
 const fs = require('fs');
@@ -37,26 +37,12 @@ if (!IMAGE_EXT.has(ext)) {
   process.stderr.write(`[show-image] warning: "${ext || '(no extension)'}" isn't a known image type — opening anyway.\n`);
 }
 
-// Pick the OS's "open with default app" command.
-const plat = os.platform();
-let cmd, cmdArgs;
-if (plat === 'win32') { cmd = process.env.ComSpec || 'cmd.exe'; cmdArgs = ['/d', '/s', '/c', 'start', '', file]; }
-else if (plat === 'darwin') { cmd = 'open'; cmdArgs = [file]; }
-else { cmd = 'xdg-open'; cmdArgs = [file]; }
+// "Open with default app": `start` through cmd.exe.
+const cmd = process.env.ComSpec || 'cmd.exe';
+const cmdArgs = ['/d', '/s', '/c', 'start', '', file];
 
-// Headless check: on Linux with no display there IS no viewer — say so plainly
-// instead of failing cryptically, and still give the human the path.
-if (plat !== 'win32' && plat !== 'darwin' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-  process.stdout.write(
-    `[show-image] no graphical display (headless/SSH) — cannot open a viewer.\n` +
-    `[show-image] image is at: ${file}\n` +
-    `[show-image] Tell the user the path; if it's a QR, consider rendering it as text instead.\n`);
-  process.exit(0);
-}
-
-// Send a desktop toast, reusing cl-kit's notifier if installed (Windows WinRT toast
-// with icon; macOS osascript; Linux notify-send). Returns how it was sent, or null.
-// PNG dimensions straight from the IHDR header (no decode, no deps).
+// Send a desktop toast, reusing cl-kit's WinRT notifier if installed. Returns how it
+// was sent, or null. PNG dimensions straight from the IHDR header (no decode, no deps).
 function pngSize(p) {
   try {
     const fd = fs.openSync(p, 'r'); const b = Buffer.alloc(24);
@@ -80,7 +66,6 @@ function desktopNotify(title, body, launchUri, wide) {
       .toast(title, body, 'image', undefined, launchUri, wide ? { heroUri: launchUri } : { logoUri: launchUri });
     return `cl-notify toast (${wide ? 'wide banner' : 'square thumbnail'} · click it to open)`;
   } catch {}
-  try { if (require(path.join(scripts, 'cl-platform.js')).notify(title, body)) return 'desktop notification (not clickable — open the path yourself)'; } catch {}
   return null;
 }
 
@@ -129,7 +114,6 @@ if (dry) { process.stdout.write(`[show-image] DRY RUN — would run: ${cmd} ${cm
 
 const r = spawnSync(cmd, cmdArgs, { stdio: 'ignore', windowsHide: true, timeout: 15_000 });
 if (r.error) fail(`failed to launch viewer (${cmd}): ${r.error.message}`);
-if (r.status !== 0 && plat !== 'win32') fail(`viewer exited ${r.status} — no default image handler? path: ${file}`);
 
 const kb = Math.max(1, Math.round(st.size / 1024));
 process.stdout.write(`[show-image] opened ${path.basename(file)} (${kb} KB) in the default viewer — the user can see it now.\n`);

@@ -80,13 +80,6 @@ const ICONS_DIR = path.join(__dirname, 'icons');
 // e.g. a thumbnail of the very image being announced, which beats any generic glyph.
 // `opts.heroUri` adds a wide banner image above the text.
 function toast(title, text, kind, focusPid, launchUri, opts) {
-  // POSIX: no WinRT and no cl-focus: click-to-focus protocol — show a plain desktop
-  // notification via the OS notifier (notify-send / osascript), degrading to a
-  // silent no-op if none is available. (Icons + click-to-focus are Windows-only.)
-  if (process.platform !== 'win32') {
-    try { if (!require('./cl-platform').notify(title, text)) trace('toast-skip no notifier'); } catch (e) { trace(`toast-error ${String(e && e.message).slice(0, 120)}`); }
-    return;
-  }
   const q = (s) => String(s).replace(/'/g, "''"); // PowerShell single-quote escape
   const xe = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); // XML escape
   const o = opts || {};

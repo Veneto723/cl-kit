@@ -108,11 +108,8 @@ function nextAccount(cfg, currentId, targetId) {
 // / decrypt a secret at rest, bound to this Windows user+machine. Lets the API
 // key live encrypted INSIDE cl-config.json (`apiKeyEnc`) — no plaintext key file,
 // and a copied config is useless on any other machine/user. Secret is passed via
-// env (not argv) so it never appears in a command line. Windows-only (cl is).
+// env (not argv) so it never appears in a command line.
 function runPowerShell(script, extraEnv) {
-  if (process.platform !== 'win32') {
-    throw new Error(`DPAPI is Windows-only — on ${process.platform}, store an api key with a cross-platform source (apiKeyEnv or apiKeyFrom); \`cl set-key\` does this for you here.`);
-  }
   return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     env: { ...process.env, ...extraEnv }, encoding: 'utf8', windowsHide: true, timeout: 20000,
   });
@@ -134,25 +131,19 @@ function dpapiDecrypt(b64) {
   return out.replace(/\r?\n$/, ''); // strip only PowerShell's trailing newline
 }
 
-// The API key for an `api` account. Order: inline > env var > DPAPI blob (win) >
-// OS keychain > file. Throws with a clear message if unresolvable — callers surface it.
+// The API key for an `api` account. Order: inline > env var > DPAPI blob > file.
+// Throws with a clear message if unresolvable — callers surface it. (apiKeyEnv and
+// apiKeyFrom are portable sources that are still perfectly usable on Windows; only
+// the POSIX OS-keychain source was dropped.)
 function resolveApiKey(acc) {
   if (acc.apiKey) return acc.apiKey;
   if (acc.apiKeyEnv && process.env[acc.apiKeyEnv]) return process.env[acc.apiKeyEnv];
   if (acc.apiKeyEnc) {
-    if (process.platform !== 'win32') {
-      throw new Error(`account "${acc.id}": apiKeyEnc is a Windows-only DPAPI blob and can't be read on ${process.platform}. Give this account a cross-platform key instead — \`cl set-key ${acc.id}\` (stores a 0600 file), or set apiKeyEnv / apiKeyFrom. See the README.`);
-    }
     let k; try { k = dpapiDecrypt(acc.apiKeyEnc); } catch (e) {
       throw new Error(`account "${acc.id}": apiKeyEnc DPAPI decrypt failed — the blob is bound to the Windows user+machine that created it. Re-run \`cl set-key ${acc.id}\` on THIS machine. (${String(e.message).split('\n')[0]})`);
     }
     if (k) return k;
     throw new Error(`account "${acc.id}": apiKeyEnc decrypted to empty — re-run \`cl set-key ${acc.id}\`.`);
-  }
-  if (acc.apiKeyKeychain) {
-    const k = require('./cl-platform').keychainGet(acc.id);
-    if (k) return k;
-    throw new Error(`account "${acc.id}": OS keychain entry missing/locked — unlock it, or re-run \`cl set-key ${acc.id}\`.`);
   }
   if (acc.apiKeyFrom && acc.apiKeyFrom.file) {
     const file = expandHome(acc.apiKeyFrom.file);
@@ -161,43 +152,25 @@ function resolveApiKey(acc) {
     if (m && m[1]) return m[1];
     throw new Error(`apiKeyFrom regex matched nothing in ${file}`);
   }
-  throw new Error(`account "${acc.id}": no apiKey / apiKeyEnv / apiKeyKeychain / apiKeyFrom configured`);
+  throw new Error(`account "${acc.id}": no apiKey / apiKeyEnv / apiKeyEnc / apiKeyFrom configured`);
 }
 
-// The claude executable. Config override > ~/.local/bin/claude[.exe] > PATH.
+// The claude executable. Config override > ~/.local/bin/claude.exe > PATH.
 function claudeBin(cfg) {
   if (cfg && cfg.claudeBin) return expandHome(cfg.claudeBin);
-  const name = process.platform === 'win32' ? 'claude.exe' : 'claude';
-  const local = path.join(os.homedir(), '.local', 'bin', name);
+  const local = path.join(os.homedir(), '.local', 'bin', 'claude.exe');
   if (fs.existsSync(local)) return local;
   return 'claude'; // rely on PATH
 }
 
 // Store an api account's key AT REST and return the config field(s) to persist
-// (plus a short human note). Windows: DPAPI blob in the config (apiKeyEnc), bound
-// to this user+machine. POSIX: prefer the OS keychain (macOS Keychain / Linux
-// libsecret, referenced by apiKeyKeychain) when it actually works — verified by a
-// store+read-back round-trip — else fall back to a 0600 file under ~/.claude/cl-keys/
-// (file-permission protection, not encryption). Callers delete the other key sources.
+// (plus a short human note): a DPAPI blob in the config (apiKeyEnc), bound to this
+// Windows user+machine. Verified by a store+read-back round-trip. Callers delete the
+// other key sources.
 function storeApiKey(id, key) {
-  if (process.platform === 'win32') {
-    const enc = dpapiEncrypt(key);
-    if (dpapiDecrypt(enc) !== key) throw new Error('DPAPI round-trip mismatch');
-    return { fields: { apiKeyEnc: enc }, note: 'DPAPI-encrypted in config (this Windows user+machine)' };
-  }
-  // POSIX: try the OS keychain, but only trust it if a round-trip read confirms it
-  // (a locked/absent secret service silently falls through to the file).
-  const plat = require('./cl-platform');
-  if (plat.keychainStore(id, key) && plat.keychainGet(id) === key) {
-    return { fields: { apiKeyKeychain: true }, note: `stored in the OS keychain (${process.platform === 'darwin' ? 'macOS Keychain' : 'libsecret'})` };
-  }
-  const dir = path.join(CLAUDE_DIR, 'cl-keys');
-  fs.mkdirSync(dir, { recursive: true });
-  try { fs.chmodSync(dir, 0o700); } catch {}
-  const file = path.join(dir, `${id}.key`);
-  fs.writeFileSync(file, key, { mode: 0o600 });
-  try { fs.chmodSync(file, 0o600); } catch {}
-  return { fields: { apiKeyFrom: { file, regex: '(\\S+)' } }, note: `stored 0600 at ${file} (file-perms only — keychain unavailable)` };
+  const enc = dpapiEncrypt(key);
+  if (dpapiDecrypt(enc) !== key) throw new Error('DPAPI round-trip mismatch');
+  return { fields: { apiKeyEnc: enc }, note: 'DPAPI-encrypted in config (this Windows user+machine)' };
 }
 
 // Env for spawning claude under `account`. api → gateway vars; oauth → make

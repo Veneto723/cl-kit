@@ -158,7 +158,7 @@ function poolConfigured() {
 function fetchPool() {
   return new Promise((resolve, reject) => {
     const queryScript = path.join(C.SCRIPTS_DIR, 'pool-query.js');
-    const globalMods = require('child_process').execSync('npm root -g 2>/dev/null || npm root -g', { shell: true, windowsHide: true }).toString().trim();
+    const globalMods = require('child_process').execSync('npm root -g', { shell: true, windowsHide: true }).toString().trim();
     exec(
       `node "${queryScript}"`,
       { timeout: 10000, windowsHide: true, env: { ...process.env, NODE_PATH: globalMods } },

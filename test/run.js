@@ -1,17 +1,16 @@
 #!/usr/bin/env node
-// cl-kit portable test suite — runs identically on Windows, Linux, and macOS.
-// Pure Node built-ins, no dependencies, no interactive `claude`, no GUI. Every
-// test runs against a THROWAWAY HOME under the OS temp dir (never the real
-// ~/.claude), so CI on ubuntu-latest / macos-latest exercises the real logic.
+// cl-kit test suite — Windows 11. Pure Node built-ins, no dependencies, no
+// interactive `claude`, no GUI. Every test runs against a THROWAWAY HOME under the
+// temp dir (never the real ~/.claude); CI runs it on windows-latest. Section 7
+// exercises the real Windows key path (a DPAPI round-trip via powershell.exe).
 //
 //   node test/run.js
 //
 // Two sections:
-//   • CORE — asserts the platform-neutral engine (config, per-account credential
-//     isolation, trash, peek, gateway usage). A failure here fails the build.
-//   • PROBE — reports the OS-specific touchpoints (symlink flavor, clipboard,
-//     notifier, claude bin). Informational only — it never fails the build; it's
-//     the "what would need porting" readout.
+//   • CORE — asserts the engine (config, per-account credential isolation, trash,
+//     peek, gateway usage, the fridge). A failure here fails the build.
+//   • PROBE — reports environment touchpoints (junction support, claude bin).
+//     Informational only — it never fails the build.
 'use strict';
 
 const fs = require('fs');
@@ -176,45 +175,34 @@ try {
   ok('summarizeGatewayUsage tolerates null/non-string model rows', !!s);
 } catch (e) { ok('gw-usage works', false, e.message); }
 
-// ---- 7. cl-platform + storeApiKey (the Tier-1 cross-platform shim) -----------
-section('cl-platform + storeApiKey (per-OS key storage)');
+// ---- 7. cl-platform + storeApiKey (Windows key path: DPAPI) -------------------
+// cl-kit is Windows 11 only, so this asserts the real DPAPI round-trip (via
+// powershell.exe). It also proves the PORTABLE key sources (apiKeyEnv / apiKeyFrom)
+// still resolve on Windows — only the POSIX OS-keychain source was dropped.
+section('cl-platform + storeApiKey (DPAPI + portable key sources)');
 try {
   const plat = require(path.join(SRC, 'cl-platform.js'));
   const clip = plat.readClipboard();
   ok('readClipboard returns a string or null (never throws)', clip === null || typeof clip === 'string');
   ok('clipboardHint is a string', typeof plat.clipboardHint() === 'string');
+  ok('the POSIX keychain/notify helpers are gone', plat.keychainStore === undefined && plat.notify === undefined);
 
-  // storeApiKey uses DPAPI on Windows, a 0600 file on POSIX — and resolveApiKey
-  // must round-trip either way. (CI proves both: windows-latest vs ubuntu/macos.)
-  const stored = C.storeApiKey('gwtest', 'sk-portable-42');
-  ok('storeApiKey returns fields + note', stored && stored.fields && typeof stored.note === 'string');
-  ok('key field is platform-appropriate',
-    process.platform === 'win32' ? !!stored.fields.apiKeyEnc : !!(stored.fields.apiKeyFrom && stored.fields.apiKeyFrom.file));
+  // storeApiKey → a DPAPI blob (apiKeyEnc); resolveApiKey must decrypt it back.
+  const stored = C.storeApiKey('gwtest', 'sk-dpapi-42');
+  ok('storeApiKey returns an apiKeyEnc blob + note', !!stored.fields.apiKeyEnc && typeof stored.note === 'string');
   const acc = { id: 'gwtest', type: 'api', baseUrl: 'https://x', ...stored.fields };
-  ok('resolveApiKey round-trips the stored key (keychain or file, whichever backed it)', C.resolveApiKey(acc) === 'sk-portable-42');
-  if (process.platform !== 'win32' && stored.fields.apiKeyFrom) {
-    const st = fs.statSync(stored.fields.apiKeyFrom.file);
-    ok('POSIX file fallback is mode 0600', (st.mode & 0o777) === 0o600);
-  }
+  ok('resolveApiKey round-trips the DPAPI blob', C.resolveApiKey(acc) === 'sk-dpapi-42');
 
-  // keychain helpers must be callable and type-safe on every OS (they no-op on
-  // Windows and degrade to false/null when there's no secret service). Probe with
-  // cleanup so a dev's real keychain is never left polluted.
-  const probeId = 'cltest-keychain-probe';
-  const kStored = plat.keychainStore(probeId, 'sk-kc-probe');
-  ok('keychainStore returns a boolean', typeof kStored === 'boolean');
-  const kGot = plat.keychainGet(probeId);
-  ok('keychainGet returns string or null', kGot === null || typeof kGot === 'string');
-  if (kStored) ok('keychain round-trips when it reports success', kGot === 'sk-kc-probe');
-  ok('keychainDelete returns a boolean', typeof plat.keychainDelete(probeId) === 'boolean');
-
-  // desktop notify: routes per-OS, returns a boolean, never throws. Only INVOKE it
-  // where it can't pop a real toast on someone's desktop — Windows (guaranteed
-  // no-op) or headless CI — so `npm test` on a dev's Mac/Linux stays quiet.
-  ok('notify is a function', typeof plat.notify === 'function');
-  if (process.platform === 'win32' || process.env.CI) {
-    ok('notify returns a boolean (never throws)', typeof plat.notify('cl-kit test', 'suite') === 'boolean');
-  }
+  // the portable sources are still first-class on Windows.
+  process.env.CLKIT_KEY_TEST = 'sk-from-env';
+  ok('resolveApiKey reads apiKeyEnv', C.resolveApiKey({ id: 'e', type: 'api', apiKeyEnv: 'CLKIT_KEY_TEST' }) === 'sk-from-env');
+  delete process.env.CLKIT_KEY_TEST;
+  const kf = path.join(TMP, 'key.txt'); fs.writeFileSync(kf, 'TOKEN=sk-from-file\n');
+  ok('resolveApiKey reads apiKeyFrom {file,regex}',
+    C.resolveApiKey({ id: 'f', type: 'api', apiKeyFrom: { file: kf, regex: 'TOKEN=(\\S+)' } }) === 'sk-from-file');
+  ok('resolveApiKey error names the surviving sources (no keychain)',
+    (() => { try { C.resolveApiKey({ id: 'x', type: 'api' }); return false; }
+      catch (e) { return /apiKeyEnv/.test(e.message) && !/keychain/i.test(e.message); } })());
 } catch (e) { ok('cl-platform + storeApiKey work', false, e.message); }
 
 // ---- 8. cl-wire-settings — installer settings merge (idempotent) -------------
@@ -639,7 +627,7 @@ try {
   ok('room resolves to the git repo root from a subdir', rTop.root === rDeep.root);
   const outside = path.join(base, 'loose'); fs.mkdirSync(outside);
   ok('no repo → the folder itself is the room', R.resolveRoom(outside).root === R.canonical(outside));
-  ok('a room is never nameless', !!R.resolveRoom(repo).name && !!R.resolveRoom(process.platform === 'win32' ? 'C:\\' : '/').name);
+  ok('a room is never nameless', !!R.resolveRoom(repo).name && !!R.resolveRoom('C:\\').name);
 
   // 2) the fridge self-ignores
   R.ensureRoom(rTop);
@@ -775,20 +763,18 @@ try {
   ok('while still reporting the true total', big.count === 80);
 } catch (e) { ok('cl-fridge works', false, e.message); }
 
-// ---- PROBE: OS-specific touchpoints (informational — never fails build) ------
-section('platform probe (informational — what a full port would wire up)');
+// ---- PROBE: environment touchpoints (informational — never fails build) ------
+section('environment probe (informational)');
 function has(cmd, args) { try { const r = spawnSync(cmd, args || ['--version'], { encoding: 'utf8', timeout: 5000, windowsHide: true }); return r.status === 0 || (r.stdout || r.stderr || '').length > 0; } catch { return false; } }
-// symlink-to-dir support (the credential-isolation junction relies on it)
-let symlinkOk = false;
+// directory junction support — the per-account credential isolation depends on it
+let junctionOk = false;
 try {
   const tgt = path.join(TMP, 'ptgt'); fs.mkdirSync(tgt, { recursive: true });
   const lnk = path.join(TMP, 'plnk'); try { fs.unlinkSync(lnk); } catch {}
-  fs.symlinkSync(tgt, lnk, process.platform === 'win32' ? 'junction' : 'dir');
-  symlinkOk = fs.existsSync(lnk);
+  fs.symlinkSync(tgt, lnk, 'junction');
+  junctionOk = fs.existsSync(lnk);
 } catch {}
-console.log(`  dir symlink/junction: ${symlinkOk ? 'OK' : 'UNSUPPORTED'}`);
-console.log(`  clipboard: ${process.platform === 'darwin' ? (has('pbpaste', []) ? 'pbpaste' : 'none') : process.platform === 'win32' ? 'powershell' : (has('xclip') ? 'xclip' : has('wl-paste') ? 'wl-paste' : has('xsel') ? 'xsel' : 'none (use --file/--stdin)')}`);
-console.log(`  notifier: ${process.platform === 'darwin' ? 'osascript' : process.platform === 'win32' ? 'powershell/toast' : (has('notify-send') ? 'notify-send' : 'none')}`);
+console.log(`  directory junction: ${junctionOk ? 'OK' : 'UNSUPPORTED'}`);
 console.log(`  claude on PATH: ${has('claude', ['--version']) ? 'yes' : 'no (fine for CI)'}`);
 
 // ---- cleanup + verdict -------------------------------------------------------

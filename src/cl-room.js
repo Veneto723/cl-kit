@@ -45,7 +45,7 @@ function canonical(p) {
   let out = p;
   try { out = fs.realpathSync.native(p); } catch { out = path.resolve(p); }
   out = path.resolve(out);
-  return process.platform === 'win32' ? out.toLowerCase() : out;
+  return out.toLowerCase();   // Windows FS is case-insensitive: one room per path, any case
 }
 
 // Walk up for a .git (dir OR file — worktrees use a .git *file*). Fall back to cwd.

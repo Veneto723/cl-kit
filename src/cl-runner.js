@@ -126,7 +126,6 @@ let launchWinPid = null;
 function captureLaunchWinPid() {
   if (launchWinPid !== null) return launchWinPid;
   launchWinPid = 0;
-  if (process.platform !== 'win32') return 0;
   try {
     const ps = "Add-Type 'using System;using System.Runtime.InteropServices;" +
       "public class F{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();" +
@@ -777,11 +776,8 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
 }
 
 function killChild(child) {
-  try {
-    // On Windows, taskkill /T ensures the whole claude process tree dies.
-    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
-    else child.kill('SIGTERM');
-  } catch {}
+  // taskkill /T ensures the whole claude process tree dies, not just the shim.
+  try { spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }); } catch {}
 }
 
 // ---- subcommands ------------------------------------------------------------
@@ -1000,9 +996,7 @@ function cmdSetKey(argv) {
   }
   process.stdout.write(`[cl] ✓ "${id}" key stored — ${stored.note}; other key sources removed.\n`);
   process.stdout.write(`     ${key.slice(0, 7)}…${key.slice(-4)} (len ${key.length}) · backup ${path.basename(bak)}\n`);
-  process.stdout.write(`     ${process.platform === 'win32'
-    ? `DPAPI is per user+machine — on another PC run \`cl set-key ${id}\` there too.`
-    : `The key file is machine-local — copy it or re-run \`cl set-key ${id}\` on another machine.`} If you kept a plaintext copy, delete it now.\n`);
+  process.stdout.write(`     DPAPI is per user+machine — on another PC run \`cl set-key ${id}\` there too. If you kept a plaintext copy, delete it now.\n`);
   process.exit(0);
 }
 

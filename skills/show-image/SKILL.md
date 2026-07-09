@@ -1,6 +1,6 @@
 ---
 name: show-image
-description: Show an image file to the USER. Reading an image shows it to YOU (the model) ONLY — the human never sees it, and Claude Code cannot render images inline in the terminal (it rejects sixel/kitty/iTerm2 graphics sequences). So if you have an image the human must actually look at — a QR code to scan, a chart, a screenshot, a diagram, a generated preview — you MUST use this skill or they will never see it. Opens the image in their default viewer. Cross-platform (Windows/macOS/Linux).
+description: Show an image file to the USER. Reading an image shows it to YOU (the model) ONLY — the human never sees it, and Claude Code cannot render images inline in the terminal (it rejects sixel/kitty/iTerm2 graphics sequences). So if you have an image the human must actually look at — a QR code to scan, a chart, a screenshot, a diagram, a generated preview — you MUST use this skill or they will never see it. Opens the image in their default viewer. Windows 11.
 ---
 
 # show-image — put an image in front of the human
@@ -42,13 +42,12 @@ Flags: `--dry` prints the command without opening (for testing).
 
 | mode | behaviour |
 |---|---|
-| `open` *(default)* | opens the image in the OS viewer — **steals keyboard focus** |
-| `notify` | desktop toast, **no window, no focus steal**. On Windows the toast is **clickable — it opens the image**. On macOS/Linux the toast can't launch, so relay the path. |
+| `open` *(default)* | opens the image in the default viewer — **steals keyboard focus** |
+| `notify` | desktop toast, **no window, no focus steal**. The toast is **clickable — it opens the image**. |
 | `off` | prints the path only — never opens anything |
 
-In `notify`/`off` the script prints the path and exits 0. **Do not fall back to opening it another way** — the user chose this on purpose. Tell them the image is ready: on Windows, *"click the notification to view it"*; elsewhere, give them the path.
+In `notify`/`off` the script prints the path and exits 0. **Do not fall back to opening it another way** — the user chose this on purpose. Tell them the image is ready: *"click the notification to view it"*.
 
 ## Notes
-- Works on Windows (`start`), macOS (`open`), Linux (`xdg-open`). No dependencies.
-- Headless/SSH sessions have no viewer — the script says so and prints the path instead of failing silently.
+- Opens with `start` via cmd.exe. Windows 11. No dependencies.
 - In `notify` mode the toast previews the image itself: a **wide** image (screenshot) uses the 2:1 banner, a **square-ish** one (QR, diagram) uses an uncropped square thumbnail.
