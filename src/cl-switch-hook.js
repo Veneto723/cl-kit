@@ -13,6 +13,9 @@
 //   cl:switch <id>       → switch to a named account
 //   cl:restart           → reload the wrapper + relaunch, same account
 //   cl:help  (cl:cl)     → print the command cheat sheet (zero tokens)
+//   cl:role <name>       → claim a role in this room (the "fridge" — see cl-room.js)
+//   cl:note <to> <text>  → leave a sticky note for a roommate ("all" = broadcast)
+//   cl:notes [all]       → read your unread notes (marks read); `all` = whole fridge
 //   cl:peek              → read-only usage readout of all accounts (no switch)
 //   cl:remove-account <id> → remove an account (alias: cl:delete-account <id>)
 //   … plus add-account / export / import / delete (delete = the current CHAT)
@@ -30,7 +33,9 @@ const core = require('./cl-switch-core');
 // NOTE: delete-account / del-account MUST precede the bare `delete` alternative,
 // else `cl:delete-account` matches `delete` (+ `\b` at the hyphen) and misfires as
 // a CONVERSATION delete. They route to remove-account (account removal), not delete.
-const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|help|cl)\b\s*(.*)$/i;
+// `notes` MUST precede `note` (a plain alternation would try `note` first and only
+// backtrack; being explicit costs nothing and documents the intent).
+const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|help|cl)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -73,6 +78,17 @@ function run(raw) {
     // Cheat sheet — rendered here from cl-help (no trigger, no relaunch, ZERO
     // tokens). Self-contained (own header), so no `[cl]` prefix.
     return block(require('./cl-help')());
+  }
+  if (action === 'role' || action === 'note' || action === 'notes') {
+    // The fridge: a per-room append-only sticky-note ledger shared by the sessions
+    // working in the same folder. Pure file ops, run here — zero tokens. Loaded
+    // lazily so a plain cl:switch stays lightweight.
+    const fridge = require('./cl-fridge');
+    const cwd = typeof hook.cwd === 'string' ? hook.cwd : null;
+    const r = action === 'role' ? fridge.requestRole(session, arg || '', cwd)
+      : action === 'note' ? fridge.requestNote(session, arg || '', cwd)
+        : fridge.requestNotes(session, arg || '', cwd);
+    return r.plain ? block(r.message) : clBlock(r.message);
   }
   if (action === 'peek' || action === 'usage') {
     // Read-only usage readout — rendered entirely here (no trigger, no relaunch).

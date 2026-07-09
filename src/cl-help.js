@@ -39,6 +39,16 @@ Move chats between PCs (discrete export/import — no realtime sync):
   cl:export all          archive every session   ·   cl:export <project|id>
   cl:import <archive>    merge sessions in (newer-wins; live chats protected)
 
+The fridge — sticky notes between sessions working in the same folder:
+  cl:role <name>         claim a role in this room (research | coding | …) — survives
+                         restart + switch, like your model and effort
+  cl:role                who am I, who else is here?
+  cl:note <role> <text>  leave a note for a roommate  ·  cl:note all <text> broadcasts
+  cl:notes               read YOUR unread notes (marks them read) — ZERO tokens
+  cl:notes all           the whole fridge, nothing marked read
+                         (a room = the git repo root you started in. The statusline
+                          shows "📌 N from research" when notes are waiting.)
+
 See usage:
   cl:peek                usage of ALL accounts + where a launch would land — ZERO tokens
 

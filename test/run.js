@@ -302,6 +302,132 @@ try {
   ok('non-cl prompt passes through (no block)', (pass.stdout || '').trim() === '');
 } catch (e) { ok('cl:help hook works', false, e.message); }
 
+// ---- cl-room (the "fridge": per-room append-only sticky-note ledger) ---------
+section('cl-room (sticky-note ledger)');
+try {
+  const R = require(path.join(SRC, 'cl-room.js'));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'clroom-'));
+  const repo = path.join(base, 'proj');
+  fs.mkdirSync(path.join(repo, 'sub', 'deep'), { recursive: true });
+  fs.mkdirSync(path.join(repo, '.git'));                       // fake repo root
+
+  // 1) room = git repo root, from anywhere inside it
+  const rTop = R.resolveRoom(repo), rDeep = R.resolveRoom(path.join(repo, 'sub', 'deep'));
+  ok('room resolves to the git repo root from a subdir', rTop.root === rDeep.root);
+  const outside = path.join(base, 'loose'); fs.mkdirSync(outside);
+  ok('no repo → the folder itself is the room', R.resolveRoom(outside).root === R.canonical(outside));
+
+  // 2) the fridge self-ignores
+  R.ensureRoom(rTop);
+  const gi = fs.readFileSync(path.join(rTop.planDir, '.gitignore'), 'utf8');
+  ok('.plan/.gitignore ignores everything (incl. itself)', /^\*$/m.test(gi));
+
+  // 3) append + seq is the LINE NUMBER (race-free: two writers can't collide)
+  R.appendNote(rTop, { from: 'research', to: 'coding', body: 'spec for P-014 changed' });
+  R.appendNote(rTop, { from: 'coding', to: 'research', body: 'P-012 done', refs: { sha: 'abc123' } });
+  R.appendNote(rTop, { from: 'research', body: 'broadcast: repo layout moved' }); // to=null
+  const all = R.allNotes(rTop);
+  ok('seq is the 1-based line number, in order', all.map((n) => n.seq).join(',') === '1,2,3');
+  ok('notes round-trip (refs preserved)', all[1].refs && all[1].refs.sha === 'abc123');
+  ok('note count matches', R.noteCount(rTop) === 3);
+
+  // 4) unread: addressed-to-me + broadcast, never my own, respects cursor
+  const uCoding = R.unreadFor(rTop, 'coding');
+  ok('coding sees the note addressed to it + the broadcast', uCoding.count === 2);
+  ok('coding never sees its OWN note', !uCoding.notes.some((n) => n.from === 'coding'));
+  ok('senders listed', uCoding.senders.join(',') === 'research');
+  const uResearch = R.unreadFor(rTop, 'research');
+  ok('research sees only the note addressed to it (not its own broadcast)', uResearch.count === 1);
+
+  // 5) rd()-only: markRead advances a cursor, never removes a note
+  R.markRead(rTop, 'coding');
+  ok('after markRead, coding has 0 unread', R.unreadFor(rTop, 'coding').count === 0);
+  ok('notes were NOT consumed (rd()-only)', R.noteCount(rTop) === 3);
+  ok('the OTHER role\'s cursor is untouched', R.unreadFor(rTop, 'research').count === 1);
+
+  // 6) a new note after markRead shows up again
+  R.appendNote(rTop, { from: 'research', to: 'coding', body: 'one more' });
+  ok('new note reappears for coding', R.unreadFor(rTop, 'coding').count === 1);
+
+  // 7) torn/garbage line is skipped, not fatal
+  fs.appendFileSync(R.notesPath(rTop), '{not json\n');
+  ok('a torn line is skipped, remaining notes survive', R.allNotes(rTop).length === 4);
+
+  // 8) role lease. IDENTITY IS THE SESSION; the pid is only a liveness probe.
+  ok('claim a free role', R.claimRole(rTop, 'coding', process.pid, 's1').ok === true);
+  // A different LIVE session must be refused even if it reports the SAME pid.
+  // (This is the bug the end-to-end test caught — pid alone is not identity.)
+  const second = R.claimRole(rTop, 'coding', process.pid, 's2');
+  ok('a different live session is refused (even with same pid)', second.ok === false && second.holder.sessionId === 's1');
+  // cl:restart re-execs cl-runner: SAME session, NEW pid → must reclaim its own role.
+  ok('same session reclaims under a NEW pid (restart-safe)', R.claimRole(rTop, 'coding', process.pid + 1, 's1').ok === true);
+  fs.writeFileSync(path.join(rTop.planDir, 'lease-coding.json'), JSON.stringify({ role: 'coding', pid: 999999, sessionId: 's9', at: Date.now() }));
+  ok('a DEAD holder\'s lease is vacant', R.roleHolder(rTop, 'coding') === null);
+  ok('a vacant role can be claimed by anyone', R.claimRole(rTop, 'coding', process.pid, 's3').ok === true);
+  ok('liveRoles lists live holders only', R.liveRoles(rTop).map((l) => l.role).join(',') === 'coding');
+} catch (e) { ok('cl-room works', false, e.message); }
+
+// ---- cl-fridge (the cl: sentinels over the ledger) ---------------------------
+section('cl-fridge (role / note / notes)');
+try {
+  const F = require(path.join(SRC, 'cl-fridge.js'));
+  const R2 = require(path.join(SRC, 'cl-room.js'));
+  const base2 = fs.mkdtempSync(path.join(os.tmpdir(), 'clfridge-'));
+  const repo2 = path.join(base2, 'proj');
+  fs.mkdirSync(path.join(repo2, 'sub'), { recursive: true });
+  fs.mkdirSync(path.join(repo2, '.git'));
+  const cache = path.join(CLAUDE, 'cache'); fs.mkdirSync(cache, { recursive: true });
+  const mkSession = (sid, pid) => writeJSON(path.join(cache, `cl-state-${sid}.json`), { pid, cwd: repo2 });
+  mkSession('sa', process.pid); mkSession('sb', process.pid); mkSession('sc', process.pid);
+
+  // roles claimed from a SUBDIR still land in the repo-root room
+  const ra = F.requestRole('sa', 'research', path.join(repo2, 'sub'));
+  ok('cl:role claims a role from a subdir (room = repo root)', ra.ok === true && /room "proj"/.test(ra.message));
+  ok('cl:role coding (second roommate)', F.requestRole('sb', 'coding', repo2).ok === true);
+  const rc = F.requestRole('sc', 'coding', repo2);
+  ok('a third session is REFUSED a held role', rc.ok === false && /already held by a LIVE session/.test(rc.message));
+
+  // notes
+  ok('cl:note needs a role', F.requestNote('sc', 'coding hi', repo2).ok === false);
+  ok('cl:note rejects a note to yourself', F.requestNote('sa', 'research hi', repo2).ok === false);
+  ok('cl:note usage error on bad args', F.requestNote('sa', 'onlyone', repo2).ok === false);
+  ok('cl:note appends', F.requestNote('sa', 'coding P-014 spec changed', repo2).ok === true);
+  ok('cl:note broadcast (all)', F.requestNote('sa', 'all repo layout moved', repo2).ok === true);
+
+  // notes readout + rd()-only cursor
+  const n1 = F.requestNotes('sb', '', repo2);
+  ok('cl:notes shows both (addressed + broadcast)', /2 new from research/.test(n1.message));
+  const n2 = F.requestNotes('sb', '', repo2);
+  ok('cl:notes is empty after reading (cursor advanced)', /nothing new/.test(n2.message));
+  const room2 = R2.resolveRoom(repo2);
+  ok('notes were NOT consumed', R2.noteCount(room2) === 2);
+  // rd()-only, proved properly: coding just read everything, yet a DIFFERENT reader
+  // still finds the broadcast waiting. A note is never taken off the fridge.
+  ok('a fresh role still sees the broadcast after coding read it', R2.unreadFor(room2, 'qa').count === 1);
+  ok('research never sees its own two notes', R2.unreadFor(room2, 'research').count === 0);
+  const nAll = F.requestNotes('sc', 'all', repo2);
+  ok('cl:notes all = landlord view, no role needed', /ALL 2 note\(s\)/.test(nAll.message));
+
+  // restart: same session, NEW pid → role + lease survive
+  mkSession('sb', process.pid + 1);                       // simulate cl-runner re-exec
+  const rr = F.refreshRole('sb', process.pid + 1, repo2);
+  ok('refreshRole re-asserts the lease after restart', rr && rr.ok === true && rr.role === 'coding');
+  ok('and the role still resolves for that session', F.getRole('sb', room2) === 'coding');
+  ok('refreshRole is a no-op for a session with no role', F.refreshRole('zz', 999, repo2) === null);
+
+  // the AMBIENT badge (what the statusline paints) — derived, self-clearing
+  ok('badge is null with no role', F.badge('zz', repo2) === null);
+  R2.appendNote(room2, { from: 'research', to: 'coding', body: 'fresh' });
+  const bg = F.badge('sb', repo2);
+  ok('badge counts unread + names the sender', bg && bg.count === 1 && bg.senders[0] === 'research');
+  R2.markRead(room2, 'coding');
+  ok('badge clears itself once read', F.badge('sb', repo2) === null);
+
+  // FAIL-OPEN: a truncated ledger must not silently swallow notes
+  R2.writeCursor(room2, 'coding', 999);                    // cursor past the end
+  ok('a cursor past the end re-reads rather than skipping', R2.unreadFor(room2, 'coding').count > 0);
+} catch (e) { ok('cl-fridge works', false, e.message); }
+
 // ---- PROBE: OS-specific touchpoints (informational — never fails build) ------
 section('platform probe (informational — what a full port would wire up)');
 function has(cmd, args) { try { const r = spawnSync(cmd, args || ['--version'], { encoding: 'utf8', timeout: 5000, windowsHide: true }); return r.status === 0 || (r.stdout || r.stderr || '').length > 0; } catch { return false; } }

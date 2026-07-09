@@ -1208,6 +1208,10 @@ async function main() {
     }
 
     writeState({ account, switchCount, convId, pinnedEffort });
+    // The fridge role survives /restart and /switch the same way model + effort do.
+    // A restart re-execs this wrapper with a NEW pid, so the role's lease would point
+    // at a dead process and another session could steal it — re-assert it here.
+    try { require('./cl-fridge').refreshRole(SESSION_ID, process.pid, process.cwd()); } catch {}
     // Seed the sticky baseline with what we ACTUALLY applied, so the statusline
     // never claims an effort the session isn't really at.
     if (effConv) seedEffort(effConv, applied);

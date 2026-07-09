@@ -589,10 +589,18 @@ function renderFull(data, sessionEta, weekEta, poolRows, acc, model, effort) {
   return lines.join('\n');
 }
 
-function renderCompact(data, sessionEta, poolRows, acc, model, effort) {
+// The AMBIENT fridge surface: "📌 2 from research". Derived arithmetic (ledger
+// length − this role's cursor), so it cannot lie and clears itself the moment the
+// notes are read. Nothing has to remember to tell you.
+function fridgeSeg(f) {
+  if (!f || !f.count) return '';
+  return `\x1b[1;93m📌 ${f.count} from ${f.senders.join(', ')}\x1b[0m`;
+}
+
+function renderCompact(data, sessionEta, poolRows, acc, model, effort, fridge) {
   // Two-row layout: line 1 = accounts/usage (switching-critical), line 2 = this
-  // session's stats (model/effort). Loading/alert states stay single line.
-  const line2 = [formatModel(model, effort)].filter(Boolean).join(' | ');
+  // session's stats (model/effort + unread notes). Loading/alert states stay single line.
+  const line2 = [formatModel(model, effort), fridgeSeg(fridge)].filter(Boolean).join(' | ');
   const withL2 = (line1) => (line2 ? `${line1}\n${line2}` : line1);
 
   if (!acc) return 'cl: run `cl setup`';
@@ -718,9 +726,17 @@ async function main() {
   const sessionEta = usageData ? computeEtaMinutes(history, 'session', usageData.five_hour.utilization) : null;
   const weekEta = usageData ? computeEtaMinutes(history, 'week', usageData.seven_day.utilization) : null;
 
+  // Unread sticky notes from this session's roommates. Cheap (one stat when there's
+  // no role) and best-effort — the statusline must never fail because of the fridge.
+  let fridge = null;
+  try {
+    fridge = require('./cl-fridge').badge(
+      process.env.CL_SESSION, sl && sl.workspace ? sl.workspace.current_dir : null);
+  } catch {}
+
   process.stdout.write(
     compact
-      ? renderCompact(usageData, sessionEta, pool.rows, acc, model, effort)
+      ? renderCompact(usageData, sessionEta, pool.rows, acc, model, effort, fridge)
       : renderFull(usageData, sessionEta, weekEta, pool.rows, acc, model, effort)
   );
 }
