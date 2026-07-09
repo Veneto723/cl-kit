@@ -107,10 +107,10 @@ function accountHeadroom(acc, cache, th) {
 }
 
 // Decide the launch account: PREFER a subscription (oauth) with headroom; when every
-// subscription is exhausted, fall to an API gateway — one with measured pool headroom,
-// or (crucially) a plain gateway with no tracked limit, which counts as available. Only
-// when everything measurable is exhausted do we settle for the least-bad (an exhausted
-// sub). Returns { id, reason } or null when nothing can be judged (no cache).
+// subscription is exhausted, fall to an API gateway — OPTIMISTICALLY. A gateway is
+// preferred over an exhausted sub even when its own metrics look busy (a gateway's limit
+// is soft; a maxed sub is a hard wall). Only a config with NO gateway settles for the
+// least-bad exhausted sub. Returns { id, reason } or null when nothing can be judged.
 function chooseLaunchAccount(cfg, cache) {
   const C = require('./cl-config');
   const th = cfg.thresholds || {};
@@ -123,24 +123,29 @@ function chooseLaunchAccount(cfg, cache) {
   const oauthRoom = oauthJudged.filter((x) => x.s >= 0).sort((x, y) => y.s - x.s);
   if (oauthRoom.length) return { id: oauthRoom[0].a.id, reason: 'subscription has headroom' };
 
-  // Fall to an API gateway. TWO kinds are usable, and missing the second is the bug
-  // this comment guards: (1) a gateway with measured pool headroom (s >= 0); and (2) a
-  // gateway with NO usage metrics at all (s === null). A plain pay-per-use gateway has
-  // no rate limit to be "full", so "we can't measure it" means AVAILABLE, not "skip it".
-  // Excluding the null case launched onto a 100%-exhausted subscription while a
-  // perfectly usable gateway sat right there. A gateway MEASURED as exhausted (s === -1,
-  // e.g. every pool account in cooldown) is genuinely not usable and correctly drops
-  // through to least-bad below.
+  // Be OPTIMISTIC about gateways: once every subscription is exhausted, prefer a gateway
+  // — and prefer it even when its OWN metrics look busy. A gateway's limit is soft (pool
+  // accounts rotate, cooldowns lift, a pay-per-use endpoint may still serve) where a
+  // subscription at 100% is a hard wall. So ANY gateway beats falling back onto the
+  // exhausted sub; among gateways rank by measured headroom (best) > no-metrics/assumed
+  // available > measured-busy. Only a config with NO gateway settles for the least-bad sub.
   const apiScored = cfg.accounts.filter((a) => a.type === 'api').map((a) => ({ a, s: score(a) }));
-  const apiRoom = apiScored.filter((x) => x.s != null && x.s >= 0).sort((x, y) => y.s - x.s);
-  const apiPresumed = apiScored.filter((x) => x.s == null);   // no metrics → assumed available
-  const via = oauthJudged.length ? `${oauthJudged[0].a.label} exhausted → ` : '';
-  if (apiRoom.length) return { id: apiRoom[0].a.id, reason: `${via}most available gateway` };
-  if (apiPresumed.length) return { id: apiPresumed[0].a.id, reason: `${via}gateway (assumed available)` };
+  if (apiScored.length) {
+    const rank = (s) => (s == null ? -0.5 : s);   // assumed-available sits above measured-busy (-1)
+    apiScored.sort((x, y) => rank(y.s) - rank(x.s));
+    const best = apiScored[0];
+    const via = oauthJudged.length ? `${oauthJudged[0].a.label} exhausted → ` : '';
+    // NB: test null FIRST — `null >= 0` is true in JS (null coerces to 0), which would
+    // mislabel a no-metrics gateway as "most available".
+    const how = best.s == null ? 'gateway (assumed available)'
+      : best.s >= 0 ? 'most available gateway'
+        : 'gateway (optimistic — metrics say busy)';
+    return { id: best.a.id, reason: `${via}${how}` };
+  }
 
-  // Everything we CAN measure is exhausted (sub over threshold, any gateway in cooldown).
+  // No gateway configured — least-bad among the (exhausted) subscriptions.
   const lb = (oauthJudged[0] && oauthJudged[0].a) || C.findAccount(cfg, cfg.defaultAccount) || cfg.accounts[0];
-  return { id: lb.id, reason: 'all accounts exhausted → least-bad' };
+  return { id: lb.id, reason: 'all subscriptions exhausted → least-bad' };
 }
 
 // Compact reset-time label, e.g. "Jul 12, 4pm". null on null/invalid.

@@ -105,11 +105,16 @@ try {
   ok('sub with headroom wins (prefer the subscription)', pick(cfg([SUB, GW]), subUse(10)) === 'max');
   ok('THE FIX: exhausted sub + no-metrics gateway -> the GATEWAY', pick(cfg([SUB, GW]), subUse(100)) === 'whale');
   ok('exhausted sub + gateway with measured headroom -> gateway', pick(cfg([SUB, GW]), withPool(subUse(100), 20)) === 'whale');
-  ok('exhausted sub + gateway measured in cooldown -> least-bad sub', pick(cfg([SUB, GW]), withPool(subUse(100), 100, 'cooldown')) === 'max');
+  ok('OPTIMISM: exhausted sub + gateway measured busy -> STILL the gateway', pick(cfg([SUB, GW]), withPool(subUse(100), 100, 'cooldown')) === 'whale');
+  ok('sub-only (no gateway), sub exhausted -> least-bad sub', pick(cfg([SUB]), subUse(100)) === 'max');
   ok('no cache -> null (do not guess)', core.chooseLaunchAccount(cfg([SUB, GW]), null) === null);
   ok('api-only config, no metrics -> the gateway', pick(cfg([GW]), subUse(100)) === 'whale');
-  const r = core.chooseLaunchAccount(cfg([SUB, GW]), subUse(100));
-  ok('reason names the gateway + why', /gateway/.test(r.reason) && /exhausted/.test(r.reason));
+  // reasons must be HONEST about which gateway state was picked (guards the `null >= 0`
+  // JS-coercion trap that mislabels a no-metrics gateway as "most available").
+  const reason = (c, cache) => core.chooseLaunchAccount(c, cache).reason;
+  ok('no-metrics gateway is labelled "assumed available"', /assumed available/.test(reason(cfg([SUB, GW]), subUse(100))));
+  ok('measured-headroom gateway is labelled "most available"', /most available/.test(reason(cfg([SUB, GW]), withPool(subUse(100), 20))));
+  ok('busy gateway is labelled "optimistic"', /optimistic/.test(reason(cfg([SUB, GW]), withPool(subUse(100), 100, 'cooldown'))));
 } catch (e) { ok('chooseLaunchAccount works', false, e.message); }
 
 // ---- 3. cl-profile — the per-account credential ISOLATION fix ----------------
