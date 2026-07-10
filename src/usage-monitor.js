@@ -160,15 +160,14 @@ async function getUsageCachedFor(acc, force) {
     });
     return data;
   } catch (e) {
-    // Endpoint is lightly rate-limited; fall back to last known-good data.
-    if (cached) {
-      const fresh = readCacheFile();
-      writeCacheFile({
-        ...fresh,
-        usageByAccount: { ...(fresh.usageByAccount || {}), [acc.id]: { fetchedAt: Date.now(), data: cached.data } },
-      });
-      return cached.data;
-    }
+    // Endpoint is lightly rate-limited (429s under repeated --force refreshes). Fall
+    // back to the last known-good data WITHOUT restamping fetchedAt: the age must stay
+    // truthful. Restamping it to now made a failed refresh look like a fresh success —
+    // peek showed "0s ago" and the statusline a current-looking number over stale
+    // data. Leaving the slice untouched keeps its real age (so "5m ago" shows), and
+    // the next render still sees it as stale and retries, so the numbers self-heal the
+    // moment the limit clears. (The gateway path already fails this way.)
+    if (cached) return cached.data;
     throw e;
   }
 }
