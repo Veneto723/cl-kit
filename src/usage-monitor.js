@@ -470,6 +470,18 @@ function formatResetTime(iso) {
   return `${datePart}, ${timePart}`;
 }
 
+// Which window's reset to show on a near/over-limit alert. When the WEEKLY cap is
+// the one over its switch threshold, it is the real blocker (days away) — show its
+// reset so you know a switch is worth it. Otherwise the short 5-hour window is what
+// clears you (often minutes away) — show that, so you can judge whether to bother
+// switching at all. Falls back to the other window when one has no reset time.
+function bindingResetLabel(s, w, switchWeek) {
+  const weekOver = w.utilization >= switchWeek;
+  return weekOver
+    ? (formatResetTime(w.resets_at) || formatResetTime(s.resets_at))
+    : (formatResetTime(s.resets_at) || formatResetTime(w.resets_at));
+}
+
 function bar(pct, width = 40) {
   const filled = Math.max(0, Math.min(width, Math.round((pct / 100) * width)));
   return '#'.repeat(filled) + '-'.repeat(width - filled);
@@ -685,8 +697,12 @@ function renderCompact(data, sessionEta, poolRows, acc, model, effort, fridge) {
   const nearSession = s.utilization >= WARN_SESSION && s.utilization < SWITCH_SESSION;
   const target = switchTargetLabel(acc.id);
   if ((over || nearSession) && target) {
-    const lbl = over ? `limit reached — cl:switch to ${target}` : `nearing limit — cl:switch to ${target}`;
-    return withL2(blinkAlert(`⚠ ${acc.label} ${sv}%/${wv}% ${lbl}`));
+    const lbl = over ? 'limit reached' : 'nearing limit';
+    // Show WHEN the binding limit resets — a near-limit account may clear in a minute
+    // (5h window) or be stuck for days (weekly cap). See bindingResetLabel.
+    const bindReset = bindingResetLabel(s, w, SWITCH_WEEK);
+    const resetPart = bindReset ? ` (resets ${bindReset})` : '';
+    return withL2(blinkAlert(`⚠ ${acc.label} ${sv}%/${wv}% ${lbl}${resetPart} — cl:switch to ${target}`));
   }
 
   const sEta = formatEta(sessionEta);
@@ -786,4 +802,8 @@ async function main() {
   );
 }
 
-main();
+// Run as a script (statusline, --refresh worker, --live); stay silent when merely
+// require()'d for its pure helpers in tests.
+if (require.main === module) main();
+
+module.exports = { bindingResetLabel, formatResetTime };

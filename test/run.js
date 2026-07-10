@@ -179,6 +179,30 @@ try {
   ok('null cfg → not fresh', core.usageCacheFresh(null, 60_000, freshBoth) === false);
 } catch (e) { ok('per-account usage attribution works', false, e.message); }
 
+// ---- 2c. near/over-limit alert shows the BINDING window's reset --------------
+// The compact statusline's "nearing/limit reached" alert used to drop the reset
+// time the normal line shows. A near-limit 5h window may clear in a minute (skip the
+// switch) while the weekly cap is stuck for days (do switch) — so the alert must say
+// WHICH, and when.
+section('usage-monitor (binding-window reset on alerts)');
+try {
+  const um = require(path.join(SRC, 'usage-monitor.js'));
+  const soon = new Date(Date.now() + 7 * 60_000).toISOString();       // 5h clears soon
+  const far = new Date(Date.now() + 3 * 86_400_000).toISOString();    // 7d clears in days
+  const s = (u, r) => ({ utilization: u, resets_at: r });
+  const SW_WEEK = 95;
+
+  // nearing/over on the 5h session, week fine -> the SHORT window's reset.
+  ok('session-bound alert shows the 5h reset', um.bindingResetLabel(s(86, soon), s(13, far), SW_WEEK) === um.formatResetTime(soon));
+  ok('session-OVER alert shows the 5h reset', um.bindingResetLabel(s(95, soon), s(40, far), SW_WEEK) === um.formatResetTime(soon));
+  // weekly cap over threshold -> the FAR weekly reset (the real blocker).
+  ok('week-over alert shows the 7d reset', um.bindingResetLabel(s(40, soon), s(97, far), SW_WEEK) === um.formatResetTime(far));
+  ok('both-over alert: weekly cap dominates -> 7d reset', um.bindingResetLabel(s(95, soon), s(97, far), SW_WEEK) === um.formatResetTime(far));
+  // fall back to the other window when the binding one has no reset time (null).
+  ok('null 5h reset falls back to the 7d reset', um.bindingResetLabel(s(90, null), s(13, far), SW_WEEK) === um.formatResetTime(far));
+  ok('requiring usage-monitor does not run main (no stray output)', typeof um.bindingResetLabel === 'function');
+} catch (e) { ok('binding-window reset works', false, e.message); }
+
 // ---- 3. cl-profile — the per-account credential ISOLATION fix ----------------
 section('cl-profile (credential isolation)');
 try {
