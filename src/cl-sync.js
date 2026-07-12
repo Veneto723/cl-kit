@@ -14,9 +14,15 @@
 //                              (newer-wins; overwritten local copies are backed
 //                               up; a conversation OPEN in a live cl is never
 //                               touched; --dry-run / --force / --skip-existing)
+//   cl:import <a> --dest <d> → re-root every project in the bundle under OUTER
+//                              folder <d>, keeping each project's own name:
+//                              E:\whalephone → <d>\whalephone. Lets two machines
+//                              store projects at different roots (office E:\x,
+//                              home E:\whaletech\x) and still resume. Rewrites the
+//                              stored cwd so the relocated session is consistent.
 //
-// Resume note: `claude --resume <id>` is scoped to the cwd's project dir, so the
-// two machines must use the SAME project paths (e.g. both work in E:\proj).
+// Resume note: `claude --resume <id>` is scoped to the cwd's project dir. Without
+// --dest the two machines must use the SAME project paths; --dest bridges that.
 'use strict';
 
 const fs = require('fs');
@@ -127,6 +133,59 @@ function stateCwd(session) {
 // conversation.
 const encodeProject = (cwd) => String(cwd).replace(/[^A-Za-z0-9]/g, '-');
 
+// ---- --dest re-rooting (import a session so it resumes at a DIFFERENT path) ----
+// A project folder is encodeProject(launchCwd), and that launch cwd is stored on the
+// transcript's message lines — so we can recover the real source path even though the
+// encoding isn't reversible. Find the cwd whose encoding IS this project dir.
+function sniffLaunchCwd(jsonlPath, proj) {
+  let data; try { data = fs.readFileSync(jsonlPath, 'utf8'); } catch { return null; }
+  const seen = new Set();
+  for (const line of data.split('\n')) {
+    if (!line || line.indexOf('"cwd"') === -1) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (typeof o.cwd === 'string' && !seen.has(o.cwd)) {
+      seen.add(o.cwd);
+      if (encodeProject(o.cwd) === proj) return o.cwd;
+    }
+  }
+  return null;
+}
+
+// Windows path prefix test on a SEPARATOR boundary, case-insensitive — so
+// "E:\proj" matches "E:\proj" and "E:\proj\sub" but NOT "E:\project".
+function underPath(p, prefix) {
+  const a = String(p).replace(/[\\/]+$/, '').toLowerCase();
+  const b = String(prefix).replace(/[\\/]+$/, '').toLowerCase();
+  return a === b || a.startsWith(b + '\\') || a.startsWith(b + '/');
+}
+
+// Re-root one cwd: replace its `fromPath` prefix with `toPath`, keeping the tail
+// (E:\proj\sub with from=E:\proj to=E:\whaletech\proj → E:\whaletech\proj\sub).
+// A cwd that isn't under fromPath is returned unchanged (a drifted, unrelated path).
+function remapCwd(cwd, fromPath, toPath) {
+  const from = String(fromPath).replace(/[\\/]+$/, '');
+  if (!underPath(cwd, from)) return cwd;
+  return String(toPath).replace(/[\\/]+$/, '') + String(cwd).slice(from.length);
+}
+
+// Copy a transcript, rewriting every cwd under `fromPath` to `toPath`. Lines with no
+// cwd (or a cwd outside fromPath) are preserved byte-for-byte; only changed lines are
+// re-serialized. Returns the number of cwd values rewritten.
+function copyRemappingCwd(srcJsonl, dstJsonl, fromPath, toPath) {
+  const lines = fs.readFileSync(srcJsonl, 'utf8').split('\n');
+  let n = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i] || lines[i].indexOf('"cwd"') === -1) continue;
+    let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+    if (typeof o.cwd === 'string') {
+      const nc = remapCwd(o.cwd, fromPath, toPath);
+      if (nc !== o.cwd) { o.cwd = nc; lines[i] = JSON.stringify(o); n++; }
+    }
+  }
+  fs.writeFileSync(dstJsonl, lines.join('\n'));
+  return n;
+}
+
 // Which project folder are we "in"? Exact path: find the dir holding the CURRENT
 // conversation. Fallback: encode the launch cwd (then the shell cwd) and accept it only
 // if such a project dir really exists. Returns null when it can't be determined.
@@ -156,14 +215,21 @@ function liveConvIds() {
   return live;
 }
 
+// Split respecting quotes, so a path with spaces survives as ONE token and the
+// surrounding quotes are stripped:  --dest "E:\my folder"  →  ['--dest','E:\my folder'].
+function tokenize(argStr) {
+  const out = []; const re = /"([^"]*)"|'([^']*)'|(\S+)/g; let m;
+  while ((m = re.exec(argStr || '')) !== null) out.push(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]);
+  return out;
+}
 function parseFlags(argStr) {
-  const toks = (argStr || '').trim().split(/\s+/).filter(Boolean);
+  const toks = tokenize(argStr);
   const flags = {}; const pos = [];
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
     if (t.startsWith('--')) {
       const key = t.slice(2);
-      if (['out', 'since'].includes(key) && toks[i + 1] && !toks[i + 1].startsWith('--')) { flags[key] = toks[++i]; }
+      if (['out', 'since', 'dest'].includes(key) && toks[i + 1] !== undefined && !toks[i + 1].startsWith('--')) { flags[key] = toks[++i]; }
       else flags[key] = true;
     } else pos.push(t);
   }
@@ -247,8 +313,20 @@ function doExport(session, argStr) {
 function doImport(session, argStr) {
   const { flags, pos } = parseFlags(argStr);
   const archive = pos[0] ? path.resolve(pos[0]) : null;
-  if (!archive) return { ok: false, message: 'usage: cl:import <archive.tgz> [--dry-run] [--force] [--skip-existing]' };
+  if (!archive) return { ok: false, message: 'usage: cl:import <archive.tgz> [--dest "E:\\outer\\folder"] [--dry-run] [--force] [--skip-existing]' };
   if (!fs.existsSync(archive)) return { ok: false, message: `archive not found: ${archive}` };
+
+  // --dest re-roots each imported project under an OUTER folder, KEEPING its own name:
+  // --dest "E:\whaletech" puts project E:\whalephone → E:\whaletech\whalephone (and every
+  // other project in the bundle → E:\whaletech\<its name>), so they resume at the local
+  // path. Requires an absolute path. Sessions whose source path can't be recovered are
+  // skipped and reported rather than guessed.
+  const destRoot = flags.dest ? String(flags.dest).replace(/[\\/]+$/, '') : null;
+  if (destRoot !== null && !path.win32.isAbsolute(destRoot + '\\')) {
+    return { ok: false, message: `--dest must be an absolute folder path (got "${flags.dest}"), e.g. --dest "E:\\whaletech".` };
+  }
+  const remaps = []; // {name, from, to} for the report
+  const destSeen = new Map(); // destProjName -> source proj (collision guard)
 
   const tmp = path.join(CACHE, `cl-import-${process.pid}-${Date.now()}`);
   try {
@@ -270,12 +348,34 @@ function doImport(session, argStr) {
     let st; try { st = fs.statSync(pdir); } catch { continue; }
     if (!st.isDirectory()) continue; // skips .cl-manifest.json
     let files = []; try { files = fs.readdirSync(pdir); } catch {}
+
+    // Where do this project's sessions land? Default: its original folder. With --dest:
+    // <destRoot>\<basename(sourceLaunchCwd)>, recovering the launch cwd from a transcript.
+    // Can't recover it → skip the whole project and say why (never guess).
+    let destProjName = proj, remapFrom = null, remapTo = null;
+    if (destRoot !== null) {
+      let launch = null;
+      for (const f of files) { if (f.endsWith('.jsonl')) { launch = sniffLaunchCwd(path.join(pdir, f), proj); if (launch) break; } }
+      const base = launch ? path.win32.basename(launch) : null;
+      if (!base) {
+        const reason = launch ? 'source path is a drive root — no folder name to re-root' : 'source path could not be recovered from the transcript';
+        for (const f of files) if (f.endsWith('.jsonl')) skipped.push(`${f.slice(0, -6).slice(0, 8)} (${proj}: ${reason})`);
+        continue;
+      }
+      remapFrom = launch;
+      remapTo = path.win32.join(destRoot, base);
+      destProjName = encodeProject(remapTo);
+      const clash = destSeen.get(destProjName);
+      remaps.push({ from: launch, to: remapTo, clash: clash && clash !== proj ? clash : null });
+      destSeen.set(destProjName, proj);
+    }
+
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
       const id = f.slice(0, -6);
       const srcJsonl = path.join(pdir, f);
       const srcSide = path.join(pdir, id);
-      const dstDir = path.join(PROJECTS, proj);
+      const dstDir = path.join(PROJECTS, destProjName);
       const dstJsonl = path.join(dstDir, f);
       const dstSide = path.join(dstDir, id);
 
@@ -292,20 +392,23 @@ function doImport(session, argStr) {
         action = 'update';
       }
 
-      if (flags['dry-run']) { (action === 'add' ? added : updated).push(`${id.slice(0, 8)} (${proj})`); continue; }
+      if (flags['dry-run']) { (action === 'add' ? added : updated).push(`${id.slice(0, 8)} (${destProjName})`); continue; }
 
       try {
         fs.mkdirSync(dstDir, { recursive: true });
         if (action === 'update') {
           // back up the local copy before overwriting (recoverable)
-          const bproj = path.join(backupDir, proj); fs.mkdirSync(bproj, { recursive: true });
+          const bproj = path.join(backupDir, destProjName); fs.mkdirSync(bproj, { recursive: true });
           fs.copyFileSync(dstJsonl, path.join(bproj, f));
           if (fs.existsSync(dstSide)) fs.cpSync(dstSide, path.join(bproj, id), { recursive: true });
           backedUp = true;
         }
-        fs.copyFileSync(srcJsonl, dstJsonl);
+        // With --dest, rewrite the stored cwd as we copy so the relocated session is
+        // consistent (not just physically moved); otherwise a plain copy.
+        if (remapFrom) copyRemappingCwd(srcJsonl, dstJsonl, remapFrom, remapTo);
+        else fs.copyFileSync(srcJsonl, dstJsonl);
         if (fs.existsSync(srcSide)) fs.cpSync(srcSide, dstSide, { recursive: true });
-        (action === 'add' ? added : updated).push(`${id.slice(0, 8)} (${proj})`);
+        (action === 'add' ? added : updated).push(`${id.slice(0, 8)} (${destProjName})`);
       } catch (e) {
         skipped.push(`${id.slice(0, 8)} (error: ${e.message})`);
       }
@@ -315,11 +418,17 @@ function doImport(session, argStr) {
 
   const dry = flags['dry-run'] ? ' [DRY RUN — nothing changed]' : '';
   const lines = [`cl:import${dry} — added ${added.length}, updated ${updated.length}, skipped ${skipped.length}`];
+  if (remaps.length) {
+    lines.push(`  re-rooted under ${destRoot}:`);
+    for (const r of remaps) lines.push(`    ${r.from}  →  ${r.to}${r.clash ? '   ⚠ same name as another project — MERGED into one folder' : ''}`);
+  }
   if (added.length) lines.push('  added:   ' + added.join(', '));
   if (updated.length) lines.push('  updated: ' + updated.join(', '));
   if (skipped.length) lines.push('  skipped: ' + skipped.join(', '));
   if (backedUp) lines.push(`  replaced local copies backed up to: ${backupDir}`);
-  lines.push('  resume from the matching project path, e.g.  cd <project>  then  claude --resume <id>  (or the cl picker).');
+  lines.push(destRoot
+    ? `  resume from the re-rooted path, e.g.  cd "${remaps[0] ? remaps[0].to : destRoot}"  then  claude --resume <id>  (or the cl picker).`
+    : '  resume from the matching project path, e.g.  cd <project>  then  claude --resume <id>  (or the cl picker).');
   return { ok: true, message: lines.join('\n') };
 }
 
@@ -502,4 +611,4 @@ function emptyTrash() {
   return { ok: failed === 0, count: entries.length, bytes, failed };
 }
 
-module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession, listTrash, restoreSession, emptyTrash, transcriptMeta, human, currentProject, encodeProject };
+module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession, listTrash, restoreSession, emptyTrash, transcriptMeta, human, currentProject, encodeProject, sniffLaunchCwd, remapCwd, underPath, copyRemappingCwd, tokenize };

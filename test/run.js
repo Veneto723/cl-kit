@@ -324,6 +324,72 @@ try {
   try { fs.unlinkSync(path.join(cacheDir, `cl-state-${S}.json`)); } catch {}
 } catch (e) { ok('cl-sync export selectors work', false, e.message); }
 
+// ---- cl-sync — cl:import --dest re-rooting (office/home path parity) ----------
+section('cl-sync (import --dest re-rooting)');
+try {
+  const sync = require(path.join(SRC, 'cl-sync.js'));
+
+  // pure helpers
+  ok('tokenize: quoted path with spaces is one token, quotes stripped',
+    JSON.stringify(sync.tokenize('a.tgz --dest "E:\\my folder" --dry-run')) === JSON.stringify(['a.tgz', '--dest', 'E:\\my folder', '--dry-run']));
+  ok('underPath: separator-boundary match', sync.underPath('E:\\proj\\sub', 'E:\\proj') === true && sync.underPath('E:\\project', 'E:\\proj') === false);
+  ok('underPath: case-insensitive (Windows)', sync.underPath('e:\\PROJ\\x', 'E:\\proj') === true);
+  ok('remapCwd: re-roots subdir, keeps tail', sync.remapCwd('E:\\whalephone\\src\\a', 'E:\\whalephone', 'E:\\whaletech\\whalephone') === 'E:\\whaletech\\whalephone\\src\\a');
+  ok('remapCwd: exact path', sync.remapCwd('E:\\whalephone', 'E:\\whalephone', 'E:\\whaletech\\whalephone') === 'E:\\whaletech\\whalephone');
+  ok('remapCwd: leaves an unrelated cwd alone', sync.remapCwd('C:\\other', 'E:\\whalephone', 'E:\\whaletech\\whalephone') === 'C:\\other');
+
+  // sniffLaunchCwd: the launch cwd is the one whose encoding IS the project dir
+  const sdir = path.join(TMP, 'sniff'); fs.mkdirSync(sdir, { recursive: true });
+  const sfile = path.join(sdir, 's.jsonl');
+  fs.writeFileSync(sfile, [
+    JSON.stringify({ type: 'custom-title', customTitle: 't' }),                 // no cwd
+    JSON.stringify({ type: 'user', cwd: 'E:\\whaletech\\secrets-vault' }),      // a drifted cwd (encode != proj)
+    JSON.stringify({ type: 'user', cwd: 'E:\\whalephone' }),                    // the launch cwd (encode == proj)
+  ].join('\n') + '\n');
+  ok('sniffLaunchCwd finds the cwd whose encoding == the project dir', sync.sniffLaunchCwd(sfile, 'E--whalephone') === 'E:\\whalephone');
+  ok('sniffLaunchCwd: null when nothing matches', sync.sniffLaunchCwd(sfile, 'E--nope') === null);
+
+  // copyRemappingCwd: rewrites matching cwds, leaves others + non-cwd lines intact
+  const cdst = path.join(sdir, 'out.jsonl');
+  const n = sync.copyRemappingCwd(sfile, cdst, 'E:\\whalephone', 'E:\\whaletech\\whalephone');
+  const outLines = fs.readFileSync(cdst, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  ok('copyRemappingCwd rewrites only the matching cwd (count=1)', n === 1);
+  ok('  the launch cwd is re-rooted', outLines[2].cwd === 'E:\\whaletech\\whalephone');
+  ok('  a drifted, unrelated cwd is untouched', outLines[1].cwd === 'E:\\whaletech\\secrets-vault');
+  ok('  a line with no cwd is preserved', outLines[0].customTitle === 't');
+
+  // full end-to-end: build a real archive, import with --dest, verify placement + rewrite
+  if (has('tar', ['--version'])) {
+    const expRoot = path.join(TMP, 'exp'); fs.mkdirSync(expRoot, { recursive: true });
+    const cid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const sp = path.join(expRoot, 'E--whalephone'); fs.mkdirSync(sp, { recursive: true });
+    fs.writeFileSync(path.join(sp, cid + '.jsonl'), [
+      JSON.stringify({ type: 'user', cwd: 'E:\\whalephone', message: { content: 'hi' }, timestamp: '2026-07-01T10:00:00.000Z' }),
+      JSON.stringify({ type: 'user', cwd: 'E:\\whalephone\\src', message: { content: 'in src' }, timestamp: '2026-07-01T10:01:00.000Z' }),
+    ].join('\n') + '\n');
+    // a "ghost" project whose launch cwd can't be recovered (no cwd encodes to its dir)
+    const gid = 'ffffffff-0000-1111-2222-333333333333';
+    const gp = path.join(expRoot, 'E--ghost'); fs.mkdirSync(gp, { recursive: true });
+    fs.writeFileSync(path.join(gp, gid + '.jsonl'), JSON.stringify({ type: 'user', cwd: 'E:\\elsewhere' }) + '\n');
+
+    const arc = path.join(TMP, 'exp.tgz');
+    spawnSync('tar', ['--force-local', '-czf', arc, '-C', expRoot, '.'], { windowsHide: true });
+    const r = sync.doImport('imp-sess', `"${arc}" --dest "E:\\whaletech"`);
+
+    const destProj = path.join(CLAUDE, 'projects', 'E--whaletech-whalephone', cid + '.jsonl');
+    ok('doImport --dest: placed under the re-rooted project dir', r.ok && fs.existsSync(destProj));
+    ok('  NOT left at the original project dir', !fs.existsSync(path.join(CLAUDE, 'projects', 'E--whalephone', cid + '.jsonl')));
+    const dl = fs.readFileSync(destProj, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    ok('  stored cwd rewritten to the destination (launch)', dl[0].cwd === 'E:\\whaletech\\whalephone');
+    ok('  stored cwd rewritten for a subdir too', dl[1].cwd === 'E:\\whaletech\\whalephone\\src');
+    ok('  report shows the re-root plan', /E:\\whalephone.+→.+E:\\whaletech\\whalephone/.test(r.message));
+    ok('  a project whose source path is unrecoverable is SKIPPED, not guessed',
+      !fs.existsSync(path.join(CLAUDE, 'projects', 'E--ghost')) && /could not be recovered/.test(r.message));
+  } else {
+    ok('(tar unavailable — skipped the --dest end-to-end)', true);
+  }
+} catch (e) { ok('cl-sync --dest works', false, e.message); }
+
 // ---- 5. cl-switch-core — peek + trash rendering ------------------------------
 section('cl-switch-core');
 try {
