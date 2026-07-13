@@ -73,22 +73,28 @@ if (($userPath -split ';') -notcontains $bin) {
 # 3. no slash commands — every arc action is a zero-token arc: sentinel (arc:switch,
 #    arc:restart, arc:peek, arc:help, …) caught by the UserPromptSubmit hook.
 
-# 3b. agent skills — capabilities any agent can discover + invoke (show-image: put
-#     an image in front of the human, since Read shows it only to the model).
+# 3b. core agent skills — capabilities any agent can discover + invoke.
 $skills = Join-Path $claudeDir 'skills'
 New-Item -ItemType Directory -Force $skills | Out-Null
 Copy-Item (Join-Path $kit 'skills\*') $skills -Recurse -Force
 Write-Host "  Claude skills -> $skills"
 
 # The roommate protocol is runtime-neutral and uses arc's terminal commands, so
-# publish it at the cross-agent discovery path as well. The responder and
-# show-image skills stay Claude-only until their harness-specific behavior is
-# supported and tested under Codex.
+# publish it at the cross-agent discovery path as well.
 $agentSkills = Join-Path $env:USERPROFILE '.agents\skills'
 $roommateSkill = Join-Path $agentSkills 'share-with-roommate'
 New-Item -ItemType Directory -Force $roommateSkill | Out-Null
 Copy-Item (Join-Path $kit 'skills\share-with-roommate\*') $roommateSkill -Recurse -Force
 Write-Host "  shared skill -> $roommateSkill (Claude + Codex)"
+
+# 3c. bundles — first-party add-ons under bundles/<name>/arc-bundle.json, deployed by
+#     the data-driven bundle installer (arc-bundle.js) instead of being hardcoded here.
+#     Each bundle stays self-contained + independently installable, outside arc core.
+$bundlesDir = Join-Path $kit 'bundles'
+if (Test-Path $bundlesDir) {
+  node (Join-Path $scripts 'arc-bundle.js') install-all $bundlesDir
+  Write-Host "  bundles installed from $bundlesDir"
+}
 
 # 4. toast icons
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts 'icons\make-icons.ps1') | Out-Null

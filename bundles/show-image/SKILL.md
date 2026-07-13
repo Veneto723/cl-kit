@@ -27,7 +27,7 @@ A window appearing unannounced is intrusive and **steals keyboard focus**, possi
    - **You're volunteering it** (they didn't ask) → **ASK FIRST**: *"I have a QR you'll need to scan — want me to open it in a window?"* Open only on yes. An unrequested window is an ambush.
 2. **Never let the window be the first they hear of it.** Announce, then open — in that order, always.
 3. **Only when they need to look.** One image, when there's a reason. Don't pop windows during your own analysis.
-4. **Respect the user's mode** (`CL_SHOW_IMAGE`). If they chose `notify` or `off`, no window opens — relay the path the script prints rather than insisting.
+4. **Respect the user's mode** (`ARC_SHOW_IMAGE`). If they chose `notify` or `off`, no window opens — relay the path the script prints rather than insisting.
 5. **Don't re-open the same image.** If you already showed it, point at the window that's open.
 
 ## How
@@ -38,7 +38,7 @@ It opens the image in the OS default viewer and prints a one-line confirmation. 
 
 Flags: `--dry` prints the command without opening (for testing).
 
-**The human controls how intrusive this may be.** The mode comes from `CL_SHOW_IMAGE`, else from `features.showImage` in `~/.claude/arc-config.json` (a standing preference), else `open`:
+**The human controls how intrusive this may be.** The mode comes from `ARC_SHOW_IMAGE`, else from `features.showImage` in `~/.claude/arc-config.json` (a standing preference), else `open`:
 
 | mode | behaviour |
 |---|---|

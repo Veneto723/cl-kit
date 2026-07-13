@@ -1,0 +1,11 @@
+{
+  "manifest": 1,
+  "name": "show-image",
+  "version": "1.0.0",
+  "description": "Put an image in front of the human — opens it in the default viewer (or a clickable toast).",
+  "requires": { "node": ">=18", "host": ["claude"] },
+  "provides": {
+    "skills": [{ "path": ".", "targets": ["claude"] }]
+  },
+  "test": null
+}

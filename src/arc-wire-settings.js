@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// arc-wire-settings: merge arc's hooks + statusline into
-// ~/.claude/settings.json WITHOUT clobbering the user's existing entries. Called
-// by the installers (install.sh today; install.ps1 keeps its own copy) so every
-// platform wires the exact same set. Idempotent — safe to re-run.
+// arc-wire-settings: the ~/.claude/settings.json merge substrate. Merges hook +
+// statusline entries WITHOUT clobbering the user's existing config. Idempotent,
+// refuses to touch malformed JSON, writes UTF-8 without a BOM.
 //
-//   node arc-wire-settings.js [scriptsDir]
-//
-// scriptsDir defaults to ~/.claude/scripts. Writes UTF-8 without a BOM (Node's
-// JSON.parse rejects a BOM), with a trailing newline.
+// Used two ways:
+//   • library  — mergeHooks() / readSettings() / writeSettings() are the reusable
+//                merge contract the bundle installer (arc-bundle.js) rides on.
+//   • CLI      — `node arc-wire-settings.js [scriptsDir]` wires arc's own core hooks
+//                + statusline (scriptsDir defaults to ~/.claude/scripts).
 'use strict';
 
 const fs = require('fs');
@@ -15,64 +15,85 @@ const os = require('os');
 const path = require('path');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
-const scripts = (process.argv[2] || path.join(CLAUDE_DIR, 'scripts'));
-const S = scripts.replace(/\\/g, '/'); // forward slashes work in a hook command on every OS
-const settingsPath = path.join(CLAUDE_DIR, 'settings.json');
+const settingsPathDefault = path.join(CLAUDE_DIR, 'settings.json');
 
-let settings = {};
-let raw = null;
-try { raw = fs.readFileSync(settingsPath, 'utf8'); } catch { /* no settings.json yet — start fresh */ }
-if (raw != null) {
-  // Parse BEFORE touching anything. If the user's settings.json is malformed (a
-  // trailing comma, a stray edit), REFUSE — never silently overwrite their config
-  // with just arc's entries. (install.ps1 aborts here too.)
+// Read settings.json. Returns { settings, raw }. THROWS on malformed JSON so callers
+// never silently overwrite a user's config with just their own entries.
+function readSettings(settingsPath = settingsPathDefault) {
+  let raw = null;
+  try { raw = fs.readFileSync(settingsPath, 'utf8'); } catch { return { settings: {}, raw: null }; }
+  let settings;
+  try { settings = JSON.parse(raw.replace(/^﻿/, '')) || {}; } // tolerate a leading BOM
+  catch (e) { throw new Error(`${settingsPath} is not valid JSON (${e.message}) — refusing to overwrite it.`); }
+  return { settings, raw };
+}
+
+// Write settings back (UTF-8, no BOM, trailing newline). Backs up the prior good copy.
+function writeSettings(settingsPath, settings, raw) {
+  if (raw != null) { try { fs.writeFileSync(settingsPath + '.bak-arc', raw); } catch {} }
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+}
+
+// Merge hook entries into settings.hooks, idempotently and without clobbering.
+// entries: [{ event, command, match? }]. `match` (default: the whole command) is the
+// substring used to detect an already-present entry — pass a stable script path so a
+// re-install with a moved scripts dir still dedups. New entries append into the FIRST
+// matcher group of the event (co-locating with the user's matchers). Returns #added.
+function mergeHooks(settings, entries) {
+  settings.hooks = settings.hooks || {};
+  let added = 0;
+  for (const e of entries) {
+    const groups = Array.isArray(settings.hooks[e.event]) ? settings.hooks[e.event] : (settings.hooks[e.event] = []);
+    const match = e.match || e.command;
+    const present = groups.some((g) => Array.isArray(g.hooks) && g.hooks.some((x) => typeof x.command === 'string' && x.command.includes(match)));
+    if (present) continue;
+    if (groups.length && Array.isArray(groups[0].hooks)) groups[0].hooks.push({ type: 'command', command: e.command });
+    else groups.push({ hooks: [{ type: 'command', command: e.command }] });
+    added++;
+  }
+  return added;
+}
+
+// Set the statusline command only if the user has none of their own.
+function setStatusline(settings, command) {
+  if (!settings.statusLine) { settings.statusLine = { type: 'command', command }; return true; }
+  return false;
+}
+
+// arc's own core hooks, as merge entries relative to a scripts dir.
+// arc-switch-hook FIRST on UserPromptSubmit so the classifier-immune switch runs first.
+// TaskCreated/TaskCompleted drive the fridge's git-derived "done" (arc-done.js).
+function coreHookEntries(scriptsDir) {
+  const S = scriptsDir.replace(/\\/g, '/'); // forward slashes work in a hook command
+  const H = [
+    ['UserPromptSubmit', 'arc-switch-hook.js', ''],
+    ['UserPromptSubmit', 'arc-notify.js', 'start'],
+    ['Stop', 'arc-notify.js', 'done'],
+    ['StopFailure', 'arc-notify.js', 'fail'],
+    ['Notification', 'arc-notify.js', 'wait'],
+    ['TaskCreated', 'arc-done.js', ''],
+    ['TaskCompleted', 'arc-done.js', ''],
+  ];
+  return H.map(([event, script, arg]) => ({ event, script, command: `node "${S}/${script}"${arg ? ' ' + arg : ''}` }));
+}
+
+// Wire arc's core hooks + statusline into settings.json.
+function wireArcSettings(scriptsDir = path.join(CLAUDE_DIR, 'scripts'), settingsPath = settingsPathDefault) {
+  const { settings, raw } = readSettings(settingsPath);
+  mergeHooks(settings, coreHookEntries(scriptsDir));
+  setStatusline(settings, `node "${scriptsDir.replace(/\\/g, '/')}/usage-monitor.js" --compact`);
+  writeSettings(settingsPath, settings, raw);
+  return { settingsPath, backedUp: raw != null };
+}
+
+module.exports = { readSettings, writeSettings, mergeHooks, setStatusline, coreHookEntries, wireArcSettings };
+
+if (require.main === module) {
   try {
-    settings = JSON.parse(raw.replace(/^﻿/, '')) || {}; // tolerate a leading BOM
+    const r = wireArcSettings(process.argv[2] || path.join(CLAUDE_DIR, 'scripts'));
+    process.stdout.write(`settings.json wired (hooks + statusline)${r.backedUp ? ' — backup at settings.json.bak-arc' : ''}\n`);
   } catch (e) {
-    process.stderr.write(`arc-wire-settings: ${settingsPath} is not valid JSON (${e.message}).\n` +
-      `  Refusing to overwrite it — fix the JSON and re-run. Nothing was changed.\n`);
+    process.stderr.write(`arc-wire-settings: ${e.message}\n  Nothing was changed.\n`);
     process.exit(1);
   }
-  // Back up the good original only now that we know we'll modify it.
-  try { fs.writeFileSync(settingsPath + '.bak-arc', raw); } catch {}
 }
-
-// The hooks arc owns, per event. arc-switch-hook FIRST on UserPromptSubmit so the
-// classifier-immune switch fallback runs before anything else.
-// TaskCreated/TaskCompleted drive the fridge's git-derived "done" (arc-done.js). They
-// fire in an ORDINARY session — no agent team, no experimental flag — because the hook
-// call inside TaskUpdate sits outside any teams check. TaskCreated records the HEAD sha
-// as a baseline; TaskCompleted diffs against it and posts the sticky note. Default mode
-// is 'note' (never blocks); features.doneGate = 'strict' turns it into a real gate.
-const HOOKS = [
-  { event: 'UserPromptSubmit', script: 'arc-switch-hook.js', arg: '' },
-  { event: 'UserPromptSubmit', script: 'arc-notify.js', arg: 'start' },
-  { event: 'Stop', script: 'arc-notify.js', arg: 'done' },
-  { event: 'StopFailure', script: 'arc-notify.js', arg: 'fail' },
-  { event: 'Notification', script: 'arc-notify.js', arg: 'wait' },
-  { event: 'TaskCreated', script: 'arc-done.js', arg: '' },
-  { event: 'TaskCompleted', script: 'arc-done.js', arg: '' },
-];
-
-settings.hooks = settings.hooks || {};
-for (const h of HOOKS) {
-  const command = `node "${S}/${h.script}"${h.arg ? ' ' + h.arg : ''}`;
-  const groups = Array.isArray(settings.hooks[h.event]) ? settings.hooks[h.event] : (settings.hooks[h.event] = []);
-  // idempotent: skip if any existing command in this event already runs this script.
-  const present = groups.some((g) => Array.isArray(g.hooks) && g.hooks.some((x) => typeof x.command === 'string' && x.command.includes(h.script)));
-  if (present) continue;
-  if (groups.length && Array.isArray(groups[0].hooks)) groups[0].hooks.push({ type: 'command', command });
-  else groups.push({ hooks: [{ type: 'command', command }] });
-}
-
-// statusline — only if the user hasn't set one.
-if (!settings.statusLine) {
-  settings.statusLine = { type: 'command', command: `node "${S}/usage-monitor.js" --compact` };
-}
-
-// (No Bash allow-rule needed: switching/restarting is done via the zero-token
-// `arc:switch` / `arc:restart` sentinels caught by the UserPromptSubmit hook — no
-// !-bash, no classifier. The old /switch /restart slash commands were removed.)
-
-fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-process.stdout.write(`settings.json wired (hooks + statusline)${fs.existsSync(settingsPath + '.bak-arc') ? ' — backup at settings.json.bak-arc' : ''}\n`);

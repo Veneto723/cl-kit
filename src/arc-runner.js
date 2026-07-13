@@ -1134,6 +1134,24 @@ async function main() {
   // `arc` remains the established Claude launcher. `arc codex` opts into the
   // second runtime without changing any existing Claude command or flag.
   if (userArgs[0] === 'codex') return runCodexCommand(userArgs.slice(1));
+  if (userArgs[0] === 'bundle') {
+    // arc bundle list | install <dir> | remove <name>  — first-party add-ons.
+    const B = require('./arc-bundle');
+    const sub = userArgs[1];
+    if (sub === 'list') {
+      const b = B.list(); const names = Object.keys(b);
+      process.stdout.write(names.length ? names.map((n) => `${n}\t${b[n].version || '?'}\t${(b[n].deployed.skills || []).length} skill target(s)`).join('\n') + '\n' : '[arc] no bundles installed.\n');
+    } else if (sub === 'install' && userArgs[2]) {
+      const r = B.install(path.resolve(userArgs[2]));
+      process.stdout.write(`[arc] installed bundle ${r.name}@${r.version || '?'}${r.warnings.length ? '  (' + r.warnings.join('; ') + ')' : ''}\n`);
+    } else if (sub === 'remove' && userArgs[2]) {
+      const r = B.remove(userArgs[2]);
+      process.stdout.write(r.removed ? `[arc] removed bundle ${userArgs[2]}\n` : `[arc] ${userArgs[2]}: ${r.why}\n`);
+    } else {
+      process.stdout.write('usage: arc bundle list | install <bundleDir> | remove <name>\n');
+    }
+    return;
+  }
   if (userArgs[0] === 'sessions') {
     const sessions = O.listSessions();
     if (!sessions.length) { process.stdout.write('[arc] no orchestrated sessions yet.\n'); return; }

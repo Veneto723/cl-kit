@@ -5,7 +5,7 @@ description: Use this when you are a DELEGATE session that should ACT ON work yo
 
 # Be a fridge responder
 
-An **idle** cl session can't be pushed to: the fridge delivers notes only when you take a
+An **idle** arc session can't be pushed to: the fridge delivers notes only when you take a
 turn, and a turn only starts on a human prompt. So if a roommate delegates something
 while you sit idle, you won't notice until a human nudges you. This skill removes that
 nudge — you **watch the fridge in the background**, and an incoming delegation *wakes you*.

@@ -19,7 +19,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 // ---- throwaway HOME (must be set BEFORE requiring any src module, since
-// cl-config computes CLAUDE_DIR = homedir()/.claude at load time) --------------
+// arc-config computes CLAUDE_DIR = homedir()/.claude at load time) --------------
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'clkit-test-'));
 process.env.HOME = TMP;          // POSIX homedir()
 process.env.USERPROFILE = TMP;   // Windows homedir()
@@ -84,8 +84,8 @@ for (const f of psFiles) {
 function writeJSON(p, obj) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); }
 const OAUTH_CRED = { claudeAiOauth: { accessToken: 'tok-TEST', subscriptionType: 'max' } };
 
-// ---- 2. cl-config (portable core) -------------------------------------------
-section('cl-config');
+// ---- 2. arc-config (portable core) -------------------------------------------
+section('arc-config');
 let C;
 try {
   // A config with an oauth account + an api account keyed by ENV VAR (no DPAPI,
@@ -109,13 +109,13 @@ try {
   const oenv = C.accountEnv(C.findAccount(cfg, 'sub'), { ANTHROPIC_API_KEY: 'leak' });
   ok('accountEnv strips gateway vars for oauth', oenv.ANTHROPIC_API_KEY === undefined);
   ok('claudeBin resolves to a string', typeof C.claudeBin(cfg) === 'string' && C.claudeBin(cfg).length > 0);
-} catch (e) { ok('cl-config loads', false, e.message); }
+} catch (e) { ok('arc-config loads', false, e.message); }
 
-// ---- 2b. cl-switch-core: chooseLaunchAccount (launch account selection) -------
+// ---- 2b. arc-switch-core: chooseLaunchAccount (launch account selection) -------
 // Regression: a plain API gateway with NO usage metrics (headroom=null) was excluded
 // as a candidate, so launch fell back to a 100%-EXHAUSTED subscription instead of the
 // available gateway. A gateway with no tracked limit must count as available.
-section('cl-switch-core (launch account selection)');
+section('arc-switch-core (launch account selection)');
 try {
   const core = require(path.join(SRC, 'arc-switch-core.js'));
   const SUB = { id: 'max', type: 'oauth', label: 'MAX' };
@@ -146,7 +146,7 @@ try {
 // TTL-fresh, so the PREVIOUS account's numbers were painted under the new account's
 // label (and, looking fresh, suppressed the refresh that would have fixed them);
 // arc:peek and auto-select scored every oauth account off that same blob.
-section('cl-switch-core (per-account usage attribution)');
+section('arc-switch-core (per-account usage attribution)');
 try {
   const core = require(path.join(SRC, 'arc-switch-core.js'));
   const A = { id: 'veneto', type: 'oauth', label: 'veneto' };
@@ -226,8 +226,8 @@ try {
   ok('requiring usage-monitor does not run main (no stray output)', typeof um.bindingResetLabel === 'function');
 } catch (e) { ok('binding-window reset works', false, e.message); }
 
-// ---- 3. cl-profile — the per-account credential ISOLATION fix ----------------
-section('cl-profile (credential isolation)');
+// ---- 3. arc-profile — the per-account credential ISOLATION fix ----------------
+section('arc-profile (credential isolation)');
 try {
   // hooks/statusLine to sync + a home .claude.json to seed
   writeJSON(path.join(CLAUDE, 'settings.json'), { hooks: { Stop: [] }, statusLine: { type: 'command', command: 'x' }, permissions: { allow: [] }, theme: 'dark' });
@@ -269,7 +269,7 @@ try {
   const trashed = P.removeProfile('acctB');
   ok('removeProfile returns a .trash path (moved, not hard-deleted)',
     !!trashed && trashed.startsWith(path.join(P.PROFILES_DIR, '.trash')) && fs.existsSync(trashed));
-  ok('...the original profile dir is GONE (no orphan left in cl-profiles)', !fs.existsSync(dirB));
+  ok('...the original profile dir is GONE (no orphan left in arc-profiles)', !fs.existsSync(dirB));
   ok('...the login survives in trash, so removal is recoverable',
     fs.existsSync(path.join(trashed, '.credentials.json')) &&
     fs.readFileSync(path.join(trashed, '.credentials.json'), 'utf8').includes('tok-OTHER'));
@@ -277,10 +277,10 @@ try {
   ok('removeProfile on a nonexistent account is a safe no-op (null)', P.removeProfile('never-existed') === null);
   // the graveyard must never be mistaken for a profile: account ids can't start with '.'
   ok('.trash is outside the account namespace', !/^[a-z]/i.test(path.basename(path.join(P.PROFILES_DIR, '.trash'))));
-} catch (e) { ok('cl-profile works', false, e.message); }
+} catch (e) { ok('arc-profile works', false, e.message); }
 
-// ---- 4. cl-sync — trash (list / restore / empty / transcriptMeta) ------------
-section('cl-sync (trash)');
+// ---- 4. arc-sync — trash (list / restore / empty / transcriptMeta) ------------
+section('arc-sync (trash)');
 try {
   const sync = require(path.join(SRC, 'arc-sync.js'));
   const proj = path.join(CLAUDE, 'projects', 'E--demo');
@@ -306,10 +306,10 @@ try {
   sync.trashSession(cid);
   const e = sync.emptyTrash();
   ok('emptyTrash purges', e.ok && sync.listTrash().length === 0);
-} catch (e) { ok('cl-sync works', false, e.message); }
+} catch (e) { ok('arc-sync works', false, e.message); }
 
-// ---- cl-sync export selectors: `all` = THIS project, `global` = everything -------
-section('cl-sync (export selectors)');
+// ---- arc-sync export selectors: `all` = THIS project, `global` = everything -------
+section('arc-sync (export selectors)');
 try {
   const sync = require(path.join(SRC, 'arc-sync.js'));
 
@@ -345,13 +345,13 @@ try {
   ok('  and it points at `arc:export global`', /arc:export global/.test(r.message));
 
   try { fs.unlinkSync(path.join(cacheDir, `arc-state-${S}.json`)); } catch {}
-} catch (e) { ok('cl-sync export selectors work', false, e.message); }
+} catch (e) { ok('arc-sync export selectors work', false, e.message); }
 
 // ---- arc:import destination: a BARE positional == --dest ------------------------
 // Regression: `arc:import <archive> E:` silently IGNORED the `E:` — the import ran with
 // no re-rooting and landed in the archive's original project dir, so --dest looked
 // broken. The bare form is what people actually type; it must mean the same as the flag.
-section('cl-sync (import destination)');
+section('arc-sync (import destination)');
 try {
   const sync = require(path.join(SRC, 'arc-sync.js'));
   const tgz = path.join(TMP, 'fake.tgz');
@@ -375,10 +375,10 @@ try {
   // a missing archive is still the first thing reported
   ok('a missing archive still errors first', /archive not found/.test(sync.doImport('nosess', 'nope.tgz E:').message));
   fs.unlinkSync(tgz);
-} catch (e) { ok('cl-sync import destination works', false, e.message); }
+} catch (e) { ok('arc-sync import destination works', false, e.message); }
 
-// ---- cl-sync — arc:import --dest re-rooting (office/home path parity) ----------
-section('cl-sync (import --dest re-rooting)');
+// ---- arc-sync — arc:import --dest re-rooting (office/home path parity) ----------
+section('arc-sync (import --dest re-rooting)');
 try {
   const sync = require(path.join(SRC, 'arc-sync.js'));
 
@@ -444,10 +444,10 @@ try {
   } else {
     ok('(tar unavailable — skipped the --dest end-to-end)', true);
   }
-} catch (e) { ok('cl-sync --dest works', false, e.message); }
+} catch (e) { ok('arc-sync --dest works', false, e.message); }
 
-// ---- 5. cl-switch-core — peek + trash rendering ------------------------------
-section('cl-switch-core');
+// ---- 5. arc-switch-core — peek + trash rendering ------------------------------
+section('arc-switch-core');
 try {
   const core = require(path.join(SRC, 'arc-switch-core.js'));
   const peek = core.buildPeek('no-session');
@@ -456,7 +456,7 @@ try {
   ok('requestTrash list renders', tr && typeof tr.message === 'string');
   const del = core.requestDelete('', '');
   ok('requestDelete refuses outside a session', del.ok === false);
-} catch (e) { ok('cl-switch-core works', false, e.message); }
+} catch (e) { ok('arc-switch-core works', false, e.message); }
 
 // ---- 6. gw-usage — tolerant summarize ---------------------------------------
 section('gw-usage');
@@ -466,11 +466,11 @@ try {
   ok('summarizeGatewayUsage tolerates null/non-string model rows', !!s);
 } catch (e) { ok('gw-usage works', false, e.message); }
 
-// ---- 7. cl-platform + storeApiKey (Windows key path: DPAPI) -------------------
+// ---- 7. arc-platform + storeApiKey (Windows key path: DPAPI) -------------------
 // cl-kit is Windows 11 only, so this asserts the real DPAPI round-trip (via
 // powershell.exe). It also proves the PORTABLE key sources (apiKeyEnv / apiKeyFrom)
 // still resolve on Windows — only the POSIX OS-keychain source was dropped.
-section('cl-platform + storeApiKey (DPAPI + portable key sources)');
+section('arc-platform + storeApiKey (DPAPI + portable key sources)');
 try {
   const plat = require(path.join(SRC, 'arc-platform.js'));
   const clip = plat.readClipboard();
@@ -494,10 +494,10 @@ try {
   ok('resolveApiKey error names the surviving sources (no keychain)',
     (() => { try { C.resolveApiKey({ id: 'x', type: 'api' }); return false; }
       catch (e) { return /apiKeyEnv/.test(e.message) && !/keychain/i.test(e.message); } })());
-} catch (e) { ok('cl-platform + storeApiKey work', false, e.message); }
+} catch (e) { ok('arc-platform + storeApiKey work', false, e.message); }
 
-// ---- 8. cl-wire-settings — installer settings merge (idempotent) -------------
-section('cl-wire-settings (installer hook wiring)');
+// ---- 8. arc-wire-settings — installer settings merge (idempotent) -------------
+section('arc-wire-settings (installer hook wiring)');
 try {
   const scriptsDir = path.join(CLAUDE, 'scripts');
   fs.mkdirSync(scriptsDir, { recursive: true });
@@ -505,16 +505,16 @@ try {
   // start from a user settings.json with a pre-existing key to confirm we merge, not clobber
   writeJSON(path.join(CLAUDE, 'settings.json'), { theme: 'dark', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node other.js' }] }] } });
   const r1 = spawnSync(process.execPath, [wire, scriptsDir], { encoding: 'utf8' });
-  ok('cl-wire-settings runs', r1.status === 0, (r1.stderr || '').split('\n')[0]);
+  ok('arc-wire-settings runs', r1.status === 0, (r1.stderr || '').split('\n')[0]);
   const s = JSON.parse(fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8'));
   const cmds = (ev) => (s.hooks[ev] || []).flatMap((g) => (g.hooks || []).map((x) => x.command)).join(' | ');
   ok('preserves the user\'s existing settings + hook', s.theme === 'dark' && cmds('Stop').includes('other.js'));
   ok('wires UserPromptSubmit (switch-hook + notify start)', cmds('UserPromptSubmit').includes('arc-switch-hook.js') && cmds('UserPromptSubmit').includes('arc-notify.js'));
-  ok('wires Stop/StopFailure/Notification cl-notify', cmds('Stop').includes('arc-notify.js') && cmds('StopFailure').includes('arc-notify.js') && cmds('Notification').includes('arc-notify.js'));
+  ok('wires Stop/StopFailure/Notification arc-notify', cmds('Stop').includes('arc-notify.js') && cmds('StopFailure').includes('arc-notify.js') && cmds('Notification').includes('arc-notify.js'));
   ok('sets statusline', /usage-monitor\.js/.test(JSON.stringify(s.statusLine)));
   ok('no cl-signal allow-rule (slash commands removed)', !JSON.stringify(s.permissions || {}).includes('cl-signal.js'));
-  ok('wires TaskCreated -> cl-done (baseline the HEAD sha)', cmds('TaskCreated').includes('arc-done.js'));
-  ok('wires TaskCompleted -> cl-done (the git-derived gate)', cmds('TaskCompleted').includes('arc-done.js'));
+  ok('wires TaskCreated -> arc-done (baseline the HEAD sha)', cmds('TaskCreated').includes('arc-done.js'));
+  ok('wires TaskCompleted -> arc-done (the git-derived gate)', cmds('TaskCompleted').includes('arc-done.js'));
 
   // install.ps1 wires the SAME hooks by hand. If the two lists drift, a fresh install
   // silently lacks whatever the newer one added — which is exactly how the gate would
@@ -527,7 +527,7 @@ try {
     const [ev, sc] = e.split(':');
     return !new RegExp(`Ensure-Hook \\$settings '${ev}'[^\\n]*${sc.replace('.', '\\.')}`).test(ps);
   });
-  ok(`install.ps1 wires every hook cl-wire-settings does (${events.length})`, missing.length === 0, `missing: ${missing.join(', ')}`);
+  ok(`install.ps1 wires every hook arc-wire-settings does (${events.length})`, missing.length === 0, `missing: ${missing.join(', ')}`);
   ok('installer publishes the roommate skill at the shared agent path',
     ps.includes("'.agents\\skills'") && ps.includes("'skills\\share-with-roommate\\*'"));
   // idempotent: a second run must not duplicate hooks
@@ -542,10 +542,10 @@ try {
   const rbad = spawnSync(process.execPath, [wire, scriptsDir], { encoding: 'utf8' });
   ok('refuses malformed settings.json (non-zero exit)', rbad.status !== 0);
   ok('leaves the malformed file untouched (no silent clobber)', fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8') === bad);
-} catch (e) { ok('cl-wire-settings works', false, e.message); }
+} catch (e) { ok('arc-wire-settings works', false, e.message); }
 
-// ---- cl-anchor (has a doc's claim about the code gone stale?) -------------------
-section('cl-anchor (doc/code staleness)');
+// ---- arc-anchor (has a doc's claim about the code gone stale?) -------------------
+section('arc-anchor (doc/code staleness)');
 try {
   const A = require(path.join(SRC, 'arc-anchor.js'));
   const RM = require(path.join(SRC, 'arc-room.js'));
@@ -689,10 +689,10 @@ try {
     try { fs.unlinkSync(rf); } catch {}
     fs.rmSync(repo, { recursive: true, force: true });
   }
-} catch (e) { ok('cl-anchor works', false, e.message); }
+} catch (e) { ok('arc-anchor works', false, e.message); }
 
-// ---- cl-done (derive "done" from git, not from the agent's word) ---------------
-section('cl-done (git-derived completion)');
+// ---- arc-done (derive "done" from git, not from the agent's word) ---------------
+section('arc-done (git-derived completion)');
 try {
   const D = require(path.join(SRC, 'arc-done.js'));
   const RM = require(path.join(SRC, 'arc-room.js'));
@@ -804,10 +804,10 @@ try {
     try { fs.unlinkSync(roleFile); } catch {}
     fs.rmSync(repo, { recursive: true, force: true });
   }
-} catch (e) { ok('cl-done works', false, e.message); }
+} catch (e) { ok('arc-done works', false, e.message); }
 
-// ---- cl-postcommit (every commit -> a fridge note, no task list needed) --------
-section('cl-postcommit (commit -> fridge note)');
+// ---- arc-postcommit (every commit -> a fridge note, no task list needed) --------
+section('arc-postcommit (commit -> fridge note)');
 try {
   const PC = require(path.join(SRC, 'arc-postcommit.js'));
   const RM = require(path.join(SRC, 'arc-room.js'));
@@ -849,11 +849,11 @@ try {
     try { fs.unlinkSync(path.join(cacheDir, 'arc-role-pcsess.json')); } catch {}
     fs.rmSync(repo, { recursive: true, force: true });
   }
-} catch (e) { ok('cl-postcommit works', false, e.message); }
+} catch (e) { ok('arc-postcommit works', false, e.message); }
 
 // ---- arc-runner fridge CLI (arc note / arc role — the AGENT-facing surface) --------
 // The agent can't TYPE arc:note (the hook eats it), but it can RUN `cl note ...` via
-// Bash. This exercises that dispatch end to end through the real cl-runner process.
+// Bash. This exercises that dispatch end to end through the real arc-runner process.
 section('arc-runner fridge CLI (arc note / arc role)');
 try {
   const runner = path.join(SRC, 'arc-runner.js');
@@ -885,11 +885,11 @@ try {
   try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-role-${S}.json`)); } catch {}
 } catch (e) { ok('arc-runner fridge CLI works', false, e.message); }
 
-// ---- cl-watch (wake a delegate session on an incoming delegation) ---------------
+// ---- arc-watch (wake a delegate session on an incoming delegation) ---------------
 // A delegate (e.g. research) can't be pushed to while idle; it runs `cl watch` in the
 // background so a delegation prints a line that re-invokes it. This tests the emit
 // logic: each unread note once, own notes excluded, the read cursor never touched.
-section('cl-watch (delegation waker)');
+section('arc-watch (delegation waker)');
 try {
   const W = require(path.join(SRC, 'arc-watch.js'));
   const RM = require(path.join(SRC, 'arc-room.js'));
@@ -922,13 +922,13 @@ try {
   ok('a [!] delegation is flagged in the emit', hi.length === 1 && /\[!\]/.test(hi[0]));
 
   fs.rmSync(repo, { recursive: true, force: true });
-} catch (e) { ok('cl-watch works', false, e.message); }
+} catch (e) { ok('arc-watch works', false, e.message); }
 
-// ---- cl-transpile (Claude transcript -> text-first codex messages) --------------
+// ---- arc-transpile (Claude transcript -> text-first codex messages) --------------
 // Proven live end to end: these messages, injected into a Codex rollout, let `codex
 // resume` recall a fact that only existed in the Claude session. This locks the pure
 // conversion: text at full fidelity, tools as short markers, noise dropped.
-section('cl-transpile (Claude -> Codex text-first)');
+section('arc-transpile (Claude -> Codex text-first)');
 try {
   const T = require(path.join(SRC, 'arc-transpile.js'));
   const recs = [
@@ -956,10 +956,10 @@ try {
   const many = []; for (let i = 0; i < 10; i++) many.push({ type: i % 2 ? 'assistant' : 'user', message: { role: i % 2 ? 'assistant' : 'user', content: `m${i}` } });
   const tail = T.transpile(many, { keepLast: 4 });
   ok('keepLast keeps the recent messages, starting on a user turn', tail.messages.length <= 4 && tail.messages[0].role === 'user');
-} catch (e) { ok('cl-transpile works', false, e.message); }
+} catch (e) { ok('arc-transpile works', false, e.message); }
 
-// ---- cl-handoff (locate transcript + dry-run, no codex needed) ------------------
-section('cl-handoff (transcript locate + dry-run)');
+// ---- arc-handoff (locate transcript + dry-run, no codex needed) ------------------
+section('arc-handoff (transcript locate + dry-run)');
 try {
   const H = require(path.join(SRC, 'arc-handoff.js'));
   // a fixture transcript under the sandbox HOME's projects dir
@@ -989,7 +989,7 @@ try {
   fs.writeFileSync(seedB, 'CL_HANDOFF_SEED unique-b\n');
   ok('handoff seed discovery matches the unique marker, not another concurrent seed',
     H.findSeedRollout('CL_HANDOFF_SEED unique-a', seeds) === seedA);
-} catch (e) { ok('cl-handoff works', false, e.message); }
+} catch (e) { ok('arc-handoff works', false, e.message); }
 
 // ---- orchestration registry + Codex runtime account isolation ----------------
 section('runtime orchestration (logical sessions + Codex accounts)');
@@ -1084,7 +1084,7 @@ try {
     && !/(arc|cl):switch/.test(codexHelpOut.reason || ''));
 } catch (e) { ok('runtime orchestration works', false, e.message); }
 
-section('cl-runner Codex launch adapter');
+section('arc-runner Codex launch adapter');
 try {
   const fakeBin = path.join(TMP, 'fake-codex-bin');
   const fakeJs = path.join(fakeBin, 'fake-codex.js');
@@ -1121,9 +1121,9 @@ try {
   const installedCfg = fs.readFileSync(path.join(nativeHome, 'config.toml'), 'utf8');
   ok('cl codex installs lifecycle hooks into the selected CODEX_HOME config.toml',
     /\[\[hooks\.SessionStart\.hooks\]\]/.test(installedCfg) && /\[\[hooks\.UserPromptSubmit\.hooks\]\]/.test(installedCfg));
-} catch (e) { ok('cl-runner Codex launch works', false, e.message); }
+} catch (e) { ok('arc-runner Codex launch works', false, e.message); }
 
-section('cl-runner supervised Claude -> Codex handoff loop');
+section('arc-runner supervised Claude -> Codex handoff loop');
 try {
   const loopRoot = path.join(TMP, 'handoff-loop');
   const loopUser = path.join(loopRoot, 'user');
@@ -1206,11 +1206,11 @@ try {
     && loopSession.lineage[0].to === 'codex' && loopSession.bindings.codex.state === 'exited');
 } catch (e) { ok('supervised handoff loop works', false, e.message); }
 
-// ---- cl-profile: adoptIntoShared (migrate a real dir into the shared one) -------
+// ---- arc-profile: adoptIntoShared (migrate a real dir into the shared one) -------
 // Regression: `tasks` joined SHARED_DIRS. The old code did rmSync(recursive) on the
 // profile's REAL dir before junctioning — which would have DELETED every profile's
 // task lists on the next launch. Nothing may ever be destroyed here.
-section('cl-profile (adoptIntoShared: migrate, never clobber)');
+section('arc-profile (adoptIntoShared: migrate, never clobber)');
 try {
   const P = require(path.join(SRC, 'arc-profile.js'));
   ok('tasks is shared (so arc:switch keeps the task list)', P.SHARED_DIRS.includes('tasks'));
@@ -1250,10 +1250,10 @@ try {
   ok('missing link is trivially clear', P.adoptIntoShared(path.join(base, 'nope'), shared, 'a', 'x') === true);
 
   fs.rmSync(base, { recursive: true, force: true });
-} catch (e) { ok('cl-profile adoptIntoShared works', false, e.message); }
+} catch (e) { ok('arc-profile adoptIntoShared works', false, e.message); }
 
-// ---- cl-conv (convId reconciliation — the "switch resumes a new session" fix) --
-section('cl-conv (convId reconciliation)');
+// ---- arc-conv (convId reconciliation — the "switch resumes a new session" fix) --
+section('arc-conv (convId reconciliation)');
 try {
   const { pickConvId } = require(path.join(SRC, 'arc-conv.js'));
   // hasTranscript predicate over a fixed set of "real" (persisted) ids.
@@ -1283,13 +1283,13 @@ try {
   // No bridge yet (statusline hasn't rendered) → keep whatever we track.
   ok('keeps tracked id when bridge is empty',
     pickConvId('live-28118b62', null, false, has) === 'live-28118b62');
-} catch (e) { ok('cl-conv pickConvId works', false, e.message); }
+} catch (e) { ok('arc-conv pickConvId works', false, e.message); }
 
-// ---- cl-help + the arc:help hook (zero-token cheat sheet) --------------------
-section('cl-help + arc:help hook');
+// ---- arc-help + the arc:help hook (zero-token cheat sheet) --------------------
+section('arc-help + arc:help hook');
 try {
   const renderHelp = require(path.join(SRC, 'arc-help.js'));
-  ok('cl-help exports a render function', typeof renderHelp === 'function');
+  ok('arc-help exports a render function', typeof renderHelp === 'function');
   const sheet = renderHelp();
   ok('cheat sheet lists arc:help and arc:switch', /arc:help/.test(sheet) && /arc:switch/.test(sheet));
   const codexSheet = renderHelp('codex');
@@ -1333,8 +1333,8 @@ try {
   fs.unlinkSync(handoffTrigger);
 } catch (e) { ok('arc:help hook works', false, e.message); }
 
-// ---- cl-room (the "fridge": per-room append-only sticky-note ledger) ---------
-section('cl-room (sticky-note ledger)');
+// ---- arc-room (the "fridge": per-room append-only sticky-note ledger) ---------
+section('arc-room (sticky-note ledger)');
 try {
   const R = require(path.join(SRC, 'arc-room.js'));
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'clroom-'));
@@ -1399,16 +1399,16 @@ try {
   // (This is the bug the end-to-end test caught — pid alone is not identity.)
   const second = R.claimRole(rTop, 'coding', process.pid, 's2');
   ok('a different live session is refused (even with same pid)', second.ok === false && second.holder.sessionId === 's1');
-  // arc:restart re-execs cl-runner: SAME session, NEW pid → must reclaim its own role.
+  // arc:restart re-execs arc-runner: SAME session, NEW pid → must reclaim its own role.
   ok('same session reclaims under a NEW pid (restart-safe)', R.claimRole(rTop, 'coding', process.pid + 1, 's1').ok === true);
   fs.writeFileSync(path.join(rTop.planDir, 'lease-coding.json'), JSON.stringify({ role: 'coding', pid: 999999, sessionId: 's9', at: Date.now() }));
   ok('a DEAD holder\'s lease is vacant', R.roleHolder(rTop, 'coding') === null);
   ok('a vacant role can be claimed by anyone', R.claimRole(rTop, 'coding', process.pid, 's3').ok === true);
   ok('liveRoles lists live holders only', R.liveRoles(rTop).map((l) => l.role).join(',') === 'coding');
-} catch (e) { ok('cl-room works', false, e.message); }
+} catch (e) { ok('arc-room works', false, e.message); }
 
-// ---- cl-fridge (the arc: sentinels over the ledger) ---------------------------
-section('cl-fridge (role / note / notes)');
+// ---- arc-fridge (the arc: sentinels over the ledger) ---------------------------
+section('arc-fridge (role / note / notes)');
 try {
   const F = require(path.join(SRC, 'arc-fridge.js'));
   const R2 = require(path.join(SRC, 'arc-room.js'));
@@ -1449,7 +1449,7 @@ try {
   ok('arc:notes all = landlord view, no role needed', /ALL 2 note\(s\)/.test(nAll.message));
 
   // restart: same session, NEW pid → role + lease survive
-  mkSession('sb', process.pid + 1);                       // simulate cl-runner re-exec
+  mkSession('sb', process.pid + 1);                       // simulate arc-runner re-exec
   const rr = F.refreshRole('sb', process.pid + 1, repo2);
   ok('refreshRole re-asserts the lease after restart', rr && rr.ok === true && rr.role === 'coding');
   ok('and the role still resolves for that session', F.getRole('sb', room2) === 'coding');
@@ -1505,7 +1505,69 @@ try {
   const catchUp = F.requestNotes('sb', '', repo2);
   ok('arc:notes catches a returning roommate up in one uncapped call',
     (catchUp.message.match(/#\s*\d+/g) || []).length === expected && expected > 40 && R2.unreadFor(room2, 'coding').count === 0);
-} catch (e) { ok('cl-fridge works', false, e.message); }
+} catch (e) { ok('arc-fridge works', false, e.message); }
+
+// ---- arc-bundle (first-party bundle installer) -------------------------------
+section('arc-bundle (manifest + installer)');
+try {
+  const B = require(path.join(SRC, 'arc-bundle.js'));
+  // satisfies() — the minimal >= range check
+  ok('satisfies >= ranges', B.satisfies('22.3.1', '>=22') && B.satisfies('2.1.0', '>=2.1') && !B.satisfies('18.0.0', '>=22') && B.satisfies('1.0.0', undefined));
+  // validate() — schema + requires
+  const host = { node: '22.0.0', arc: '2.0.0', claude: true, codex: false };
+  ok('validate accepts a good skill-only manifest',
+    B.validate({ manifest: 1, name: 'x', provides: { skills: [{ path: '.' }] } }, host).ok);
+  ok('validate rejects wrong schema / bad name / missing provides',
+    !B.validate({ manifest: 2, name: 'x', provides: {} }, host).ok
+    && !B.validate({ manifest: 1, name: 'Bad Name', provides: {} }, host).ok
+    && !B.validate({ manifest: 1, name: 'x' }, host).ok);
+  ok('validate rejects an unmet node requirement',
+    !B.validate({ manifest: 1, name: 'x', provides: { skills: [] }, requires: { node: '>=99' } }, host).ok);
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'arcbundle-'));
+  const opts = { claudeDir: path.join(home, '.claude'), agentsDir: path.join(home, '.agents'), arcHome: path.join(home, '.arc'), scriptsDir: path.join(home, '.claude', 'scripts'), host };
+
+  // a fixture bundle: a dual-runtime skill + a hook + a supporting file
+  const bdir = path.join(home, 'src', 'demo'); fs.mkdirSync(bdir, { recursive: true });
+  fs.writeFileSync(path.join(bdir, 'arc-bundle.json'), JSON.stringify({
+    manifest: 1, name: 'demo', version: '1.2.0',
+    requires: { node: '>=18', host: ['claude', 'codex'] },
+    provides: { skills: [{ path: '.', targets: ['claude', 'codex'] }], hooks: [{ event: 'Stop', command: 'node "{scripts}/demo.js"' }] },
+  }));
+  fs.writeFileSync(path.join(bdir, 'SKILL.md'), '---\nname: demo\ndescription: d\n---\nbody');
+  fs.writeFileSync(path.join(bdir, 'helper.js'), '// helper');
+
+  const r = B.install(bdir, opts);
+  const claudeSkill = path.join(opts.claudeDir, 'skills', 'demo');
+  const codexSkill = path.join(opts.agentsDir, 'skills', 'demo');
+  ok('install deploys the skill to BOTH claude + codex homes',
+    fs.existsSync(path.join(claudeSkill, 'SKILL.md')) && fs.existsSync(path.join(claudeSkill, 'helper.js')) && fs.existsSync(path.join(codexSkill, 'SKILL.md')));
+  ok('install excludes the manifest from the deployed skill', !fs.existsSync(path.join(claudeSkill, 'arc-bundle.json')));
+  const settings = JSON.parse(fs.readFileSync(path.join(opts.claudeDir, 'settings.json'), 'utf8'));
+  ok('install merged the bundle hook into settings.json (with {scripts} resolved)',
+    JSON.stringify(settings.hooks.Stop).includes('/.claude/scripts/demo.js') && !JSON.stringify(settings.hooks.Stop).includes('{scripts}'));
+  ok('lockfile records the bundle', !!B.list(opts).demo && B.list(opts).demo.version === '1.2.0');
+
+  // idempotent — re-install adds no duplicate hook
+  B.install(bdir, opts);
+  const s2 = JSON.parse(fs.readFileSync(path.join(opts.claudeDir, 'settings.json'), 'utf8'));
+  const demoHookCount = JSON.stringify(s2.hooks.Stop).split('demo.js').length - 1;
+  ok('re-install is idempotent (no duplicate hook)', demoHookCount === 1);
+
+  // remove — inverse of install
+  const rm = B.remove('demo', opts);
+  const s3 = JSON.parse(fs.readFileSync(path.join(opts.claudeDir, 'settings.json'), 'utf8'));
+  ok('remove deletes both skill homes + pulls the hook back out + clears the lockfile',
+    rm.removed && !fs.existsSync(claudeSkill) && !fs.existsSync(codexSkill)
+    && !JSON.stringify(s3.hooks || {}).includes('demo.js') && !B.list(opts).demo);
+
+  // the real show-image bundle discovers + validates
+  const found = B.discover(path.join(ROOT, 'bundles'));
+  ok('discover finds the first-party show-image bundle', found.some((f) => f.manifest.name === 'show-image'));
+  ok('show-image manifest is valid', B.validate(B.readManifest(path.join(ROOT, 'bundles', 'show-image')), host).ok);
+
+  fs.rmSync(home, { recursive: true, force: true });
+} catch (e) { ok('arc-bundle works', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- PROBE: environment touchpoints (informational — never fails build) ------
 section('environment probe (informational)');

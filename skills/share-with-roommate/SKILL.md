@@ -1,6 +1,6 @@
 ---
 name: share-with-roommate
-description: You may be sharing this repo with ANOTHER cl session — a "roommate". Common pairs are an `android` session while you are `frontend`, a `backend` session while you are `android`, or a read-only `research` session while you write code. They cannot see your work and you cannot see theirs; the only channel is a shared "fridge" of sticky notes. When you finish something that CHANGES THEIR WORLD — a shared API/contract/schema change, a decision that affects their side, a blocker they'll hit, or a feature they depend on that just shipped — leave ONE concise note so they learn it at their next turn. Broadcast with `arc note all "<one line>"`, or target a role with `arc note <role> "<one line>"`. Run `arc role` first to see who is actually in the room. Do NOT narrate routine steps — only what a teammate would need to ACT on. If `arc role` shows no roommate, do nothing.
+description: You may be sharing this repo with ANOTHER arc session — a "roommate". Common pairs are an `android` session while you are `frontend`, a `backend` session while you are `android`, or a read-only `research` session while you write code. They cannot see your work and you cannot see theirs; the only channel is a shared "fridge" of sticky notes. When you finish something that CHANGES THEIR WORLD — a shared API/contract/schema change, a decision that affects their side, a blocker they'll hit, or a feature they depend on that just shipped — leave ONE concise note so they learn it at their next turn. Broadcast with `arc note all "<one line>"`, or target a role with `arc note <role> "<one line>"`. Run `arc role` first to see who is actually in the room. Do NOT narrate routine steps — only what a teammate would need to ACT on. If `arc role` shows no roommate, do nothing.
 ---
 
 # Share with your roommate
@@ -27,15 +27,15 @@ line, in plain words, that a teammate could act on without reading your diff.
 ## How
 
 ```sh
-cl role                         # who's in the room? what's my role?
-cl note all "P-014: /login now returns 202, not 200 — update the client"
-cl note backend "schema: added `retries` (int, default 0) to task_log"
-cl notes                        # read what your roommate left you (also arrives at your turn start)
+arc role                         # who's in the room? what's my role?
+arc note all "P-014: /login now returns 202, not 200 — update the client"
+arc note backend "schema: added `retries` (int, default 0) to task_log"
+arc notes                        # read what your roommate left you (also arrives at your turn start)
 ```
 
 `arc note all` broadcasts to everyone in the room (simplest — you don't need to know their
 role name). Target a specific role only when it's for one of them. Your own notes never
-come back to you; the roommate receives them through cl at the start of their next turn.
+come back to you; the roommate receives them through arc at the start of their next turn.
 Claude sessions also show a waiting-note mark in their statusline.
 
 ## Notes

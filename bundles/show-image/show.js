@@ -41,7 +41,7 @@ if (!IMAGE_EXT.has(ext)) {
 const cmd = process.env.ComSpec || 'cmd.exe';
 const cmdArgs = ['/d', '/s', '/c', 'start', '', file];
 
-// Send a desktop toast, reusing cl-kit's WinRT notifier if installed. Returns how it
+// Send a desktop toast, reusing arc's WinRT notifier if installed. Returns how it
 // was sent, or null. PNG dimensions straight from the IHDR header (no decode, no deps).
 function pngSize(p) {
   try {
@@ -62,15 +62,15 @@ function desktopNotify(title, body, launchUri, wide) {
   // kind 'image' has no state icon on purpose — the toast shows the ACTUAL image,
   // which says far more than any generic glyph.
   try {
-    require(path.join(scripts, 'cl-notify.js'))
+    require(path.join(scripts, 'arc-notify.js'))
       .toast(title, body, 'image', undefined, launchUri, wide ? { heroUri: launchUri } : { logoUri: launchUri });
-    return `cl-notify toast (${wide ? 'wide banner' : 'square thumbnail'} · click it to open)`;
+    return `arc-notify toast (${wide ? 'wide banner' : 'square thumbnail'} · click it to open)`;
   } catch {}
   return null;
 }
 
 // Mode resolution: an explicit env var wins (a deliberate per-invocation choice),
-// else cl-kit's config (features.showImage), else 'open'. Reading the config means
+// else arc's config (features.showImage), else 'open'. Reading the config means
 // a standing preference applies immediately — no session restart needed.
 function configuredMode() {
   try {
@@ -80,15 +80,15 @@ function configuredMode() {
   } catch { return null; }
 }
 
-// CL_SHOW_IMAGE modes — the human decides how intrusive this is allowed to be:
+// ARC_SHOW_IMAGE modes — the human decides how intrusive this is allowed to be:
 //   open   (default) pop the image in the OS viewer      — steals focus
 //   notify           desktop toast + print the path      — NO window, no focus steal
 //   off              print the path only                 — never opens anything
-const MODE = (process.env.CL_SHOW_IMAGE || configuredMode() || 'open').toLowerCase();
+const MODE = (process.env.ARC_SHOW_IMAGE || configuredMode() || 'open').toLowerCase();
 
 if (MODE === 'off') {
   process.stdout.write(
-    `[show-image] CL_SHOW_IMAGE=off — not opening a window.\n` +
+    `[show-image] ARC_SHOW_IMAGE=off — not opening a window.\n` +
     `[show-image] image is at: ${file}\n` +
     `[show-image] Give the user this path so they can open it themselves.\n`);
   process.exit(0);
@@ -103,7 +103,7 @@ if (MODE === 'notify') {
     ? `(dry: would toast as ${wide ? 'wide hero banner' : 'square thumbnail'}${dim ? ` [${dim.w}x${dim.h}]` : ''}, click-target ${fileUri})`
     : desktopNotify('Claude has an image for you', `${path.basename(file)} · ${kb0} KB — click to open`, fileUri, wide);
   process.stdout.write(
-    `[show-image] CL_SHOW_IMAGE=notify — no window opened (focus not stolen).\n` +
+    `[show-image] ARC_SHOW_IMAGE=notify — no window opened (focus not stolen).\n` +
     `[show-image] ${how ? `alerted via ${how}` : 'no notifier available — tell the user directly'}\n` +
     `[show-image] image is at: ${file}\n` +
     `[show-image] Tell the user the image is ready and give them this path.\n`);
