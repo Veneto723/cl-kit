@@ -102,7 +102,14 @@ function discover(bundlesDir) {
 
 // ---- file ops ---------------------------------------------------------------
 function copyDir(src, dest, { exclude = COPY_EXCLUDE } = {}) {
-  fs.rmSync(dest, { recursive: true, force: true });
+  // CRITICAL: if `dest` is a symlink/junction (e.g. a dev install of the skill points
+  // at a checkout), remove the LINK only — never recurse into it, or fs.rmSync would
+  // delete the link TARGET's contents. lstat reports Windows junctions as symlinks.
+  try {
+    const st = fs.lstatSync(dest);
+    if (st.isSymbolicLink()) { try { fs.unlinkSync(dest); } catch { fs.rmdirSync(dest); } }
+    else fs.rmSync(dest, { recursive: true, force: true });
+  } catch { /* dest absent */ }
   fs.mkdirSync(dest, { recursive: true });
   fs.cpSync(src, dest, { recursive: true, filter: (s) => !exclude.has(path.basename(s)) });
 }

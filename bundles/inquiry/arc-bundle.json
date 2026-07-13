@@ -1,0 +1,13 @@
+{
+  "manifest": 1,
+  "name": "inquiry",
+  "version": "1.0.0",
+  "description": "A self-paced, human-in-the-loop research protocol for Claude Code / Codex — divergent search + adversarial verification, escalating to the human only what genuinely matters.",
+  "requires": { "node": ">=22", "host": ["claude", "codex"] },
+  "provides": {
+    "skills": [{ "path": ".", "targets": ["claude", "codex"] }],
+    "home": "~/.inquiry"
+  },
+  "test": "node --test tests/*.test.js",
+  "vendoredFrom": { "repo": "github.com/Veneto723/inquiry", "ref": "10eb61b + working tree", "at": "2026-07-13" }
+}

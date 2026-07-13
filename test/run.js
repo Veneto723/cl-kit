@@ -1561,10 +1561,39 @@ try {
     rm.removed && !fs.existsSync(claudeSkill) && !fs.existsSync(codexSkill)
     && !JSON.stringify(s3.hooks || {}).includes('demo.js') && !B.list(opts).demo);
 
-  // the real show-image bundle discovers + validates
+  // junction-safety: a dev install of a skill can be a symlink/junction to a checkout.
+  // Installing over it must remove the LINK, never recurse into + delete the target.
+  const canary = path.join(home, 'canary'); fs.mkdirSync(canary, { recursive: true });
+  fs.writeFileSync(path.join(canary, 'PRECIOUS.txt'), 'do not delete');
+  const skillDest = path.join(opts.claudeDir, 'skills', 'demo');
+  fs.mkdirSync(path.dirname(skillDest), { recursive: true });
+  let linked = false; try { fs.symlinkSync(canary, skillDest, 'junction'); linked = true; } catch {}
+  if (linked) {
+    B.install(bdir, opts);
+    ok('install over a junctioned skill dir preserves the link target (no data loss)',
+      fs.existsSync(path.join(canary, 'PRECIOUS.txt')) && fs.existsSync(path.join(skillDest, 'SKILL.md')) && !fs.existsSync(path.join(skillDest, 'canary')));
+    B.remove('demo', opts);
+  } else { ok('(junction-safety test skipped — could not create a junction here)', true); }
+
+  // the real first-party bundles discover + validate
   const found = B.discover(path.join(ROOT, 'bundles'));
-  ok('discover finds the first-party show-image bundle', found.some((f) => f.manifest.name === 'show-image'));
-  ok('show-image manifest is valid', B.validate(B.readManifest(path.join(ROOT, 'bundles', 'show-image')), host).ok);
+  ok('discover finds the first-party bundles (show-image + inquiry)',
+    found.some((f) => f.manifest.name === 'show-image') && found.some((f) => f.manifest.name === 'inquiry'));
+  ok('every first-party bundle manifest validates',
+    found.every((f) => B.validate(f.manifest, { ...host, codex: true }).ok));
+
+  // each bundle's OWN test suite passes from inside arc (node-version gated so a
+  // node-20 CI leg skips a node>=22 bundle). This is how bundle tests reach arc's CI.
+  for (const b of found) {
+    const req = (b.manifest.requires && b.manifest.requires.node) || '>=18';
+    if (!b.manifest.test || !B.satisfies(process.versions.node, req)) continue;
+    const tdir = path.join(b.dir, 'tests');
+    const files = fs.existsSync(tdir) ? fs.readdirSync(tdir).filter((f) => f.endsWith('.test.js')).map((f) => path.join('tests', f)) : [];
+    if (!files.length) continue;
+    const r = spawnSync(process.execPath, ['--test', ...files], { cwd: b.dir, encoding: 'utf8', timeout: 60000 });
+    ok(`bundle "${b.manifest.name}": its own node --test suite passes from inside arc`, r.status === 0,
+      ((r.stdout || '') + (r.stderr || '')).split('\n').filter((l) => /not ok|fail /.test(l)).slice(0, 2).join(' | '));
+  }
 
   fs.rmSync(home, { recursive: true, force: true });
 } catch (e) { ok('arc-bundle works', false, e.message + '\n' + (e.stack || '')); }

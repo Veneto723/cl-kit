@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inquiry"
+  short_description: "Run durable, evidence-grounded research loops"
+  default_prompt: "Use $inquiry to run the research brief at <path-to-GOAL.md>."

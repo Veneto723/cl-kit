@@ -1,0 +1,338 @@
+{
+  "scenario": "partial-one-kept",
+  "provenance": {
+    "claudeRaw": "synthetic workflow-shaped fixture",
+    "codexRaw": "synthetic controller-shaped fixture",
+    "runtimeCertified": false
+  },
+  "claudeRaw": {
+    "trace": [
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 0,
+        "type": "round.started",
+        "data": { "escalateBar": 0.85 }
+      },
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 1,
+        "type": "divergence.completed",
+        "data": {
+          "angles": [
+            { "angleId": "angle-1", "lens": "kept", "question": "What survives?" },
+            { "angleId": "angle-2", "lens": "killed", "question": "What is rejected?" },
+            { "angleId": "angle-3", "lens": "failed", "question": "What fails?" }
+          ]
+        }
+      },
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 2,
+        "type": "investigation.completed",
+        "angleId": "angle-1",
+        "data": {
+          "finding": {
+            "claim": "The first fixture claim is supported.",
+            "evidence": ["The alpha source supports the first claim."],
+            "sources": ["https://example.com/alpha"],
+            "limitations": ["Synthetic fixture evidence."],
+            "incremental": true
+          }
+        }
+      },
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 3,
+        "type": "verification.completed",
+        "angleId": "angle-1",
+        "data": {
+          "verdict": {
+            "grounded": true,
+            "onBrief": true,
+            "novel": false,
+            "redundant": false,
+            "significance": 0.9,
+            "verdict": "keep",
+            "note": "Supported fixture claim."
+          }
+        }
+      },
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 4,
+        "type": "investigation.completed",
+        "angleId": "angle-2",
+        "data": {
+          "finding": {
+            "claim": "The second fixture claim is unsupported.",
+            "evidence": ["The beta source was offered for the second claim."],
+            "sources": ["https://example.com/beta"],
+            "limitations": ["Synthetic fixture evidence."],
+            "incremental": true
+          }
+        }
+      },
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 5,
+        "type": "verification.completed",
+        "angleId": "angle-2",
+        "data": {
+          "verdict": {
+            "grounded": false,
+            "onBrief": true,
+            "novel": false,
+            "redundant": false,
+            "significance": 0.2,
+            "verdict": "kill",
+            "note": "The source does not support the claim."
+          }
+        }
+      },
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 6,
+        "type": "investigation.failed",
+        "angleId": "angle-3",
+        "data": {
+          "kind": "probeDied",
+          "reason": "Synthetic investigator failure."
+        }
+      },
+      {
+        "contractVersion": "inquiry.trace/v1",
+        "roundId": "fixture-partial-one-kept",
+        "seq": 7,
+        "type": "round.completed",
+        "data": {
+          "attempted": 3,
+          "judged": 2,
+          "failed": 1,
+          "clean": false,
+          "dry": false,
+          "roundFailed": false,
+          "kept": ["angle-1"],
+          "unverified": [],
+          "escalations": ["angle-1"]
+        }
+      }
+    ]
+  },
+  "codexRaw": {
+    "contractVersion": "inquiry.trace/v1",
+    "roundId": "fixture-partial-one-kept",
+    "escalateBar": 0.85,
+    "angles": [
+      { "angleId": "angle-1", "lens": "kept", "question": "What survives?" },
+      { "angleId": "angle-2", "lens": "killed", "question": "What is rejected?" },
+      { "angleId": "angle-3", "lens": "failed", "question": "What fails?" }
+    ],
+    "outcomes": [
+      {
+        "angleId": "angle-1",
+        "investigation": {
+          "status": "completed",
+          "finding": {
+            "claim": "The first fixture claim is supported.",
+            "evidence": ["The alpha source supports the first claim."],
+            "sources": ["https://example.com/alpha"],
+            "limitations": ["Synthetic fixture evidence."],
+            "incremental": true
+          }
+        },
+        "verification": {
+          "status": "completed",
+          "verdict": {
+            "grounded": true,
+            "onBrief": true,
+            "novel": false,
+            "redundant": false,
+            "significance": 0.9,
+            "verdict": "keep",
+            "note": "Supported fixture claim."
+          }
+        }
+      },
+      {
+        "angleId": "angle-2",
+        "investigation": {
+          "status": "completed",
+          "finding": {
+            "claim": "The second fixture claim is unsupported.",
+            "evidence": ["The beta source was offered for the second claim."],
+            "sources": ["https://example.com/beta"],
+            "limitations": ["Synthetic fixture evidence."],
+            "incremental": true
+          }
+        },
+        "verification": {
+          "status": "completed",
+          "verdict": {
+            "grounded": false,
+            "onBrief": true,
+            "novel": false,
+            "redundant": false,
+            "significance": 0.2,
+            "verdict": "kill",
+            "note": "The source does not support the claim."
+          }
+        }
+      },
+      {
+        "angleId": "angle-3",
+        "investigation": {
+          "status": "failed",
+          "kind": "probeDied",
+          "reason": "Synthetic investigator failure."
+        }
+      }
+    ],
+    "summary": {
+      "attempted": 3,
+      "judged": 2,
+      "failed": 1,
+      "clean": false,
+      "dry": false,
+      "roundFailed": false,
+      "kept": ["angle-1"],
+      "unverified": [],
+      "escalations": ["angle-1"]
+    }
+  },
+  "expectedTrace": [
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 0,
+      "type": "round.started",
+      "data": { "escalateBar": 0.85 }
+    },
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 1,
+      "type": "divergence.completed",
+      "data": {
+        "angles": [
+          { "angleId": "angle-1", "lens": "kept", "question": "What survives?" },
+          { "angleId": "angle-2", "lens": "killed", "question": "What is rejected?" },
+          { "angleId": "angle-3", "lens": "failed", "question": "What fails?" }
+        ]
+      }
+    },
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 2,
+      "type": "investigation.completed",
+      "angleId": "angle-1",
+      "data": {
+        "finding": {
+          "claim": "The first fixture claim is supported.",
+          "evidence": ["The alpha source supports the first claim."],
+          "sources": ["https://example.com/alpha"],
+          "limitations": ["Synthetic fixture evidence."],
+          "incremental": true
+        }
+      }
+    },
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 3,
+      "type": "verification.completed",
+      "angleId": "angle-1",
+      "data": {
+        "verdict": {
+          "grounded": true,
+          "onBrief": true,
+          "novel": false,
+          "redundant": false,
+          "significance": 0.9,
+          "verdict": "keep",
+          "note": "Supported fixture claim."
+        }
+      }
+    },
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 4,
+      "type": "investigation.completed",
+      "angleId": "angle-2",
+      "data": {
+        "finding": {
+          "claim": "The second fixture claim is unsupported.",
+          "evidence": ["The beta source was offered for the second claim."],
+          "sources": ["https://example.com/beta"],
+          "limitations": ["Synthetic fixture evidence."],
+          "incremental": true
+        }
+      }
+    },
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 5,
+      "type": "verification.completed",
+      "angleId": "angle-2",
+      "data": {
+        "verdict": {
+          "grounded": false,
+          "onBrief": true,
+          "novel": false,
+          "redundant": false,
+          "significance": 0.2,
+          "verdict": "kill",
+          "note": "The source does not support the claim."
+        }
+      }
+    },
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 6,
+      "type": "investigation.failed",
+      "angleId": "angle-3",
+      "data": {
+        "kind": "probeDied",
+        "reason": "Synthetic investigator failure."
+      }
+    },
+    {
+      "contractVersion": "inquiry.trace/v1",
+      "roundId": "fixture-partial-one-kept",
+      "seq": 7,
+      "type": "round.completed",
+      "data": {
+        "attempted": 3,
+        "judged": 2,
+        "failed": 1,
+        "clean": false,
+        "dry": false,
+        "roundFailed": false,
+        "kept": ["angle-1"],
+        "unverified": [],
+        "escalations": ["angle-1"]
+      }
+    }
+  ],
+  "expectedProjection": {
+    "attempted": 3,
+    "judged": 2,
+    "failed": 1,
+    "clean": false,
+    "dry": false,
+    "roundFailed": false,
+    "kept": ["angle-1"],
+    "unverified": [],
+    "escalations": ["angle-1"]
+  }
+}
