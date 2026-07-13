@@ -1,4 +1,4 @@
-# cl-kit installer (Windows 11). Deploys the cl account switcher into ~/.claude
+﻿# cl-kit installer (Windows 11). Deploys the cl account switcher into ~/.claude
 # and ~/.local/bin, wires hooks + statusline into settings.json (merging, never
 # clobbering), registers the cl-focus: toast-click protocol, and generates icons.
 # Re-runnable: existing files are overwritten from the kit, user settings merged.

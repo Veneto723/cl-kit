@@ -57,6 +57,29 @@ for (const f of jsFiles) {
   ok(`--check ${path.relative(ROOT, f)}`, r.status === 0, (r.stderr || '').split('\n')[0]);
 }
 
+// A .ps1 containing NON-ASCII (we use em-dashes in comments) MUST carry a UTF-8 BOM.
+// Windows PowerShell 5.1 — which is what the documented `powershell -File install.ps1`
+// actually runs — decodes a BOM-less file as ANSI, mangling those bytes into mojibake
+// that breaks the PARSER. install.ps1 was silently unrunnable that way; it only worked
+// under pwsh 7. This guards the whole class, not just the one file.
+const psFiles = [];
+(function walkPs(dir) {
+  let ents = []; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of ents) {
+    if (e.name === 'node_modules' || e.name === '.git') continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walkPs(p);
+    else if (e.name.endsWith('.ps1')) psFiles.push(p);
+  }
+})(ROOT);
+for (const f of psFiles) {
+  const buf = fs.readFileSync(f);
+  const hasBom = buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF;
+  const nonAscii = buf.slice(hasBom ? 3 : 0).some((b) => b > 0x7f);
+  ok(`${path.relative(ROOT, f)}: BOM present if non-ASCII (PS 5.1 parses it)`, !nonAscii || hasBom,
+    'non-ASCII without a UTF-8 BOM — Windows PowerShell 5.1 will mis-decode and fail to parse');
+}
+
 // ---- helpers -----------------------------------------------------------------
 function writeJSON(p, obj) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); }
 const OAUTH_CRED = { claudeAiOauth: { accessToken: 'tok-TEST', subscriptionType: 'max' } };

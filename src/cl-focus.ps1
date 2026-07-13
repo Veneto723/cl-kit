@@ -1,4 +1,4 @@
-# cl-focus: bring the terminal window hosting a claude session to the foreground.
+﻿# cl-focus: bring the terminal window hosting a claude session to the foreground.
 # Invoked by the cl-focus: protocol handler when a cl-notify toast is clicked.
 # Arg: the claude process pid (possibly prefixed "cl-focus:" from the URI).
 #
