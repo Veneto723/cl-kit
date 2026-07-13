@@ -1,9 +1,9 @@
 // arc-switch-core: the shared validate + drop-trigger logic for switching/
-// restarting a cl session. Entry point:
+// restarting an arc session. Entry point:
 //   - arc-switch-hook.js  (a UserPromptSubmit hook catching the zero-token arc:
 //                          sentinels — classifier-immune, works even when the
 //                          account is rate-limited)
-// (The old cl-signal.js / /switch / /restart slash-command path was removed; the
+// (The old arc-signal.js / /switch / /restart slash-command path was removed; the
 // arc: hook is now the single way in.)
 //
 // Keeping the logic in one module means there's one definition of what a valid
@@ -29,20 +29,18 @@ function shortStamp(iso) {
 // Resolve this session's CURRENT account from its state file (fallback: default).
 function currentAccount(C, cfg, session) {
   try {
-    const arc = path.join(CACHE_DIR, `arc-state-${session}.json`);
-    const sp = fs.existsSync(arc) ? arc : path.join(CACHE_DIR, `cl-state-${session}.json`); // legacy fallback
-    const st = JSON.parse(fs.readFileSync(sp, 'utf8'));
+    const st = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, `arc-state-${session}.json`), 'utf8'));
     const acc = C.findAccount(cfg, st.account);
     if (acc) return acc.id;
   } catch {}
   return cfg.defaultAccount;
 }
 
-// Queue a runtime handoff for the owning cl-runner. The hook must stay fast and
+// Queue a runtime handoff for the owning arc-runner. The hook must stay fast and
 // must not replace a TTY child itself; it records a validated request, blocks the
 // sentinel prompt, and lets the supervisor perform the transactional work.
 function requestHandoff(session, argStr, context = {}) {
-  if (!session) return { ok: false, message: 'NOT running under the cl wrapper (launch with `arc`).' };
+  if (!session) return { ok: false, message: 'NOT running under the arc wrapper (launch with `arc`).' };
   const tokens = String(argStr || '').trim().split(/\s+/).filter(Boolean);
   const target = tokens[0] && !tokens[0].startsWith('-') ? tokens.shift().toLowerCase() : 'codex';
   if (target !== 'codex') return { ok: false, message: `handoff target "${target}" is not supported yet (available: codex).` };
@@ -81,14 +79,14 @@ function requestHandoff(session, argStr, context = {}) {
   }
 }
 
-// Count LIVE cl sessions currently pinned to `accountId` (a cl-state file says so
+// Count LIVE arc sessions currently pinned to `accountId` (an arc-state file says so
 // AND its pid is alive). Removing an account doesn't kill sessions using it — they
 // keep working and drop to the default on their next relaunch — so we warn first.
 function liveSessionsOn(accountId) {
   let n = 0;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
-      if (!/^cl-state-.*\.json$/.test(f)) continue;
+      if (!/^arc-state-.*\.json$/.test(f)) continue;
       let st; try { st = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, f), 'utf8')); } catch { continue; }
       if (st.account !== accountId || !st.pid) continue;
       try { process.kill(st.pid, 0); n++; } catch (e) { if (e.code === 'EPERM') n++; } // EPERM = alive, not ours
@@ -98,7 +96,7 @@ function liveSessionsOn(accountId) {
 }
 
 // ---- usage peek + shared launch-account decision ---------------------------
-// These back BOTH the launch-time auto-select (cl-runner) and the `arc:peek`
+// These back BOTH the launch-time auto-select (arc-runner) and the `arc:peek`
 // readout, so the "would launch on X" line always matches what actually happens.
 
 function readUsageCache() {
@@ -112,7 +110,7 @@ function readUsageCache() {
 // bounded so it never hangs, and skips the fetch when the cache is already fresh.
 // On timeout/failure it falls back to whatever's cached (still shown with its age).
 function refreshUsageForPeek(cfg) {
-  if ((process.env.ARC_PEEK_NO_REFRESH || process.env.CL_PEEK_NO_REFRESH) === '1') return; // opt out → instant, cache-only peek
+  if (process.env.ARC_PEEK_NO_REFRESH === '1') return; // opt out → instant, cache-only peek
   const PEEK_FRESH_MS = 15_000; // a re-peek within 15s reuses the cache, no refetch
   try {
     const cache = readUsageCache();
@@ -282,12 +280,12 @@ function ageStr(ms) {
 function buildPeek(session) {
   let C, cfg;
   try { C = require('./arc-config'); cfg = C.loadConfig(); }
-  catch (e) { return { ok: false, message: `cl usage — config unreadable (${e.message}). Fix ~/.claude/arc-config.json or run \`cl setup\`.` }; }
+  catch (e) { return { ok: false, message: `arc usage — config unreadable (${e.message}). Fix ~/.claude/arc-config.json or run \`arc setup\`.` }; }
   refreshUsageForPeek(cfg); // fire a fresh fetch first — peek must not show stale data
   const cache = readUsageCache();
   const current = session ? currentAccount(C, cfg, session) : null;
   const pct = (v) => (v == null ? '  ?' : String(Math.round(v)).padStart(3));
-  const lines = ['cl usage — peek'];
+  const lines = ['arc usage — peek'];
   if (!cache) lines.push('  (no usage cache yet — the statusline populates it every few minutes; try again shortly)');
 
   for (const a of cfg.accounts) {
@@ -337,8 +335,8 @@ function buildPeek(session) {
     }
   }
 
-  // The account a fresh launch/resume would auto-select (same decision cl-runner
-  // uses) — so peek doubles as "where's my headroom / where will cl start me".
+  // The account a fresh launch/resume would auto-select (same decision arc-runner
+  // uses) — so peek doubles as "where's my headroom / where will arc start me".
   if (cfg.features && cfg.features.autoBest !== false && cfg.accounts.length > 1) {
     const pick = chooseLaunchAccount(cfg, cache);
     if (pick) {
@@ -380,13 +378,13 @@ function resolveTarget(C, cfg, target) {
 function requestSwitch(session, target) {
   if (!session) {
     return { ok: false, switching: false,
-      message: 'NOT SWITCHING — this session is not running under the cl wrapper (launch with `arc` to use switching).' };
+      message: 'NOT SWITCHING — this session is not running under the arc wrapper (launch with `arc` to use switching).' };
   }
   let C, cfg;
   try { C = require('./arc-config'); cfg = C.loadConfig(); }
   catch (e) {
     return { ok: false, switching: false,
-      message: `NOT SWITCHING — cl config unreadable (${e.message}). Fix ~/.claude/arc-config.json or run \`cl setup\`.` };
+      message: `NOT SWITCHING — arc config unreadable (${e.message}). Fix ~/.claude/arc-config.json or run \`arc setup\`.` };
   }
 
   const current = currentAccount(C, cfg, session);
@@ -395,12 +393,12 @@ function requestSwitch(session, target) {
 
   // No explicit target: refuse (1) / cycle (below menuMin) / show the picker menu.
   // menuMin = min account count that triggers the numbered menu instead of a
-  // blind cycle (cl-config features.switchMenuMin, default 3, floor 2).
+  // blind cycle (arc-config features.switchMenuMin, default 3, floor 2).
   const menuMin = Math.max(2, (cfg.features && cfg.features.switchMenuMin) || 3);
   if (!target) {
     if (cfg.accounts.length < 2) {
       return { ok: false, switching: false,
-        message: `NOT SWITCHING — only ONE account is configured (${ids}), so there is nothing to switch to. The session stays on "${current}". Add another with \`cl add-account <id>\`.` };
+        message: `NOT SWITCHING — only ONE account is configured (${ids}), so there is nothing to switch to. The session stays on "${current}". Add another with \`arc add-account <id>\`.` };
     }
     if (cfg.accounts.length >= menuMin) {
       return { ok: true, switching: false, menu: true,
@@ -426,7 +424,7 @@ function requestSwitch(session, target) {
 }
 
 // Write the switch trigger carrying the RESOLVED account id (so a menu number is
-// already turned into an id before cl-runner sees it).
+// already turned into an id before arc-runner sees it).
 function writeSwitch(session, current, next) {
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -438,18 +436,18 @@ function writeSwitch(session, current, next) {
   }
 }
 
-// Drop a picker trigger → cl-runner opens the interactive arrow-key account
+// Drop a picker trigger → arc-runner opens the interactive arrow-key account
 // picker (zero tokens). Refuses if <2 accounts. Returns { ok, picker, message }.
 function requestPicker(session) {
   if (!session) {
-    return { ok: false, picker: false, message: 'NOT SWITCHING — not running under the cl wrapper (launch with `arc`).' };
+    return { ok: false, picker: false, message: 'NOT SWITCHING — not running under the arc wrapper (launch with `arc`).' };
   }
   let C, cfg;
   try { C = require('./arc-config'); cfg = C.loadConfig(); }
-  catch (e) { return { ok: false, picker: false, message: `NOT SWITCHING — cl config unreadable (${e.message}).` }; }
+  catch (e) { return { ok: false, picker: false, message: `NOT SWITCHING — arc config unreadable (${e.message}).` }; }
   if (cfg.accounts.length < 2) {
     return { ok: false, picker: false,
-      message: `NOT SWITCHING — only ONE account is configured. Add another with \`cl add-account <id>\`.` };
+      message: `NOT SWITCHING — only ONE account is configured. Add another with \`arc add-account <id>\`.` };
   }
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -634,14 +632,14 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
 }
 
 // Add an account. `--api`/`--url` → a gateway/pool account, done inline here.
-// Otherwise an oauth subscription → drop a trigger so cl-runner runs the guided
+// Otherwise an oauth subscription → drop a trigger so arc-runner runs the guided
 // browser login on the freed TTY. `argStr` is everything after `arc:add-account`.
 function requestAddAccount(session, argStr) {
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
   // Bare `arc:add-account` (no id/flags) → open the interactive wizard (pick
-  // Subscription vs Gateway on a arc:switch-style screen, then guided prompts).
+  // Subscription vs Gateway on an arc:switch-style screen, then guided prompts).
   if (!tokens.length) {
-    if (!session) return { ok: false, message: 'launch `cl` first — then `arc:add-account` opens the add wizard.' };
+    if (!session) return { ok: false, message: 'launch `arc` first — then `arc:add-account` opens the add wizard.' };
     try {
       fs.mkdirSync(CACHE_DIR, { recursive: true });
       fs.writeFileSync(path.join(CACHE_DIR, `arc-addacct-${session}.trigger`), JSON.stringify({ at: Date.now(), wizard: true }));
@@ -658,16 +656,16 @@ function requestAddAccount(session, argStr) {
   try {
     const C = require('./arc-config');
     if (C.findAccount(C.loadConfig(), id)) {
-      return { ok: false, message: `account "${id}" already exists — pick a different id (see arc:help or cl doctor).` };
+      return { ok: false, message: `account "${id}" already exists — pick a different id (see arc:help or arc doctor).` };
     }
   } catch {}
 
   // Gateway/pool account: no browser, no TTY — verify + register right here.
   if (hasFlag(tokens, 'api') || hasFlag(tokens, 'url')) return addApiAccount(tokens, id);
 
-  // oauth subscription: needs the browser + terminal → hand off to cl-runner.
+  // oauth subscription: needs the browser + terminal → hand off to arc-runner.
   if (!session) {
-    return { ok: false, message: 'adding a SUBSCRIPTION needs the cl wrapper (launch with `arc`). For a gateway/pool, use: arc:add-account ' + id + ' --api --url <gateway>.' };
+    return { ok: false, message: 'adding a SUBSCRIPTION needs the arc wrapper (launch with `arc`). For a gateway/pool, use: arc:add-account ' + id + ' --api --url <gateway>.' };
   }
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -701,7 +699,7 @@ function removeAccountFromConfig(C, id) {
   catch (e) { fs.copyFileSync(bak, C.CONFIG_PATH); throw new Error(`config rejected (${e.message}) — restored`); }
   const credFile = (removed.type === 'oauth' && removed.credentials && fs.existsSync(removed.credentials)) ? removed.credentials : null;
   // Quarantine the per-account profile dir so removal doesn't leave an orphan in
-  // cl-profiles (the bug that stranded MAX/work). Recoverable (moved, not deleted).
+  // arc-profiles (the bug that stranded MAX/work). Recoverable (moved, not deleted).
   // If a live session still holds the dir the move fails — leave it and report.
   let profileTrash = null, profileInUse = false;
   try { profileTrash = require('./arc-profile').removeProfile(id); }
@@ -712,7 +710,7 @@ function removeAccountFromConfig(C, id) {
 // Rename an account in arc-config.json: id + (one-name) label + all references
 // (switchOrder / default / rephrase). Backup + validate + rollback on error.
 // Returns the backup path. Does NOT move the profile dir — the caller does that
-// (cl-profile.renameProfile) so the two stay in step.
+// (arc-profile.renameProfile) so the two stay in step.
 function renameAccountInConfig(C, oldId, newId) {
   const bak = C.CONFIG_PATH + '.bak-' + Date.now();
   const raw = JSON.parse(fs.readFileSync(C.CONFIG_PATH, 'utf8'));
@@ -748,14 +746,14 @@ function doRename(C, oldId, newId) {
 
 // Rename an account. `argStr`:  "<new>" renames the CURRENT session's account;
 // "<old> <new>" renames a named one. Renaming an account that has a LIVE session
-// (its profile dir is open) must go through cl-runner — it kills claude, moves the
+// (its profile dir is open) must go through arc-runner — it kills claude, moves the
 // dir, then relaunches — so for the CURRENT session we drop a rename trigger; a
 // live OTHER account is refused (close it first). Otherwise we rename in-place now.
 function requestRename(session, argStr) {
-  if (!session) return { ok: false, message: 'NOT running under the cl wrapper (launch with `arc`).' };
+  if (!session) return { ok: false, message: 'NOT running under the arc wrapper (launch with `arc`).' };
   let C, cfg;
   try { C = require('./arc-config'); cfg = C.loadConfig(); }
-  catch (e) { return { ok: false, message: `cl config unreadable (${e.message}).` }; }
+  catch (e) { return { ok: false, message: `arc config unreadable (${e.message}).` }; }
 
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return { ok: false, message: 'usage: arc:rename [<old>] <new>  — e.g. `arc:rename work` renames THIS session\'s account, or `arc:rename work personal`.' };
@@ -774,7 +772,7 @@ function requestRename(session, argStr) {
 
   const live = liveSessionsOn(oldId);
   if (oldId === current) {
-    // The account THIS session is on — its profile dir is open, so cl-runner must
+    // The account THIS session is on — its profile dir is open, so arc-runner must
     // do it (kill claude → move dir → relaunch on the new name).
     try {
       fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -796,10 +794,10 @@ function requestRename(session, argStr) {
 // "<id> confirm" (step 2: verify the fresh pending marker, then remove).
 // Returns { ok, pending?, removed?, message }.
 function requestRemoveAccount(session, argStr) {
-  if (!session) return { ok: false, message: 'NOT running under the cl wrapper (launch with `arc`).' };
+  if (!session) return { ok: false, message: 'NOT running under the arc wrapper (launch with `arc`).' };
   let C, cfg;
   try { C = require('./arc-config'); cfg = C.loadConfig(); }
-  catch (e) { return { ok: false, message: `cl config unreadable (${e.message}).` }; }
+  catch (e) { return { ok: false, message: `arc config unreadable (${e.message}).` }; }
 
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
   const isConfirm = tokens.some((t) => CONFIRM_WORDS.has(t.toLowerCase()));
@@ -808,7 +806,7 @@ function requestRemoveAccount(session, argStr) {
 
   const acc = C.findAccount(cfg, id);
   if (!acc) return { ok: false, message: `no account "${id}". Configured: ${cfg.accounts.map((a) => a.id).join(', ')}.` };
-  if (cfg.accounts.length < 2) return { ok: false, message: `refusing to remove the LAST account ("${acc.id}") — cl needs at least one.` };
+  if (cfg.accounts.length < 2) return { ok: false, message: `refusing to remove the LAST account ("${acc.id}") — arc needs at least one.` };
 
   // Where sessions on this account fall back to on their next relaunch (removing
   // the default reassigns it to the first remaining account).
@@ -837,7 +835,7 @@ function requestRemoveAccount(session, argStr) {
         `REMOVE account "${acc.id}"${acc.label && acc.label !== acc.id.toUpperCase() ? ` (${acc.label})` : ''}` +
         ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + '\n' +
         `  • arc-config.json is backed up first; references (switch order / default) are auto-fixed\n` +
-        `  • its profile (login + local data) is MOVED to recoverable trash (cl-profiles/.trash), never hard-deleted\n` +
+        `  • its profile (login + local data) is MOVED to recoverable trash (arc-profiles/.trash), never hard-deleted\n` +
         `  CONFIRM within 2 min:  arc:remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
     };
   }
@@ -861,7 +859,7 @@ function requestRemoveAccount(session, argStr) {
           + `  ${live > 1 ? 'they' : 'it'} will drop to "${newDefault}" on next switch/restart.\n`
         : '') +
       (res.profileTrash ? `  its profile (login + local data) → recoverable trash: ${res.profileTrash}\n` : '') +
-      (res.profileInUse ? `  ⚠ profile dir left in place — a live session is using it; remove cl-profiles/${acc.id} after it exits.\n` : '') +
+      (res.profileInUse ? `  ⚠ profile dir left in place — a live session is using it; remove arc-profiles/${acc.id} after it exits.\n` : '') +
       (res.credFile ? `  its legacy login file was KEPT at ${res.credFile} — delete it yourself if you want it gone.\n` : '') +
       `  reverse it by restoring the backup: ${res.backup}${res.profileTrash ? ' (and moving the profile dir back)' : ''}`,
   };
@@ -870,7 +868,7 @@ function requestRemoveAccount(session, argStr) {
 // ---- delete current session (double-confirmed, moves to recoverable trash) ---
 function pendingDelPath(session) { return path.join(CACHE_DIR, `arc-delpending-${session}.json`); }
 
-// The conversation id THIS cl session is on.
+// The conversation id THIS arc session is on.
 function sessionConvId(session) {
   for (const p of [path.join(CACHE_DIR, `arc-state-${session}.json`), path.join(CACHE_DIR, `arc-active-${session}.json`)]) {
     try { const j = JSON.parse(fs.readFileSync(p, 'utf8')); if (j.convId) return j.convId; } catch {}
@@ -880,10 +878,10 @@ function sessionConvId(session) {
 
 // Two-step deletion of the CURRENT conversation. Step 1 (bare `arc:delete`) shows
 // the impact and arms a 2-min pending marker; step 2 (`arc:delete confirm`) drops
-// a delete trigger — cl-runner kills claude, moves the transcript to recoverable
+// a delete trigger — arc-runner kills claude, moves the transcript to recoverable
 // trash, and starts a FRESH session. Returns { ok, pending?, deleting?, message }.
 function requestDelete(session, argStr) {
-  if (!session) return { ok: false, message: 'NOT running under the cl wrapper (launch with `arc`).' };
+  if (!session) return { ok: false, message: 'NOT running under the arc wrapper (launch with `arc`).' };
   const convId = sessionConvId(session);
   if (!convId) return { ok: false, message: 'no current conversation id yet (the statusline hasn\'t bridged it) — try again in a moment.' };
 
@@ -928,7 +926,7 @@ function requestDelete(session, argStr) {
 // Drop a restart trigger. Returns { ok, message }. Never throws.
 function requestRestart(session) {
   if (!session) {
-    return { ok: false, message: 'NOT RESTARTING — this session is not running under the cl wrapper (launch with `arc`).' };
+    return { ok: false, message: 'NOT RESTARTING — this session is not running under the arc wrapper (launch with `arc`).' };
   }
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -940,7 +938,7 @@ function requestRestart(session) {
 }
 
 // ---- arc:trash — list / restore / permanently empty the conversation trash --
-// (~/.claude/backups/cl-deleted-*, written by arc:delete). Pure file ops that run
+// (~/.claude/backups/arc-deleted-*, written by arc:delete). Pure file ops that run
 // synchronously in the hook — zero tokens, no relaunch. `plain: true` results are
 // self-contained readouts (rendered uncolored, like arc:peek).
 function pendingPurgePath(session) { return path.join(CACHE_DIR, `arc-purgepending-${session || 'terminal'}.json`); }
@@ -1001,7 +999,7 @@ function requestTrash(session, argStr) {
     lines.push(`  ${e.convId.slice(0, 8)}  ${title}`);
     lines.push(`            ${turns} · ${used} · ${sync.human(e.bytes)} · ${where}${e.sidecar ? ' · +files' : ''}`);
   }
-  lines.push('', '  restore one:  arc:trash restore <id>   (then: cl --resume <id>)        purge all:  arc:trash empty');
+  lines.push('', '  restore one:  arc:trash restore <id>   (then: arc --resume <id>)        purge all:  arc:trash empty');
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 

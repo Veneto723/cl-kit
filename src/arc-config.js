@@ -1,10 +1,10 @@
-// arc-config: shared loader for the cl account-switcher configuration.
-// One config file (~/.claude/arc-config.json) defines N accounts; every cl
+// arc-config: shared loader for the arc account-switcher configuration.
+// One config file (~/.claude/arc-config.json) defines N accounts; every arc
 // component (runner, statusline, hooks, pool tools) resolves accounts from it.
 //
 // Account types:
 //   oauth  — a claude.ai subscription login. Optional `credentials` = path to a
-//            captured .credentials.json; cl swaps it in on switch, which is how
+//            captured .credentials.json; arc swaps it in on switch, which is how
 //            TWO subscriptions coexist (sessions/transcripts stay unified in one
 //            ~/.claude). Absent → whatever login is currently active.
 //   api    — any Anthropic-compatible gateway: baseUrl + key (+ optional header
@@ -12,9 +12,9 @@
 //            from an env var (`apiKeyEnv`), extracted from a file with a regex
 //            (`apiKeyFrom: {file, regex}` — first capture group), or stored
 //            DPAPI-encrypted in the config itself (`apiKeyEnc` — no plaintext on
-//            disk, bound to this Windows user+machine; set via `cl set-key <id>`).
+//            disk, bound to this Windows user+machine; set via `arc set-key <id>`).
 //            Optional `usageUrl` (default `<baseUrl>/v1/usage`, set false to
-//            disable): the gateway's own usage endpoint — cl fetches it and shows
+//            disable): the gateway's own usage endpoint — arc fetches it and shows
 //            the account's cost/tokens in the statusline + arc:peek (see gw-usage.js).
 //
 // Minimal example (single subscription):
@@ -28,14 +28,6 @@ const { execFileSync } = require('child_process');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const CONFIG_PATH = path.join(CLAUDE_DIR, 'arc-config.json');
-const LEGACY_CONFIG_PATH = path.join(CLAUDE_DIR, 'cl-config.json'); // pre-rename name
-// One-time migration: copy the old cl-config.json to arc-config.json (keeping the
-// original as a backup). Best-effort; loadRaw also falls back to the legacy path.
-try {
-  if (!fs.existsSync(CONFIG_PATH) && fs.existsSync(LEGACY_CONFIG_PATH)) {
-    fs.copyFileSync(LEGACY_CONFIG_PATH, CONFIG_PATH);
-  }
-} catch { /* fall through to loadRaw's fallback */ }
 const CACHE_DIR = path.join(CLAUDE_DIR, 'cache');
 const CRED_PATH = path.join(CLAUDE_DIR, '.credentials.json');
 const SCRIPTS_DIR = path.join(CLAUDE_DIR, 'scripts');
@@ -48,14 +40,12 @@ function expandHome(p) {
 }
 
 function loadRaw() {
-  for (const p of [CONFIG_PATH, LEGACY_CONFIG_PATH]) {
-    try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* try next */ }
-  }
-  return null;
+  try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); }
+  catch { return null; }
 }
 
-// Fall back to a minimal default (one MAX subscription account) so `cl` works
-// before arc-config.json exists — `cl doctor` flags it and points at `cl setup`.
+// Fall back to a minimal default (one MAX subscription account) so `arc` works
+// before arc-config.json exists — `arc doctor` flags it and points at `arc setup`.
 function legacyConfig() {
   return {
     version: 1,
@@ -79,7 +69,7 @@ function normalize(cfg) {
       ...a,
       credentials: a.credentials ? expandHome(a.credentials) : null,
     }));
-  if (!out.accounts.length) throw new Error('cl-config: no valid accounts configured — run `cl setup`');
+  if (!out.accounts.length) throw new Error('arc-config: no valid accounts configured — run `arc setup`');
   const ids = new Set(out.accounts.map((a) => a.id));
   out.defaultAccount = ids.has(cfg.defaultAccount) ? cfg.defaultAccount : out.accounts[0].id;
   out.thresholds = { ...DEFAULT_THRESHOLDS, ...(cfg.thresholds || {}) };
@@ -128,16 +118,16 @@ function dpapiEncrypt(plaintext) {
   const out = runPowerShell(
     "Add-Type -AssemblyName System.Security;" +
     "[Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect(" +
-    "[Text.Encoding]::UTF8.GetBytes($env:CL_PT),$null,'CurrentUser'))",
-    { CL_PT: plaintext });
+    "[Text.Encoding]::UTF8.GetBytes($env:ARC_PT),$null,'CurrentUser'))",
+    { ARC_PT: plaintext });
   return out.trim();
 }
 function dpapiDecrypt(b64) {
   const out = runPowerShell(
     "Add-Type -AssemblyName System.Security;" +
     "[Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect(" +
-    "[Convert]::FromBase64String($env:CL_ENC),$null,'CurrentUser'))",
-    { CL_ENC: b64 });
+    "[Convert]::FromBase64String($env:ARC_ENC),$null,'CurrentUser'))",
+    { ARC_ENC: b64 });
   return out.replace(/\r?\n$/, ''); // strip only PowerShell's trailing newline
 }
 
@@ -150,10 +140,10 @@ function resolveApiKey(acc) {
   if (acc.apiKeyEnv && process.env[acc.apiKeyEnv]) return process.env[acc.apiKeyEnv];
   if (acc.apiKeyEnc) {
     let k; try { k = dpapiDecrypt(acc.apiKeyEnc); } catch (e) {
-      throw new Error(`account "${acc.id}": apiKeyEnc DPAPI decrypt failed — the blob is bound to the Windows user+machine that created it. Re-run \`cl set-key ${acc.id}\` on THIS machine. (${String(e.message).split('\n')[0]})`);
+      throw new Error(`account "${acc.id}": apiKeyEnc DPAPI decrypt failed — the blob is bound to the Windows user+machine that created it. Re-run \`arc set-key ${acc.id}\` on THIS machine. (${String(e.message).split('\n')[0]})`);
     }
     if (k) return k;
-    throw new Error(`account "${acc.id}": apiKeyEnc decrypted to empty — re-run \`cl set-key ${acc.id}\`.`);
+    throw new Error(`account "${acc.id}": apiKeyEnc decrypted to empty — re-run \`arc set-key ${acc.id}\`.`);
   }
   if (acc.apiKeyFrom && acc.apiKeyFrom.file) {
     const file = expandHome(acc.apiKeyFrom.file);

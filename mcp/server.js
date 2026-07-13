@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // arc-mcp: the arc MCP (stdio) server. Lets any Claude Code session manage
-// the cl account-switcher configuration conversationally — list/add/remove/
+// the arc account-switcher configuration conversationally — list/add/remove/
 // update accounts, tune defaults/order/features — plus the pool metrics tools
 // (pool_status / pool_next_reset) when a pool DB is configured.
 //
@@ -32,7 +32,7 @@ const C = (() => {
   }
   throw new Error('arc-config.js not found next to arc-mcp');
 })();
-// cl-profile lives alongside cl-config (../src in the repo, ../ when deployed).
+// arc-profile lives alongside arc-config (../src in the repo, ../ when deployed).
 const P = (() => {
   for (const p of ['../src/arc-profile.js', '../arc-profile.js']) {
     try { return require(p); } catch {}
@@ -101,13 +101,13 @@ function shapeAccount(a, cfg) {
     if (a.headers) out.headers = Object.keys(a.headers);
   } else {
     out.login = a.credentials
-      ? (fs.existsSync(a.credentials) ? `captured (${a.credentials})` : `NOT captured yet — run \`cl capture ${a.id}\``)
+      ? (fs.existsSync(a.credentials) ? `captured (${a.credentials})` : `NOT captured yet — run \`arc capture ${a.id}\``)
       : 'uses the active claude.ai login';
   }
   return out;
 }
 
-// Running cl sessions keep their launch-time config for env building, but
+// Running arc sessions keep their launch-time config for env building, but
 // arc:switch RE-READS the config, so new/edited accounts are switchable at once.
 const LIVE_NOTE = 'Effective immediately for arc:switch and the statusline; sessions already running on an EDITED account pick up env changes on their next arc:switch or arc:restart.';
 
@@ -163,7 +163,7 @@ function toolAccountAdd(args) {
     migratedLegacyConfig: migrated,
     backup,
     note: (args.type === 'oauth'
-      ? `If this is a separate claude.ai subscription, capture its login: the guided way is to run \`cl add-account ${acc.id}\` in a terminal (drives the browser login + auto-captures) — that's easier than adding it here first. Or \`cl capture ${acc.id}\` while already logged in as it. `
+      ? `If this is a separate claude.ai subscription, capture its login: the guided way is to run \`cl add-account ${acc.id}\` in a terminal (drives the browser login + auto-captures) — that's easier than adding it here first. Or \`arc capture ${acc.id}\` while already logged in as it. `
       : '') + LIVE_NOTE,
   };
 }
@@ -173,7 +173,7 @@ function toolAccountRemove(args) {
   const accounts = raw.accounts || [];
   const idx = accounts.findIndex((a) => a.id === args.id);
   if (idx === -1) throw new Error(`account "${args.id}" not found`);
-  if (accounts.length === 1) throw new Error('refusing to remove the last account — cl needs at least one');
+  if (accounts.length === 1) throw new Error('refusing to remove the last account — arc needs at least one');
 
   const removed = accounts[idx];
   accounts.splice(idx, 1);
@@ -189,7 +189,7 @@ function toolAccountRemove(args) {
   const backup = writeRaw(raw);
 
   // Quarantine the per-account profile dir to recoverable trash — same as the
-  // arc:remove-account hook — so a removal never leaves an orphan in cl-profiles.
+  // arc:remove-account hook — so a removal never leaves an orphan in arc-profiles.
   let profileTrash = null, profileInUse = false;
   if (P) { try { profileTrash = P.removeProfile(args.id); } catch (e) { profileInUse = true; } }
 
@@ -281,7 +281,7 @@ function toolConfigUpdate(args) {
 function poolNeonUrl() {
   const cfg = C.loadConfig();
   if (cfg.poolDb && cfg.poolDb.neonUrl) return cfg.poolDb.neonUrl;
-  throw new Error('no pool DB configured (cl-config poolDb.neonUrl)');
+  throw new Error('no pool DB configured (arc-config poolDb.neonUrl)');
 }
 
 async function query(sql, params = []) {
@@ -383,12 +383,12 @@ async function toolPoolNextReset(args = {}) {
 const TOOLS = [
   {
     name: 'account_list',
-    description: 'List the cl switcher\'s configured accounts (oauth subscriptions and API gateways) with health checks: key resolution, captured logins, default account, switch order, and features. Start here before adding/removing/updating.',
+    description: 'List the arc switcher\'s configured accounts (oauth subscriptions and API gateways) with health checks: key resolution, captured logins, default account, switch order, and features. Start here before adding/removing/updating.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'account_add',
-    description: 'Add an account to the cl switcher. type "oauth" = a claude.ai subscription login (capture it later with `cl capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately switchable with arc:switch.',
+    description: 'Add an account to the arc switcher. type "oauth" = a claude.ai subscription login (capture it later with `arc capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately switchable with arc:switch.',
     inputSchema: {
       type: 'object',
       required: ['id', 'type'],
@@ -407,14 +407,14 @@ const TOOLS = [
         modelMap: { type: 'object', description: 'api only: alias->model map, e.g. {"opus":"opus","sonnet":"sonnet"}' },
         headers: { type: 'object', description: 'api only: extra request headers' },
         disableConnectors: { type: 'boolean', description: 'api only: silence the claude.ai-connectors warning (default true)' },
-        credentials: { type: 'string', description: 'oauth only: path to a captured .credentials.json (normally set by `cl capture`)' },
+        credentials: { type: 'string', description: 'oauth only: path to a captured .credentials.json (normally set by `arc capture`)' },
         makeDefault: { type: 'boolean', description: 'also make this the default launch account' },
       },
     },
   },
   {
     name: 'account_remove',
-    description: 'Remove an account from the cl switcher. Refuses to remove the last account. Automatically fixes references (switchOrder, defaultAccount). Never deletes captured credential files. A timestamped config backup is written first.',
+    description: 'Remove an account from the arc switcher. Refuses to remove the last account. Automatically fixes references (switchOrder, defaultAccount). Never deletes captured credential files. A timestamped config backup is written first.',
     inputSchema: {
       type: 'object', required: ['id'],
       properties: { id: { type: 'string', description: 'account id to remove' } },
@@ -439,7 +439,7 @@ const TOOLS = [
   },
   {
     name: 'config_update',
-    description: 'Update cl switcher globals: defaultAccount (launch account), switchOrder (the arc:switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
+    description: 'Update arc switcher globals: defaultAccount (launch account), switchOrder (the arc:switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
     inputSchema: {
       type: 'object',
       properties: {

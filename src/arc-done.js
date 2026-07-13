@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // arc-done: derive "done" from GIT, not from the agent's word.
 //
-// The fridge (cl-room) let roommates leave each other notes. But a note is still
+// The fridge (arc-room) let roommates leave each other notes. But a note is still
 // something an agent has to REMEMBER to write, and bookkeeping is the first thing
 // dropped when context runs short or the code gets interesting. Anthropic hit the
 // same wall in their own agent-teams feature; their docs admit it:
@@ -29,7 +29,7 @@
 // research agent finds a note on the fridge carrying the sha, the files, and the
 // commit subjects — whether or not anybody remembered to say anything.
 //
-// Two modes (features.doneGate in arc-config.json, or CL_DONE_GATE):
+// Two modes (features.doneGate in arc-config.json, or ARC_DONE_GATE):
 //   'note'   (default) never blocks. Derives evidence and posts it. An unevidenced
 //            completion still posts, flagged as such. Zero friction, all the signal.
 //   'strict' exit 2 when a completion carries no commit, which REFUSES the tick and
@@ -131,7 +131,7 @@ function taskFilePath(session, taskId) {
 
 // ---- policy ------------------------------------------------------------------
 function mode() {
-  const env = ((process.env.ARC_DONE_GATE || process.env.CL_DONE_GATE) || '').trim().toLowerCase();
+  const env = (process.env.ARC_DONE_GATE || '').trim().toLowerCase();
   if (env) return env;
   try {
     const C = require('./arc-config');
@@ -231,7 +231,7 @@ if (require.main === module) {
     if (done) return; done = true;
     let p = {};
     try { p = JSON.parse(raw || '{}'); } catch { process.exit(0); }
-    const session = ((process.env.ARC_SESSION || process.env.CL_SESSION) || '').trim();
+    const session = (process.env.ARC_SESSION || '').trim();
     try {
       if (p.hook_event_name === 'TaskCreated') { onTaskCreated(p, session); process.exit(0); }
       if (p.hook_event_name === 'TaskCompleted') {

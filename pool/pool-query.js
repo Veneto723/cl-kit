@@ -5,7 +5,7 @@ process.env.NODE_NO_WARNINGS = '1';
 process.removeAllListeners('warning');
 
 const neonUrl = require('./pool-neon-url')();
-if (!neonUrl) { process.stderr.write('no pool DB configured (cl-config poolDb.neonUrl)'); process.exit(1); }
+if (!neonUrl) { process.stderr.write('no pool DB configured (arc-config poolDb.neonUrl)'); process.exit(1); }
 
 const { Client } = require('pg');
 const c = new Client(neonUrl);

@@ -8,13 +8,13 @@ function write(value) { process.stdout.write(JSON.stringify(value)); }
 function block(reason) { write({ decision: 'block', reason }); }
 
 function register(hook) {
-  const logical = (process.env.ARC_LOGICAL_SESSION || process.env.CL_LOGICAL_SESSION);
+  const logical = process.env.ARC_LOGICAL_SESSION;
   if (!logical || !hook.session_id) return null;
   return O.ensureSession({
     id: logical,
     runtime: 'codex',
     nativeSessionId: hook.session_id,
-    account: (process.env.ARC_RUNTIME_ACCOUNT || process.env.CL_RUNTIME_ACCOUNT) || 'default',
+    account: process.env.ARC_RUNTIME_ACCOUNT || 'default',
     model: hook.model || null,
     transcriptPath: hook.transcript_path || null,
     cwd: hook.cwd || process.cwd(),
@@ -35,13 +35,13 @@ function run(raw) {
   if (hook.hook_event_name !== 'UserPromptSubmit') return;
 
   const prompt = typeof hook.prompt === 'string' ? hook.prompt : '';
-  const command = prompt.match(/^\s*[/!]?\s*(?:arc|cl):(role|note|notes|help|cl|arc)\b\s*(.*)$/i);
+  const command = prompt.match(/^\s*[/!]?\s*arc:(role|note|notes|help|arc)\b\s*(.*)$/i);
   if (command) {
     const action = command[1].toLowerCase();
     const arg = (command[2] || '').trim();
-    if (action === 'help' || action === 'cl' || action === 'arc') return block(require('./arc-help')('codex'));
+    if (action === 'help' || action === 'arc') return block(require('./arc-help')('codex'));
     const F = require('./arc-fridge');
-    const session = ((process.env.ARC_SESSION || process.env.CL_SESSION) || '').trim();
+    const session = (process.env.ARC_SESSION || '').trim();
     const cwd = hook.cwd || process.cwd();
     const r = action === 'role' ? F.requestRole(session, arg, cwd)
       : action === 'note' ? F.requestNote(session, arg, cwd)
@@ -49,7 +49,7 @@ function run(raw) {
     return block(`[arc] ${r.message}`);
   }
 
-  const inj = fridge(((process.env.ARC_SESSION || process.env.CL_SESSION) || '').trim(), hook.cwd || process.cwd());
+  const inj = fridge((process.env.ARC_SESSION || '').trim(), hook.cwd || process.cwd());
   if (inj) write({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: inj.text } });
 }
 

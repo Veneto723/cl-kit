@@ -1,4 +1,4 @@
-# Generates the cl-notify toast state icons (256px PNG circles):
+# Generates the arc-notify toast state icons (256px PNG circles):
 #   done.png  green + check   |  wait.png  amber + pause  |  fail.png  red + cross
 Add-Type -AssemblyName System.Drawing
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path

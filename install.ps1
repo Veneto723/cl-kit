@@ -46,13 +46,11 @@ if (-not (Test-Path (Join-Path $mcpDest 'node_modules'))) {
   Pop-Location
 }
 # register at user scope (idempotent: remove-then-add) — only if claude is present.
-# Also removes the pre-rename `cl` registration so no stale server lingers.
 if ($hasClaude) {
   # Native `claude` stderr (e.g. "No MCP server named arc" on a clean first run)
   # becomes a terminating error under $ErrorActionPreference='Stop' in PS 5.1;
   # relax it just around these idempotent calls so remove-then-add is safe.
   $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-  claude mcp remove --scope user cl 2>$null | Out-Null    # drop the pre-rename name
   claude mcp remove --scope user arc 2>$null | Out-Null
   claude mcp add --scope user arc node (Join-Path $mcpDest 'server.js') 2>$null | Out-Null
   $ErrorActionPreference = $eap
@@ -62,17 +60,14 @@ if ($hasClaude) {
 }
 
 # 2. bin shim + PATH
-# arc is the command; cl.cmd stays as a deprecated alias through the migration so
-# existing terminals + muscle memory keep working. Both invoke the same runner.
 $runnerCmd = "@echo off`r`nnode `"%USERPROFILE%\.claude\scripts\arc-runner.js`" %*"
 Set-Content (Join-Path $bin 'arc.cmd') $runnerCmd -Encoding ascii
-Set-Content (Join-Path $bin 'cl.cmd') $runnerCmd -Encoding ascii
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (($userPath -split ';') -notcontains $bin) {
   [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $bin), 'User')
-  Write-Host "  arc.cmd (+ cl.cmd alias)  -> $bin  (added to your user PATH — open a NEW terminal to use 'arc')" -ForegroundColor Yellow
+  Write-Host "  arc.cmd  -> $bin  (added to your user PATH — open a NEW terminal to use 'arc')" -ForegroundColor Yellow
 } else {
-  Write-Host "  arc.cmd (+ cl.cmd alias)  -> $bin  (already on PATH)"
+  Write-Host "  arc.cmd  -> $bin  (already on PATH)"
 }
 
 # 3. no slash commands — every arc action is a zero-token arc: sentinel (arc:switch,
@@ -99,17 +94,14 @@ Write-Host "  shared skill -> $roommateSkill (Claude + Codex)"
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts 'icons\make-icons.ps1') | Out-Null
 Write-Host "  toast icons generated"
 
-# 5. arc-focus: protocol (toast click -> focus the session's window). Register the
-#    legacy cl-focus scheme too so toasts shown before the update still work.
-foreach ($scheme in @('arc-focus', 'cl-focus')) {
-  $root = "HKCU:\Software\Classes\$scheme"
-  New-Item -Path $root -Force | Out-Null
-  Set-ItemProperty -Path $root -Name '(Default)' -Value "URL:$scheme Protocol"
-  Set-ItemProperty -Path $root -Name 'URL Protocol' -Value ''
-  New-Item -Path "$root\shell\open\command" -Force | Out-Null
-  Set-ItemProperty -Path "$root\shell\open\command" -Name '(Default)' -Value ("wscript.exe //B //NoLogo `"$scripts\arc-focus.vbs`" `"%1`"")
-}
-Write-Host "  arc-focus: protocol registered (HKCU; cl-focus kept as alias)"
+# 5. arc-focus: protocol (toast click -> focus the session's window)
+$root = 'HKCU:\Software\Classes\arc-focus'
+New-Item -Path $root -Force | Out-Null
+Set-ItemProperty -Path $root -Name '(Default)' -Value 'URL:arc-focus Protocol'
+Set-ItemProperty -Path $root -Name 'URL Protocol' -Value ''
+New-Item -Path "$root\shell\open\command" -Force | Out-Null
+Set-ItemProperty -Path "$root\shell\open\command" -Name '(Default)' -Value ("wscript.exe //B //NoLogo `"$scripts\arc-focus.vbs`" `"%1`"")
+Write-Host "  arc-focus: protocol registered (HKCU)"
 
 # 6. enable toast banners for the PowerShell AppID (Win11 leaves it tray-only)
 $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
@@ -162,7 +154,7 @@ if (-not $settings.statusLine) {
 # old /switch /restart slash commands that needed the allow-rule were removed.)
 
 # Write UTF-8 *without* BOM: PS 5.1's `Set-Content -Encoding utf8` prepends a BOM
-# that Node's JSON.parse (used by cl-runner / doctor) rejects as invalid JSON.
+# that Node's JSON.parse (used by arc-runner / doctor) rejects as invalid JSON.
 [System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "  settings.json hooks + statusline wired (backup at settings.json.bak-arc)"
 

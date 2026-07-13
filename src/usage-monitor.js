@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// cl statusline: live subscription rate-limit monitor (session/weekly %, not $),
-// account-aware via ~/.claude/arc-config.json. Shows the ACTIVE cl account's
+// arc statusline: live subscription rate-limit monitor (session/weekly %, not $),
+// account-aware via ~/.claude/arc-config.json. Shows the ACTIVE arc account's
 // label+color, oauth usage bars (from Claude Code's statusline stdin or the
 // /api/oauth/usage endpoint), optional pool-DB account metrics, model+effort
 // (with sticky ultracode detection), and switch warnings near the limits.
@@ -36,15 +36,15 @@ const WARN_SESSION = TH.warnSessionPct ?? 85;
 const WARN_WEEK = TH.warnWeekPct ?? 90;
 
 // ---- active account resolution ----------------------------------------------
-// 1. Under arc: the per-session state file (written by cl-runner) is authoritative.
+// 1. Under arc: the per-session state file (written by arc-runner) is authoritative.
 // 2. Else: match ANTHROPIC_BASE_URL against configured api accounts.
 // 3. Else: the config's default account (plain `claude` on an oauth login).
 function activeAccount() {
   if (!cfg) return null;
-  const cl = (process.env.ARC_SESSION || process.env.CL_SESSION);
-  if (cl) {
+  const arc = process.env.ARC_SESSION;
+  if (arc) {
     try {
-      const st = JSON.parse(fs.readFileSync(path.join(C.CACHE_DIR, `arc-state-${cl}.json`), 'utf8'));
+      const st = JSON.parse(fs.readFileSync(path.join(C.CACHE_DIR, `arc-state-${arc}.json`), 'utf8'));
       const acc = C.findAccount(cfg, st.account);
       if (acc) return acc;
     } catch {}
@@ -79,7 +79,7 @@ function subscriptionAccount() {
   return (a && a.type === 'oauth') ? a : primaryOauth();
 }
 
-// Read ONE account's token from its own profile dir (~/.claude/cl-profiles/<id>/
+// Read ONE account's token from its own profile dir (~/.claude/arc-profiles/<id>/
 // .credentials.json). Taking the account as an argument — instead of resolving the
 // active one inside — is what lets a refresh fetch EVERY oauth account's usage with
 // the right token, so each account's numbers can be cached under its own id.
@@ -172,7 +172,7 @@ async function getUsageCachedFor(acc, force) {
   }
 }
 
-// --- Pool-DB metrics (optional; only when cl-config has poolDb.neonUrl) ---
+// --- Pool-DB metrics (optional; only when arc-config has poolDb.neonUrl) ---
 
 function poolConfigured() {
   return !!(cfg && cfg.poolDb && cfg.poolDb.neonUrl);
@@ -324,13 +324,13 @@ function usageFromStdin(sl) {
   return { five_hour: conv(rl.five_hour), seven_day: conv(rl.seven_day) };
 }
 
-// Bridge CL_SESSION (cl's per-terminal id) -> CLAUDE_CODE_SESSION_ID (the real
-// session id, even for a picker-resumed one) so the cl wrapper can find, re-resume
+// Bridge ARC_SESSION (arc's per-terminal id) -> CLAUDE_CODE_SESSION_ID (the real
+// session id, even for a picker-resumed one) so the arc wrapper can find, re-resume
 // and preserve THIS session across an account switch.
 function writeActiveConv() {
-  const cl = (process.env.ARC_SESSION || process.env.CL_SESSION), conv = process.env.CLAUDE_CODE_SESSION_ID;
-  if (!cl || !conv) return;
-  const p = path.join(C.CACHE_DIR, `arc-active-${cl}.json`);
+  const arc = process.env.ARC_SESSION, conv = process.env.CLAUDE_CODE_SESSION_ID;
+  if (!arc || !conv) return;
+  const p = path.join(C.CACHE_DIR, `arc-active-${arc}.json`);
   try {
     let cur = null; try { cur = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
     if (cur && cur.convId === conv) return; // unchanged
@@ -510,11 +510,11 @@ function findTranscriptById(id) {
 const EFFORT_OK = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'auto']);
 const EFFORT_INITIAL_TAIL = 2_000_000; // bound the first scan of a long/resumed session
 
-// Incrementally + STICKILY track this session's effort in cl-effort-<sid>.json
+// Incrementally + STICKILY track this session's effort in arc-effort-<sid>.json
 // { effort, offset }. Each render scans ONLY the new transcript bytes since last
 // time for the genuine /effort echo and remembers the value. This never loses the
-// setting to a fixed-window truncation. cl-runner SEEDS this file at each launch,
-// so a launch with no echo line (e.g. right after a arc:switch) is still known.
+// setting to a fixed-window truncation. arc-runner SEEDS this file at each launch,
+// so a launch with no echo line (e.g. right after an arc:switch) is still known.
 function trackEffort() {
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
   if (!sid) return null;
@@ -570,7 +570,7 @@ function renderFull(data, sessionEta, weekEta, poolRows, acc, model, effort) {
     if (model) lines.push('', `Model: ${model}${effort ? ` (${effort})` : ''}`);
   };
 
-  if (!acc) return `arc: no config — run \`cl setup\``;
+  if (!acc) return `arc: no config — run \`arc setup\``;
 
   // API account with pool metrics
   if (isApi && poolConfigured()) {
@@ -654,7 +654,7 @@ function renderCompact(data, sessionEta, poolRows, acc, model, effort, fridge) {
   const line2 = [formatModel(model, effort), fridgeSeg(fridge)].filter(Boolean).join(' | ');
   const withL2 = (line1) => (line2 ? `${line1}\n${line2}` : line1);
 
-  if (!acc) return 'arc: run `cl setup`';
+  if (!acc) return 'arc: run `arc setup`';
   const isApi = acc.type === 'api';
 
   if (isApi) {
@@ -755,7 +755,7 @@ async function main() {
   const sl = await readStdinJson();
   const model = sl && sl.model ? sl.model.display_name : undefined;
   const effort = resolveEffort(sl && sl.effort ? sl.effort.level : undefined); // xhigh->ultracode via transcript
-  writeActiveConv(); // bridge cl<->claude session id so `cl` can preserve this session on switch
+  writeActiveConv(); // bridge cl<->claude session id so `arc` can preserve this session on switch
   const stdinUsage = usageFromStdin(sl);
 
   // Read the slice belonging to the account whose numbers we're showing — never a
@@ -791,7 +791,7 @@ async function main() {
   let fridge = null;
   try {
     fridge = require('./arc-fridge').badge(
-      (process.env.ARC_SESSION || process.env.CL_SESSION), sl && sl.workspace ? sl.workspace.current_dir : null);
+      process.env.ARC_SESSION, sl && sl.workspace ? sl.workspace.current_dir : null);
   } catch {}
 
   process.stdout.write(

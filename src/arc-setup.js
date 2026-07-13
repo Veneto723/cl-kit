@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// cl setup: interactive wizard that writes ~/.claude/arc-config.json.
+// arc setup: interactive wizard that writes ~/.claude/arc-config.json.
 // Lets anyone pick their style — single subscription, two subscriptions,
 // subscription + API gateway (pool), gateway only, or any custom mix.
 'use strict';
@@ -35,7 +35,7 @@ async function buildOauth(taken, suggestedId, suggestedLabel) {
   const id = await askId('  account id (short, used in arc:switch)', taken, suggestedId);
   const label = (await ask(`  display label (${suggestedLabel || id.toUpperCase()}): `)) || suggestedLabel || id.toUpperCase();
   const color = (await ask('  statusline color hex (#D97757): ')) || '#D97757';
-  console.log('  (if this is a SECOND subscription, run `cl capture ' + id + '` later while logged in as it)');
+  console.log('  (if this is a SECOND subscription, run `arc capture ' + id + '` later while logged in as it)');
   return { id, label, color, type: 'oauth' };
 }
 
@@ -69,9 +69,9 @@ async function buildApi(taken, suggestedId) {
 }
 
 async function main() {
-  console.log('cl setup — configure your accounts (writes ~/.claude/arc-config.json)\n');
+  console.log('arc setup — configure your accounts (writes ~/.claude/arc-config.json)\n');
   console.log('Styles:');
-  console.log('  1. single subscription        (one claude.ai login; cl adds session tools only)');
+  console.log('  1. single subscription        (one claude.ai login; arc adds session tools only)');
   console.log('  2. two subscriptions          (switch between two claude.ai logins)');
   console.log('  3. subscription + gateway     (claude.ai login + an API pool/proxy)');
   console.log('  4. gateway only               (API base URL + key, no claude.ai login)');
@@ -87,7 +87,7 @@ async function main() {
     console.log('\n[subscription]');
     add(await buildOauth(taken, 'main', 'MAX'));
   } else if (style === '2') {
-    console.log('\n[first subscription — capture it later with `cl capture <id>` while logged in as it]');
+    console.log('\n[first subscription — capture it later with `arc capture <id>` while logged in as it]');
     add(await buildOauth(taken, 'personal'));
     console.log('\n[second subscription]');
     add(await buildOauth(taken, 'work'));
@@ -137,13 +137,13 @@ async function main() {
   fs.writeFileSync(C.CONFIG_PATH, JSON.stringify(cfgOut, null, 2));
   console.log(`\nwrote ${C.CONFIG_PATH}`);
   console.log('next steps:');
-  console.log('  cl doctor            — verify everything resolves');
+  console.log('  arc doctor            — verify everything resolves');
   for (const a of accounts) {
     if (a.type === 'oauth' && accounts.filter((x) => x.type === 'oauth').length > 1) {
-      console.log(`  cl capture ${a.id}     — while logged in as that subscription`);
+      console.log(`  arc capture ${a.id}     — while logged in as that subscription`);
     }
   }
-  console.log('  cl                   — launch');
+  console.log('  arc                   — launch');
   rl.close();
 }
 

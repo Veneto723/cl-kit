@@ -1,12 +1,12 @@
 // arc-profile: per-account CLAUDE_CONFIG_DIR profiles — the fix for the
 // cross-session credential hijack. Each account gets its own config dir under
-// ~/.claude/cl-profiles/<id>; cl points Claude Code at it via CLAUDE_CONFIG_DIR
+// ~/.claude/arc-profiles/<id>; arc points Claude Code at it via CLAUDE_CONFIG_DIR
 // when launching. Claude Code relocates BOTH .credentials.json AND .claude.json
 // (the constantly-rewritten OAuth binding) into that dir, so concurrent sessions
 // on DIFFERENT accounts never share/fight over one credentials file. The shared
 // "brain" — conversations, slash commands, skills, session metadata, todos — is
 // JUNCTIONED back to the real ~/.claude so it stays common across accounts;
-// settings.json's hooks + statusLine + permissions are synced in (cl owns them).
+// settings.json's hooks + statusLine + permissions are synced in (arc owns them).
 // No credential swapping, ever, so there is nothing to race on.
 'use strict';
 
@@ -15,7 +15,7 @@ const os = require('os');
 const path = require('path');
 const C = require('./arc-config');
 
-const PROFILES_DIR = path.join(C.CLAUDE_DIR, 'cl-profiles');
+const PROFILES_DIR = path.join(C.CLAUDE_DIR, 'arc-profiles');
 // The "brain" — junctioned back to ~/.claude so every account shares it. (Windows
 // directory junctions need no admin, unlike file symlinks.)
 //
@@ -24,17 +24,17 @@ const PROFILES_DIR = path.join(C.CLAUDE_DIR, 'cl-profiles');
 // conversation resumed on another account is the SAME conversation and must keep its
 // task list. Without it, `arc:switch` silently showed an EMPTY task list, because the
 // new profile had no tasks/<session-id>/ of its own. (Observed: session 6665bfca had 4
-// tasks under ~/.claude/tasks and an empty dir under cl-profiles/max/tasks.)
+// tasks under ~/.claude/tasks and an empty dir under arc-profiles/max/tasks.)
 const SHARED_DIRS = ['projects', 'sessions', 'commands', 'todos', 'tasks', 'skills', 'agents', 'plugins'];
 // Claude Code's main state file lives at the HOME ROOT (~/.claude.json); under
 // CLAUDE_CONFIG_DIR it moves to <dir>/.claude.json. We seed MCP servers + trust
 // from the home one so a fresh profile still has the user's servers.
 const HOME_CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
-// settings.json keys cl OWNS and must propagate into every profile so the zero-
+// settings.json keys arc OWNS and must propagate into every profile so the zero-
 // token arc: hooks, the usage statusline, and the user's permission allow-list all
 // work inside a profiled session. Everything else (theme, model, per-account
 // /config) is left to Claude Code / the user per profile.
-const CL_SETTINGS_KEYS = ['hooks', 'statusLine', 'permissions'];
+const ARC_SETTINGS_KEYS = ['hooks', 'statusLine', 'permissions'];
 
 function profileDir(accId) { return path.join(PROFILES_DIR, String(accId)); }
 function credsPath(accId) { return path.join(profileDir(accId), '.credentials.json'); }
@@ -54,7 +54,7 @@ function isLinkTo(p, target) {
 //
 // Two structural guarantees, not two promises:
 //   * The shared copy ALWAYS wins a name collision; the profile's copy is parked under
-//     cl-backup/ rather than overwritten. Nothing is compared, merged, or judged.
+//     arc-backup/ rather than overwritten. Nothing is compared, merged, or judged.
 //   * The final call is `rmdirSync` (NON-recursive), which fails unless the directory is
 //     already empty. So the only way we can remove `link` is if every child was moved out
 //     first. A partial move leaves the dir intact and we skip junctioning it.
@@ -79,16 +79,16 @@ function adoptIntoShared(link, target, accId, name) {
   try { fs.rmdirSync(link); return true; } catch { return false; } // empty-only, by design
 }
 
-// Sync cl's hooks + statusLine + permissions into the profile's settings.json
+// Sync arc's hooks + statusLine + permissions into the profile's settings.json
 // WITHOUT clobbering any per-account settings the user set via /config. Merges
-// only the cl-owned keys.
+// only the arc-owned keys.
 function syncSettings(dir) {
   const src = path.join(C.CLAUDE_DIR, 'settings.json');
   let master; try { master = JSON.parse(fs.readFileSync(src, 'utf8')); } catch { return; }
   const dst = path.join(dir, 'settings.json');
   let cur = {}; try { cur = JSON.parse(fs.readFileSync(dst, 'utf8')); } catch {}
   const next = { ...cur };
-  for (const k of CL_SETTINGS_KEYS) if (master[k] !== undefined) next[k] = master[k];
+  for (const k of ARC_SETTINGS_KEYS) if (master[k] !== undefined) next[k] = master[k];
   try {
     if (JSON.stringify(next) !== JSON.stringify(cur)) fs.writeFileSync(dst, JSON.stringify(next, null, 2));
   } catch {}
@@ -138,7 +138,7 @@ function hasCreds(accId) {
 // Seed an account's profile login from an existing credentials file (an old
 // captured file, or the live ~/.claude/.credentials.json). ONLY when the profile
 // has no login yet — never overwrites a real per-account login. Returns true if a
-// login was seeded. Used by the one-time migration and by `cl capture`.
+// login was seeded. Used by the one-time migration and by `arc capture`.
 function seedCreds(accId, srcPath) {
   if (!srcPath || hasCreds(accId)) return false;
   let data;
@@ -154,7 +154,7 @@ function seedCreds(accId, srcPath) {
 // Move an account's profile dir old → new (preserving its login when the account
 // is renamed). The junctions inside point at ABSOLUTE ~/.claude targets, so they
 // survive the move. Caller must ensure no live process holds oldDir open (Windows
-// won't rename an open dir) — cl-runner renames only after killing claude. Returns
+// won't rename an open dir) — arc-runner renames only after killing claude. Returns
 // true if a dir was moved, false if there was nothing to move.
 function renameProfile(oldId, newId) {
   const oldDir = profileDir(oldId), newDir = profileDir(newId);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // arc-help: builds the arc command cheat sheet. Rendered by the `arc:help` (alias
-// `arc:cl`) sentinel via arc-switch-hook — caught before any model turn, so it's
+// `arc:arc`) sentinel via arc-switch-hook — caught before any model turn, so it's
 // ZERO tokens. Exported as renderHelp(); also runnable directly for debugging.
 'use strict';
 
@@ -27,13 +27,13 @@ In a terminal:
   arc sessions                        list logical sessions and native bindings
 
 Runtime handoff:
-  Claude → Codex is available from a arc-managed Claude prompt with
+  Claude → Codex is available from an arc-managed Claude prompt with
   arc:handoff codex [--account <id>] [--keep-last N].
   Codex → Claude and arc:delegate are not implemented yet.
 `;
 }
 
-function renderHelp(runtime = (process.env.ARC_RUNTIME || process.env.CL_RUNTIME) || 'claude') {
+function renderHelp(runtime = process.env.ARC_RUNTIME || 'claude') {
   if (String(runtime).toLowerCase() === 'codex') return renderCodexHelp();
   let accounts = [];
   try { accounts = C.loadConfig().accounts.map((a) => a.id); } catch {}
@@ -41,7 +41,7 @@ function renderHelp(runtime = (process.env.ARC_RUNTIME || process.env.CL_RUNTIME
 
   return `arc — commands
 =============
-  arc:help   this cheat sheet — ZERO tokens   (alias: arc:cl)
+  arc:help   this cheat sheet — ZERO tokens   (alias: arc:arc)
 
 Switch account (keeps your conversation, preserves model/effort/mode):
   arc:switch              open the interactive picker — ZERO tokens
@@ -51,7 +51,7 @@ Add / manage accounts:
   arc:add-account                   open the WIZARD — pick Subscription or Gateway, then guided prompts
   arc:add-account <id>              add a SUBSCRIPTION via guided browser login (in-session);
                                    the login is saved to the account's OWN private profile
-                                   (~/.claude/cl-profiles/<id>) — accounts never share a login
+                                   (~/.claude/arc-profiles/<id>) — accounts never share a login
   arc:add-account <id> --api --url <gateway> [--label L --color #hex --default]
                                    add a GATEWAY/POOL (like mate): verifies it, auto-detects
                                    models, DPAPI-encrypts the key (from clipboard, or --file/--key)
@@ -63,7 +63,7 @@ Add / manage accounts:
   arc set-key <id>                  re-encrypt an api account's key (clipboard/--file/--stdin), DPAPI
 
 Move chats between PCs (discrete export/import — no realtime sync):
-  arc:export              archive the CURRENT conversation → ~/cl-export-<ts>.tgz
+  arc:export              archive the CURRENT conversation → ~/arc-export-<ts>.tgz
   arc:export all          archive every session in THIS project folder
   arc:export global       archive every session on this machine (everything)
   arc:export <project|id> archive one project's sessions, or one conversation
@@ -92,7 +92,7 @@ The fridge — sticky notes between sessions working in the same folder:
   against the HEAD sha it recorded when the task was created, and sticks a note on the
   fridge carrying the commit sha and the changed files. Nobody has to remember to say
   "P-014 is done" — the tick IS the message, and it comes with evidence.
-    features.doneGate in arc-config.json (or CL_DONE_GATE):
+    features.doneGate in arc-config.json (or ARC_DONE_GATE):
       note    default — always posts; an uncommitted "done" is posted, flagged UNVERIFIED
       strict  REFUSES to mark a task done when no commit backs it (the agent is told why)
       off     no notes, no gate
@@ -114,7 +114,7 @@ Why the arc: forms?
   arc:...  are plain messages caught by a hook BEFORE the model runs — they cost
           NO tokens and work even when the account is rate-limited (a slash command
           can't, because its bash needs a safety classifier that runs on the same
-          exhausted account). That's why everything here is a arc: sentinel — there
+          exhausted account). That's why everything here is an arc: sentinel — there
           are no arc slash commands anymore.
 
 Take this conversation into Codex (same terminal, same logical arc session):

@@ -39,12 +39,11 @@ function findTranscript(convId) {
   return null;
 }
 
-// The current session's convId + cwd, from cl-runner's state file.
+// The current session's convId + cwd, from arc-runner's state file.
 function currentSession(session) {
   try {
-    const arc = path.join(CACHE_DIR, `arc-state-${session}.json`);
-    const sp = fs.existsSync(arc) ? arc : path.join(CACHE_DIR, `cl-state-${session}.json`); // legacy fallback
-    const s = JSON.parse(fs.readFileSync(sp, 'utf8')); return { convId: s.convId || null, cwd: s.cwd || null }; }
+    const s = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, `arc-state-${session}.json`), 'utf8'));
+    return { convId: s.convId || null, cwd: s.cwd || null }; }
   catch { return { convId: null, cwd: null }; }
 }
 
@@ -95,7 +94,7 @@ function rebuild(rolloutPath, messages) {
   return { sessionId: recs[0].payload.session_id, scaffoldKept: scaffold.length, injected: body.length + 1 };
 }
 
-const HANDOFF_MARKER_TAG = '__CL_HANDOFF_SEED__';
+const HANDOFF_MARKER_TAG = '__ARC_HANDOFF_SEED__';
 
 // ---- the command -------------------------------------------------------------
 // opts: { transcript, convId, cwd, keepLast, dryRun }
@@ -106,7 +105,7 @@ function handoff(session, opts = {}) {
   let transcript = opts.transcript;
   if (!transcript) {
     const convId = opts.convId || cur.convId;
-    if (!convId) return { ok: false, message: 'no conversation to hand off — run this inside a cl session (`arc:handoff codex`).' };
+    if (!convId) return { ok: false, message: 'no conversation to hand off — run this inside an arc session (`arc:handoff codex`).' };
     transcript = findTranscript(convId);
   }
   if (!transcript || !fs.existsSync(transcript)) return { ok: false, message: `couldn't find the transcript to hand off (${transcript || opts.convId || '?'}).` };

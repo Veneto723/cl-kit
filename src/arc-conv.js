@@ -1,17 +1,17 @@
-// Pure conversation-id reconciliation — extracted from cl-runner so it can be
+// Pure conversation-id reconciliation — extracted from arc-runner so it can be
 // unit-tested without launching claude.
 //
-// cl tracks a convId, but the conversation claude is ACTUALLY showing is the
-// ground truth the statusline bridges into cl-active-<session>.json. These can
-// diverge: a `cl --resume` picker session cl never assigned an id to, or a
+// arc tracks a convId, but the conversation claude is ACTUALLY showing is the
+// ground truth the statusline bridges into arc-active-<session>.json. These can
+// diverge: a `arc --resume` picker session arc never assigned an id to, or a
 // MANAGED session that drifted so our convId points at a phantom with no
 // transcript. If we relaunch the phantom via --session-id we mint a brand-new
 // EMPTY session (the "arc:switch opens a new session instead of resuming" bug).
 //
 // pickConvId decides which id to (re)launch:
-//   tracked          — the convId cl currently tracks (may be null)
+//   tracked          — the convId arc currently tracks (may be null)
 //   actual           — the statusline-bridged real id (may be null)
-//   userManagesConv  — true when cl never assigned the id (bare picker resume)
+//   userManagesConv  — true when arc never assigned the id (bare picker resume)
 //   hasTranscript    — predicate(id) -> bool, is there a persisted transcript?
 //
 // Adopt `actual` when it's a bare picker resume (always trust the picked id), OR

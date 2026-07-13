@@ -22,8 +22,8 @@ const { spawnSync } = require('child_process');
 const CACHE_DIR = path.join(os.homedir(), '.claude', 'cache');
 const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
 // Only toast when a turn took at least this long (ms) — avoids a toast after every
-// quick reply. Override with the CL_NOTIFY_MIN_MS env var (0 = notify every turn).
-const MIN_MS = (process.env.ARC_NOTIFY_MIN_MS || process.env.CL_NOTIFY_MIN_MS) != null ? parseInt((process.env.ARC_NOTIFY_MIN_MS || process.env.CL_NOTIFY_MIN_MS), 10) || 0 : 30_000;
+// quick reply. Override with the ARC_NOTIFY_MIN_MS env var (0 = notify every turn).
+const MIN_MS = process.env.ARC_NOTIFY_MIN_MS != null ? parseInt(process.env.ARC_NOTIFY_MIN_MS, 10) || 0 : 30_000;
 
 function turnFile(sid) { return path.join(CACHE_DIR, `arc-turn-${sid}.json`); }
 
@@ -75,7 +75,7 @@ function fmtDur(ms) {
 const ICONS_DIR = path.join(__dirname, 'icons');
 // `launchUri` (optional) overrides the click action with any protocol URI — e.g. a
 // `file:///…` so clicking the toast opens that file in its default app. Falls back
-// to the cl-focus: click-to-focus protocol when only focusPid is given.
+// to the arc-focus: click-to-focus protocol when only focusPid is given.
 // `opts.logoUri` replaces the state icon with an arbitrary image (square, uncropped) —
 // e.g. a thumbnail of the very image being announced, which beats any generic glyph.
 // `opts.heroUri` adds a wide banner image above the text.
@@ -92,7 +92,7 @@ function toast(title, text, kind, focusPid, launchUri, opts) {
       ? `<image placement="appLogoOverride" hint-crop="circle" src="file:///${xe(iconFile.replace(/\\/g, '/'))}"/>`
       : '');
   const hero = o.heroUri ? `<image placement="hero" src="${xe(o.heroUri)}"/>` : '';
-  // Clicking the toast launches the cl-focus: protocol (HKCU-registered →
+  // Clicking the toast launches the arc-focus: protocol (HKCU-registered →
   // arc-focus.vbs → arc-focus.ps1), which foregrounds the terminal window that
   // hosts this session's claude pid.
   const clickUri = launchUri || (focusPid ? `arc-focus:${focusPid}` : null);

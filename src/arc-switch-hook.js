@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// arc-switch-hook: a UserPromptSubmit hook that lets you switch/restart a cl
+// arc-switch-hook: a UserPromptSubmit hook that lets you switch/restart an arc
 // session by TYPING a plain message — with NO Bash permission classifier in the
 // path. It's the ONLY switch path (the old /switch and /restart slash commands were
 // removed) precisely because it sidesteps a deadlock: a slash command's !-bash
@@ -13,7 +13,7 @@
 //   arc:switch <id>       → switch to a named account
 //   arc:restart           → reload the wrapper + relaunch, same account
 //   arc:handoff [codex]   → continue this conversation in Codex
-//   arc:help  (arc:cl)     → print the command cheat sheet (zero tokens)
+//   arc:help  (arc:arc)     → print the command cheat sheet (zero tokens)
 //   arc:role <name>       → claim a role in this room (the "fridge" — see arc-room.js)
 //   arc:note <to> <text>  → leave a sticky note for a roommate ("all" = broadcast)
 //   arc:notes [all]       → read your unread notes (marks read); `all` = whole fridge
@@ -22,12 +22,12 @@
 //   arc:remove-account <id> → remove an account (alias: arc:delete-account <id>)
 //   … plus add-account / export / import / delete (delete = the current CHAT)
 //
-// On a trigger it drops the same trigger file cl-runner polls for and BLOCKS the
+// On a trigger it drops the same trigger file arc-runner polls for and BLOCKS the
 // prompt (decision:"block") so the text is NOT sent to the model — the reason
 // string is shown to you instead. Non-trigger prompts pass through untouched.
 //
-// Input: hook JSON on stdin ({ prompt, session_id, ... }). CL_SESSION identifies
-// the cl session. Always exits 0 (a hook error must never wedge the prompt).
+// Input: hook JSON on stdin ({ prompt, session_id, ... }). ARC_SESSION identifies
+// the arc session. Always exits 0 (a hook error must never wedge the prompt).
 'use strict';
 
 const core = require('./arc-switch-core');
@@ -37,9 +37,9 @@ const core = require('./arc-switch-core');
 // a CONVERSATION delete. They route to remove-account (account removal), not delete.
 // `notes` MUST precede `note` (a plain alternation would try `note` first and only
 // backtrack; being explicit costs nothing and documents the intent).
-// `arc:` is the current prefix; `cl:` is kept as a deprecated alias through the
+// `arc:` is the current prefix; `arc:` is kept as a deprecated alias through the
 // migration so running sessions and muscle memory don't break.
-const TRIGGER_RX = /^\s*[/!]?\s*(?:arc|cl):(switch|restart|handoff|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|cl|arc)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|handoff|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|arc)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -74,11 +74,11 @@ function clBlock(message) {
 // No unread notes → exit 0 with EMPTY stdout, which injects nothing. That is exactly
 // what this hook has always done for ordinary prompts, so the "stay silent when there
 // is no delta" path is the already-proven one, not a new assumption.
-// Opt-in diagnostic (CL_FRIDGE_DEBUG=1): record exactly what Claude Code hands this
+// Opt-in diagnostic (ARC_FRIDGE_DEBUG=1): record exactly what Claude Code hands this
 // hook. It earned its keep — a hand-supplied `cwd` in a test masked the fact that the
 // session's real cwd had drifted to a different room. Off by default; never throws.
 function fridgeTrace(o) {
-  if ((process.env.ARC_FRIDGE_DEBUG || process.env.CL_FRIDGE_DEBUG) !== '1') return;
+  if (process.env.ARC_FRIDGE_DEBUG !== '1') return;
   try {
     const fs = require('fs'), os = require('os'), path = require('path');
     fs.appendFileSync(path.join(os.homedir(), '.claude', 'cache', 'arc-fridge-hook.log'),
@@ -87,7 +87,7 @@ function fridgeTrace(o) {
 }
 
 function deliverFridge(hook) {
-  const session = ((process.env.ARC_SESSION || process.env.CL_SESSION) || '').trim();
+  const session = (process.env.ARC_SESSION || '').trim();
   const cwd = typeof hook.cwd === 'string' ? hook.cwd : null;
   let injected = false, err = null;
   try {
@@ -108,15 +108,15 @@ function run(raw) {
   try { hook = JSON.parse(raw || '{}'); } catch {}
   const prompt = typeof hook.prompt === 'string' ? hook.prompt : '';
   const m = prompt.match(TRIGGER_RX);
-  if (!m) deliverFridge(hook); // not a arc: command — deliver waiting notes, let it through
+  if (!m) deliverFridge(hook); // not an arc: command — deliver waiting notes, let it through
 
-  const session = ((process.env.ARC_SESSION || process.env.CL_SESSION) || '').trim();
+  const session = (process.env.ARC_SESSION || '').trim();
   const action = m[1].toLowerCase();
   const arg = (m[2] || '').trim() || null;
 
-  if (action === 'help' || action === 'cl' || action === 'arc') {
-    // Cheat sheet — rendered here from cl-help (no trigger, no relaunch, ZERO
-    // tokens). Self-contained (own header), so no `[cl]` prefix.
+  if (action === 'help' || action === 'arc') {
+    // Cheat sheet — rendered here from arc-help (no trigger, no relaunch, ZERO
+    // tokens). Self-contained (own header), so no `[arc]` prefix.
     return block(require('./arc-help')());
   }
   if (action === 'role' || action === 'note' || action === 'notes') {
@@ -138,7 +138,7 @@ function run(raw) {
   }
   if (action === 'peek' || action === 'usage') {
     // Read-only usage readout — rendered entirely here (no trigger, no relaunch).
-    // Its message is self-contained (own header), so no `[cl]` prefix.
+    // Its message is self-contained (own header), so no `[arc]` prefix.
     const r = core.buildPeek(session);
     return block(r.message);
   }
@@ -151,7 +151,7 @@ function run(raw) {
       transcriptPath: hook.transcript_path || null,
       cwd: hook.cwd || null,
       nativeSessionId: hook.session_id || null,
-      logicalSessionId: (process.env.ARC_LOGICAL_SESSION || process.env.CL_LOGICAL_SESSION) || null,
+      logicalSessionId: process.env.ARC_LOGICAL_SESSION || null,
     });
     return clBlock(r.message);
   }
@@ -186,7 +186,7 @@ function run(raw) {
     const r = action === 'export' ? sync.doExport(session, arg || '') : sync.doImport(session, arg || '');
     return clBlock(r.message);
   }
-  // Bare `arc:switch` → open the interactive arrow-key picker (cl-runner renders
+  // Bare `arc:switch` → open the interactive arrow-key picker (arc-runner renders
   // it on the freed TTY). An explicit `arc:switch <n|name>` → switch directly.
   if (!arg) {
     const r = core.requestPicker(session);

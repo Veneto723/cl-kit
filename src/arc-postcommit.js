@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// arc-postcommit: turn every git commit into a fridge note, so two cl sessions working
+// arc-postcommit: turn every git commit into a fridge note, so two arc sessions working
 // in one repo see each other's work WITHOUT anyone typing arc:note and WITHOUT needing
 // the task list. Wired as a repo's .git/hooks/post-commit; runs AFTER the commit, so it
 // can never block or fail it.
 //
 // It attributes the commit to the fridge ROLE of the session that ran `git commit`:
-// `git commit` inherits the agent's Bash env, so CL_SESSION is present, and CL_SESSION →
-// cl-role-<session>.json gives the role. A commit from a NON-cl shell (or a session with
+// `git commit` inherits the agent's Bash env, so ARC_SESSION is present, and ARC_SESSION →
+// arc-role-<session>.json gives the role. A commit from a NON-arc shell (or a session with
 // no role in this room) posts nothing — that keeps manual/tooling commits from spamming
 // the fridge. The note is a broadcast, and the committer never sees its own note
 // (unreadFor excludes own-role notes), so android sees frontend's commits and vice versa.
@@ -30,18 +30,16 @@ function git(cwd, args) {
 // The fridge role of `session`, but only if it was claimed in THIS room.
 function roleFor(session, room) {
   try {
-    const arc = path.join(CACHE_DIR, `arc-role-${session}.json`);
-    const rp = fs.existsSync(arc) ? arc : path.join(CACHE_DIR, `cl-role-${session}.json`); // legacy fallback
-    const r = JSON.parse(fs.readFileSync(rp, 'utf8'));
+    const r = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, `arc-role-${session}.json`), 'utf8'));
     return r.room === room.root ? r.role : null;
   } catch { return null; }
 }
 
 function run(cwd) {
   const room = R.resolveRoom(cwd);
-  const session = ((process.env.ARC_SESSION || process.env.CL_SESSION) || '').trim();
+  const session = (process.env.ARC_SESSION || '').trim();
   const role = session ? roleFor(session, room) : null;
-  if (!role) return { posted: false, why: 'no cl role for this commit' };
+  if (!role) return { posted: false, why: 'no arc role for this commit' };
 
   const sha = git(cwd, ['rev-parse', '--short', 'HEAD']);
   if (!sha) return { posted: false, why: 'no HEAD' };

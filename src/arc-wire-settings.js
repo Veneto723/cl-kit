@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// arc-wire-settings: merge cl's hooks + statusline into
+// arc-wire-settings: merge arc's hooks + statusline into
 // ~/.claude/settings.json WITHOUT clobbering the user's existing entries. Called
 // by the installers (install.sh today; install.ps1 keeps its own copy) so every
 // platform wires the exact same set. Idempotent — safe to re-run.
@@ -25,7 +25,7 @@ try { raw = fs.readFileSync(settingsPath, 'utf8'); } catch { /* no settings.json
 if (raw != null) {
   // Parse BEFORE touching anything. If the user's settings.json is malformed (a
   // trailing comma, a stray edit), REFUSE — never silently overwrite their config
-  // with just cl's entries. (install.ps1 aborts here too.)
+  // with just arc's entries. (install.ps1 aborts here too.)
   try {
     settings = JSON.parse(raw.replace(/^﻿/, '')) || {}; // tolerate a leading BOM
   } catch (e) {
@@ -37,7 +37,7 @@ if (raw != null) {
   try { fs.writeFileSync(settingsPath + '.bak-arc', raw); } catch {}
 }
 
-// The hooks cl owns, per event. cl-switch-hook FIRST on UserPromptSubmit so the
+// The hooks arc owns, per event. arc-switch-hook FIRST on UserPromptSubmit so the
 // classifier-immune switch fallback runs before anything else.
 // TaskCreated/TaskCompleted drive the fridge's git-derived "done" (arc-done.js). They
 // fire in an ORDINARY session — no agent team, no experimental flag — because the hook

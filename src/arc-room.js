@@ -1,5 +1,5 @@
 // arc-room: the "fridge" — a per-room, append-only sticky-note ledger shared by the
-// cl sessions working in the same place.
+// arc sessions working in the same place.
 //
 // ROOM = the git repo root of the session's cwd (canonicalised), else the literal
 // folder. Two sessions started anywhere inside E:\whalephone are roommates. Want a
@@ -165,8 +165,8 @@ function roleHolder(room, role) {
 }
 
 // Returns {ok:true} if claimed, or {ok:false, holder} if a LIVE *other* session holds it.
-// IDENTITY IS THE SESSION, NOT THE PID: `arc:restart` re-execs cl-runner with a NEW pid
-// but the SAME CL_SESSION, and must be able to reclaim its own role. The pid is only
+// IDENTITY IS THE SESSION, NOT THE PID: `arc:restart` re-execs arc-runner with a NEW pid
+// but the SAME ARC_SESSION, and must be able to reclaim its own role. The pid is only
 // a liveness probe. (Fall back to pid comparison for leases written without a session.)
 function claimRole(room, role, pid, sessionId) {
   ensureRoom(room);

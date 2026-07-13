@@ -76,11 +76,10 @@ function buildEnv(account, sessionId, logicalSessionId) {
   return {
     ...process.env,
     CODEX_HOME: account.home,
-    // Both ARC_* (current) and CL_* (deprecated alias) through the migration.
-    ARC_SESSION: sessionId, CL_SESSION: sessionId,
-    ARC_LOGICAL_SESSION: logicalSessionId, CL_LOGICAL_SESSION: logicalSessionId,
-    ARC_RUNTIME: 'codex', CL_RUNTIME: 'codex',
-    ARC_RUNTIME_ACCOUNT: account.id, CL_RUNTIME_ACCOUNT: account.id,
+    ARC_SESSION: sessionId,
+    ARC_LOGICAL_SESSION: logicalSessionId,
+    ARC_RUNTIME: 'codex',
+    ARC_RUNTIME_ACCOUNT: account.id,
   };
 }
 

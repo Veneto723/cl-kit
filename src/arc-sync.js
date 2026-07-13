@@ -8,11 +8,11 @@
 //   arc:export global         → every session on this machine (bigger/slower; alias *)
 //   arc:export <project|id>   → one project's sessions, or one session (id prefix)
 //   arc:export --since <days> → sessions touched in the last N days
-//   arc:export ... --out <f>  → choose the archive path (default ~/cl-export-<ts>.tgz)
+//   arc:export ... --out <f>  → choose the archive path (default ~/arc-export-<ts>.tgz)
 //
 //   arc:import <archive>      → extract + merge into ~/.claude/projects
 //                              (newer-wins; overwritten local copies are backed
-//                               up; a conversation OPEN in a live cl is never
+//                               up; a conversation OPEN in a live arc is never
 //                               touched; --dry-run / --force / --skip-existing)
 //   arc:import <a> <d>        → re-root every project in the bundle under OUTER
 //   arc:import <a> --dest <d>   folder <d> (the bare form and the flag are the same
@@ -114,10 +114,9 @@ function discover() {
   return out;
 }
 
-// The conversation id THIS cl session is on (protected from import overwrite).
+// The conversation id THIS arc session is on (protected from import overwrite).
 function currentConv(session) {
-  // arc-* first, then the legacy cl-* names (a session from before the rename).
-  for (const p of [`arc-state-${session}.json`, `cl-state-${session}.json`, `arc-active-${session}.json`, `cl-active-${session}.json`]) {
+  for (const p of [`arc-state-${session}.json`, `arc-active-${session}.json`]) {
     try { const j = JSON.parse(fs.readFileSync(path.join(CACHE, p), 'utf8')); if (j.convId) return j.convId; } catch {}
   }
   return null;
@@ -126,10 +125,7 @@ function currentConv(session) {
 // The session's LAUNCH cwd (which is what Claude Code names the project dir after —
 // not the shell's current cwd, which drifts).
 function stateCwd(session) {
-  for (const p of [`arc-state-${session}.json`, `cl-state-${session}.json`]) { // arc-, then legacy cl-
-    try { const c = JSON.parse(fs.readFileSync(path.join(CACHE, p), 'utf8')).cwd; if (c) return c; } catch {}
-  }
-  return null;
+  try { return JSON.parse(fs.readFileSync(path.join(CACHE, `arc-state-${session}.json`), 'utf8')).cwd || null; } catch { return null; }
 }
 
 // Claude Code names a project dir after the cwd with every non-alphanumeric replaced
@@ -220,12 +216,12 @@ function currentProject(session, all) {
   }
   return null;
 }
-// Session ids currently OPEN in a live cl process (never overwrite these).
+// Session ids currently OPEN in a live arc process (never overwrite these).
 function liveConvIds() {
   const live = new Set();
   try {
     for (const f of fs.readdirSync(CACHE)) {
-      const m = /^cl-convlock-(.+)\.json$/.exec(f);
+      const m = /^arc-convlock-(.+)\.json$/.exec(f);
       if (!m) continue;
       try { const l = JSON.parse(fs.readFileSync(path.join(CACHE, f), 'utf8')); if (pidAlive(l.pid)) live.add(m[1]); } catch {}
     }
@@ -296,16 +292,16 @@ function doExport(session, argStr) {
 
   // manifest at the archive root (readable inventory; skipped on import)
   const manifest = {
-    tool: 'cl-sync', version: 1, machine: os.hostname(), at: new Date().toISOString(),
+    tool: 'arc-sync', version: 1, machine: os.hostname(), at: new Date().toISOString(),
     sessions: selected.map((s) => ({ project: s.project, id: s.id, size: s.size, lastTs: s.lastTs, title: s.title })),
   };
-  const manPath = path.join(PROJECTS, '.cl-manifest.json');
+  const manPath = path.join(PROJECTS, '.arc-manifest.json');
   const listPath = path.join(CACHE, `arc-export-list-${process.pid}.txt`);
   const out = flags.out ? path.resolve(flags.out) : path.join(HOME, `arc-export-${stamp()}.tgz`);
   try {
     fs.mkdirSync(CACHE, { recursive: true });
     fs.writeFileSync(manPath, JSON.stringify(manifest, null, 2));
-    fs.writeFileSync(listPath, ['.cl-manifest.json', ...rels].join('\n'));
+    fs.writeFileSync(listPath, ['.arc-manifest.json', ...rels].join('\n'));
     // --force-local: GNU tar otherwise reads a Windows `C:\...` archive path as a
     // remote host `C` ("Cannot connect to C"). This makes colons mean drive letters.
     const r = runTar(['-czf', out, '-C', PROJECTS, '-T', listPath]);
@@ -374,7 +370,7 @@ function doImport(session, argStr) {
   for (const proj of projs) {
     const pdir = path.join(tmp, proj);
     let st; try { st = fs.statSync(pdir); } catch { continue; }
-    if (!st.isDirectory()) continue; // skips .cl-manifest.json
+    if (!st.isDirectory()) continue; // skips .arc-manifest.json
     let files = []; try { files = fs.readdirSync(pdir); } catch {}
 
     // Where do this project's sessions land? Default: its original folder. With --dest:
@@ -455,8 +451,8 @@ function doImport(session, argStr) {
   if (skipped.length) lines.push('  skipped: ' + skipped.join(', '));
   if (backedUp) lines.push(`  replaced local copies backed up to: ${backupDir}`);
   lines.push(destRoot
-    ? `  resume from the re-rooted path, e.g.  cd "${remaps[0] ? remaps[0].to : destRoot}"  then  claude --resume <id>  (or the cl picker).`
-    : '  resume from the matching project path, e.g.  cd <project>  then  claude --resume <id>  (or the cl picker).');
+    ? `  resume from the re-rooted path, e.g.  cd "${remaps[0] ? remaps[0].to : destRoot}"  then  claude --resume <id>  (or the arc picker).`
+    : '  resume from the matching project path, e.g.  cd <project>  then  claude --resume <id>  (or the arc picker).');
   return { ok: true, message: lines.join('\n') };
 }
 
@@ -496,7 +492,7 @@ function moveWithRetry(src, dst) {
 }
 
 // Move a conversation's transcript (+ sidecar dir) to recoverable trash under
-// ~/.claude/backups/cl-deleted-<ts>/. Returns { trashDir, moved:[...] }.
+// ~/.claude/backups/arc-deleted-<ts>/. Returns { trashDir, moved:[...] }.
 function trashSession(convId) {
   const fp = findTranscriptFile(convId);
   if (!fp) return { trashDir: null, moved: [] };
@@ -512,13 +508,13 @@ function trashSession(convId) {
 }
 
 // ---- trash management (arc:trash) -------------------------------------------
-// The trash is the cl-deleted-* dirs trashSession writes. Pure file ops, so
+// The trash is the arc-deleted-* dirs trashSession writes. Pure file ops, so
 // list / restore / empty all run inside the arc:trash hook — zero tokens. Only
-// cl-deleted-* is ever touched; other ~/.claude/backups content is not trash.
+// arc-deleted-* is ever touched; other ~/.claude/backups content is not trash.
 
-// "cl-deleted-YYYYMMDD-HHMMSS" → "YYYY-MM-DD HH:MM" for display.
+// "arc-deleted-YYYYMMDD-HHMMSS" → "YYYY-MM-DD HH:MM" for display.
 function trashDirDate(name) {
-  const m = name.match(/^(?:arc|cl)-deleted-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}$/);
+  const m = name.match(/^arc-deleted-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}$/);
   return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : '?';
 }
 
@@ -582,7 +578,7 @@ function transcriptMeta(fp) {
 // { convId, proj, dir, file, sidecar, bytes, deletedAt }.
 function listTrash() {
   const out = [];
-  let dirs = []; try { dirs = fs.readdirSync(BACKUPS).filter((d) => /^(?:arc|cl)-deleted-/.test(d)); } catch {}
+  let dirs = []; try { dirs = fs.readdirSync(BACKUPS).filter((d) => /^arc-deleted-/.test(d)); } catch {}
   for (const d of dirs.sort().reverse()) {
     let projs = []; try { projs = fs.readdirSync(path.join(BACKUPS, d)); } catch { continue; }
     for (const proj of projs) {
@@ -622,16 +618,16 @@ function restoreSession(idPrefix) {
   try { fs.rmdirSync(path.join(BACKUPS, e.dir)); } catch {}
   return {
     ok: true, convId: e.convId, proj: e.proj, moved,
-    message: `✓ restored ${e.convId.slice(0, 8)} (${moved.join('+')}, ${human(e.bytes)})\n  resume it from its project folder: cl --resume ${e.convId}`,
+    message: `✓ restored ${e.convId.slice(0, 8)} (${moved.join('+')}, ${human(e.bytes)})\n  resume it from its project folder: arc --resume ${e.convId}`,
   };
 }
 
-// PERMANENTLY delete the whole conversation trash (all cl-deleted-* dirs,
+// PERMANENTLY delete the whole conversation trash (all arc-deleted-* dirs,
 // including empty leftovers). Returns { ok, count, bytes, failed }.
 function emptyTrash() {
   const entries = listTrash();
   const bytes = entries.reduce((s, e) => s + e.bytes, 0);
-  let dirs = []; try { dirs = fs.readdirSync(BACKUPS).filter((d) => /^(?:arc|cl)-deleted-/.test(d)); } catch {}
+  let dirs = []; try { dirs = fs.readdirSync(BACKUPS).filter((d) => /^arc-deleted-/.test(d)); } catch {}
   let failed = 0;
   for (const d of dirs) {
     try { fs.rmSync(path.join(BACKUPS, d), { recursive: true, force: true }); } catch { failed++; }

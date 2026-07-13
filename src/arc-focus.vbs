@@ -1,12 +1,12 @@
 ' arc-focus.vbs: bring the terminal window hosting a claude session to the
-' foreground when a cl-notify toast is clicked. Registered as the cl-focus:
+' foreground when a arc-notify toast is clicked. Registered as the arc-focus:
 ' protocol handler, so the Windows shell launches THIS script DIRECTLY on the
 ' click and grants IT the right to change the foreground. That grant does NOT
 ' survive being handed to a spawned child, so we activate the window HERE, in the
 ' granted process, via WshShell.AppActivate (which honors the grant).
 '
-' Primary path: cl-runner snapshots the PID that owned the FOREGROUND window when
-' the session launched (the user's terminal) into ~/.claude/cache/cl-win-<pid>.json.
+' Primary path: arc-runner snapshots the PID that owned the FOREGROUND window when
+' the session launched (the user's terminal) into ~/.claude/cache/arc-win-<pid>.json.
 ' That's authoritative even under a ConPTY host (Windows Terminal), where the
 ' terminal window process is NOT in the shell's process tree at all. We read it and
 ' AppActivate that PID.
@@ -26,7 +26,7 @@ logPath = home & "\.claude\cache\arc-focus.log"
 
 Sub Log(m)
   On Error Resume Next
-  ' Match the other cl logs: keep it tiny — reset once past ~64KB.
+  ' Match the other arc logs: keep it tiny — reset once past ~64KB.
   If fso.FileExists(logPath) Then
     If fso.GetFile(logPath).Size > 65536 Then fso.DeleteFile(logPath)
   End If
@@ -57,13 +57,12 @@ End Function
 
 arg = WScript.Arguments(0)
 Set re = New RegExp : re.Global = True : re.Pattern = "[^\d]"
-pid = CLng("0" & re.Replace(arg, ""))                  ' strip "cl-focus:" and non-digits
+pid = CLng("0" & re.Replace(arg, ""))                  ' strip "arc-focus:" and non-digits
 If pid = 0 Then Log "no pid from '" & arg & "'" : WScript.Quit
 startPid = pid
 
 ' --- primary: the window PID arc-runner captured at launch ---
 Dim winFile : winFile = home & "\.claude\cache\arc-win-" & pid & ".json"
-If Not fso.FileExists(winFile) Then winFile = home & "\.claude\cache\cl-win-" & pid & ".json"  ' legacy fallback
 If fso.FileExists(winFile) Then
   On Error Resume Next
   Dim t, wpid : t = fso.OpenTextFile(winFile, 1).ReadAll

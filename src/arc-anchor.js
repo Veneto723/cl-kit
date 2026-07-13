@@ -4,7 +4,7 @@
 // The research session writes `docs/plan.md` saying "auth.ts#handleLogin validates the
 // nonce". The coding session then rewrites handleLogin. Nothing breaks; no test fails;
 // the doc is now a lie, and nobody finds out until someone acts on it. This is the
-// half of the drift problem that arc-done.js does not touch: cl-done proves that work
+// half of the drift problem that arc-done.js does not touch: arc-done proves that work
 // HAPPENED, and this proves that what we WROTE about the code still describes it.
 //
 // An anchor is a comment you put next to the claim, in the doc:
@@ -12,7 +12,7 @@
 //     <!-- arc:anchor src/auth.ts#handleLogin -->
 //     handleLogin validates the nonce before issuing a session.
 //
-// The FIRST time cl sees an anchor it seals it: it resolves the symbol, hashes the
+// The FIRST time arc sees an anchor it seals it: it resolves the symbol, hashes the
 // block, and remembers the hash in .plan/anchor-state.json. Afterwards, whenever the
 // repo moves, it re-resolves. If the block's hash changed, or the symbol vanished, or
 // the file is gone, a HIGH-PRIORITY note lands on the fridge — which the research
@@ -50,7 +50,7 @@ const GIT_TIMEOUT = 4000;
 
 // `<!-- arc:anchor path/to/file.ts#symbol -->`, or any comment syntax — we only look
 // for the token. The path may not contain whitespace or '#'.
-const ANCHOR_RX = /(?:arc|cl):anchor\s+([^\s#]+)#([A-Za-z_$][\w$-]*)/g;
+const ANCHOR_RX = /arc:anchor\s+([^\s#]+)#([A-Za-z_$][\w$-]*)/g;
 
 const statePath = (room) => path.join(room.planDir, STATE);
 const anchorKey = (a) => `${a.doc}|${a.file}#${a.symbol}`;
@@ -133,7 +133,7 @@ function hashSlice(slice) {
 // (.gitignore is still honoured, so .plan/ and node_modules never get scanned.)
 function anchorDocs(root) {
   try {
-    const out = execFileSync('git', ['grep', '-l', '-I', '-F', '--untracked', '-e', 'arc:anchor', '-e', 'cl:anchor'],
+    const out = execFileSync('git', ['grep', '-l', '-I', '-F', '--untracked', 'arc:anchor'],
       { cwd: root, timeout: GIT_TIMEOUT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     return out.split('\n').map((s) => s.trim()).filter(Boolean);
   } catch { return []; }   // exit 1 = no matches, which is not an error
@@ -276,12 +276,12 @@ function requestAnchors(session, arg, cwd) {
     for (const k of Object.keys(next.anchors)) next.anchors[k].stale = false;
     writeState(room, next);
     return { ok: true, plain: true, message:
-      `cl anchors — room "${room.name}"\n  resealed ${results.length} anchor(s): the current code is now the baseline.` };
+      `arc anchors — room "${room.name}"\n  resealed ${results.length} anchor(s): the current code is now the baseline.` };
   }
   writeState(room, next);
   if (!results.length) {
     return { ok: true, plain: true, message:
-      `cl anchors — room "${room.name}"\n  no anchors found.\n`
+      `arc anchors — room "${room.name}"\n  no anchors found.\n`
       + '  Put one next to a claim in a doc:  <!-- arc:anchor src/auth.ts#handleLogin -->' };
   }
   const rows = results.map((r) =>
@@ -289,7 +289,7 @@ function requestAnchors(session, arg, cwd) {
     + (r.status === 'ok' || r.status === 'sealed' ? `  (line ${r.startLine})` : `  — ${REASON[r.status]}`));
   const stale = results.filter((r) => STALE_STATUSES.has(r.status)).length;
   return { ok: true, plain: true, message:
-    `cl anchors — room "${room.name}"   ${results.length} anchor(s), ${stale} stale\n${rows.join('\n')}\n`
+    `arc anchors — room "${room.name}"   ${results.length} anchor(s), ${stale} stale\n${rows.join('\n')}\n`
     + (stale ? '  fix the docs, then:  arc:anchors reseal\n' : '') };
 }
 

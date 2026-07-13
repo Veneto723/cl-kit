@@ -9,17 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const VERSION = 1;
-// The home moved ~/.cl -> ~/.arc. Prefer ARC_HOME, then legacy CL_HOME, else ~/.arc.
-const ARC_HOME = path.resolve(process.env.ARC_HOME || process.env.CL_HOME || path.join(os.homedir(), '.arc'));
-// One-time migration: adopt an existing ~/.cl if ~/.arc isn't there yet (atomic move;
-// on any failure we simply start fresh in ~/.arc — nothing is destroyed).
-try {
-  const legacy = path.join(os.homedir(), '.cl');
-  if (!process.env.ARC_HOME && !process.env.CL_HOME && !fs.existsSync(ARC_HOME) && fs.existsSync(legacy)) {
-    fs.renameSync(legacy, ARC_HOME);
-  }
-} catch { /* best-effort; fall back to a fresh ~/.arc */ }
-const CL_HOME = ARC_HOME; // deprecated alias kept for any external consumer
+const ARC_HOME = path.resolve(process.env.ARC_HOME || path.join(os.homedir(), '.arc'));
 const SESSIONS_DIR = path.join(ARC_HOME, 'sessions');
 const RUNTIMES = new Set(['claude', 'codex']);
 const ID_RX = /^[a-z0-9][a-z0-9-]{0,79}$/i;
@@ -30,7 +20,7 @@ function assertRuntime(runtime) {
   return runtime;
 }
 function assertId(id) {
-  if (!ID_RX.test(String(id || ''))) throw new Error(`invalid cl session id "${id || ''}"`);
+  if (!ID_RX.test(String(id || ''))) throw new Error(`invalid arc session id "${id || ''}"`);
   return String(id);
 }
 function sessionPath(id) { return path.join(SESSIONS_DIR, `${assertId(id)}.json`); }
@@ -51,7 +41,7 @@ function readSession(id) {
     if (!s || s.version !== VERSION) throw new Error(`unsupported or missing schema version`);
     return s;
   } catch (e) {
-    throw new Error(`cannot read cl session ${file}: ${e.message}`);
+    throw new Error(`cannot read arc session ${file}: ${e.message}`);
   }
 }
 
@@ -74,7 +64,7 @@ function findByNative(runtime, nativeSessionId) {
 function createSession(opts = {}) {
   const runtime = assertRuntime(opts.runtime || 'claude');
   const id = assertId(opts.id || crypto.randomUUID());
-  if (readSession(id)) throw new Error(`cl session "${id}" already exists`);
+  if (readSession(id)) throw new Error(`arc session "${id}" already exists`);
   const at = now();
   const session = {
     version: VERSION,
@@ -139,6 +129,6 @@ function markInactive(id, runtime, state) {
 }
 
 module.exports = {
-  VERSION, ARC_HOME, CL_HOME, SESSIONS_DIR, atomicWrite, sessionPath, readSession, listSessions,
+  VERSION, ARC_HOME, SESSIONS_DIR, atomicWrite, sessionPath, readSession, listSessions,
   findByNative, createSession, bindRuntime, ensureSession, markInactive,
 };

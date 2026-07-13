@@ -1,4 +1,4 @@
-// arc-runtime-codex: launch Codex under cl with isolated accounts and cl hooks.
+// arc-runtime-codex: launch Codex under arc with isolated accounts and arc hooks.
 'use strict';
 
 const fs = require('fs');
@@ -8,14 +8,14 @@ const A = require('./arc-codex-account');
 
 // Codex accepts `--dangerously-bypass-hook-trust` as a GLOBAL flag (verified: it
 // parses before the subcommand — `codex --dangerously-bypass-hook-trust exec …`).
-// We pass it on cl-initiated launches because cl WROTE the hook itself, from its own
+// We pass it on arc-initiated launches because arc WROTE the hook itself, from its own
 // scripts dir — exactly the "automation that already vets its hook sources" the flag
 // is documented for. Without it codex silently SKIPS an untrusted hook (trust is
 // otherwise interactive-only; there is no `codex hooks trust` CLI and the persisted
 // trust store is codex's versioned state_*.sqlite, which we must not poke).
 // Codex has no per-turn permission modes like Claude's shift+tab. The closest match
 // to Claude's "auto" (act without asking) is `--yolo` (verified accepted; alias of
-// --dangerously-bypass-approvals-and-sandbox). cl maps Claude's auto/bypass modes to
+// --dangerously-bypass-approvals-and-sandbox). arc maps Claude's auto/bypass modes to
 // it on handoff so the runtime swap doesn't silently start asking for approvals.
 // Both --yolo and --dangerously-bypass-hook-trust are GLOBAL flags — they parse
 // before the subcommand (`codex <flags> exec|resume …`).
@@ -32,10 +32,6 @@ function commandSpec(args, opts = {}) {
 // Marker so the managed block is idempotent and human-recognisable.
 const HOOK_BLOCK_BEGIN = '# >>> arc managed hooks (do not edit inside this block) >>>';
 const HOOK_BLOCK_END = '# <<< arc managed hooks <<<';
-// The pre-rename marker (literal cl-kit) — stripped on write so we don't leave a
-// stale block behind. Must NOT be renamed to arc; it matches the OLD on-disk block.
-const LEGACY_BLOCK_BEGIN = '# >>> cl-kit managed hooks (do not edit inside this block) >>>';
-const LEGACY_BLOCK_END = '# <<< cl-kit managed hooks <<<';
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Build the [hooks] TOML block. Codex reads lifecycle hooks from `[hooks]` in
@@ -68,7 +64,7 @@ function ensureHooks(account) {
   // touch a file we didn't write.
   const stale = path.join(account.home, 'hooks.json');
   try {
-    if (fs.existsSync(stale) && /(?:arc|cl)-codex-hook\.js/.test(fs.readFileSync(stale, 'utf8').replace(/\\/g, '/'))) {
+    if (fs.existsSync(stale) && /arc-codex-hook\.js/.test(fs.readFileSync(stale, 'utf8').replace(/\\/g, '/'))) {
       fs.unlinkSync(stale);
     }
   } catch { /* best-effort */ }
@@ -80,10 +76,6 @@ function ensureHooks(account) {
   }
 
   const block = hookBlock(script);
-  // Migration: strip a pre-rename arc block (which pointed at the now-gone
-  // cl-codex-hook.js) so we don't leave a stale, dead hook behind.
-  const legacyRe = new RegExp(`\\n*${reEsc(LEGACY_BLOCK_BEGIN)}[\\s\\S]*?${reEsc(LEGACY_BLOCK_END)}\\n?`);
-  toml = toml.replace(legacyRe, '');
   // Idempotent: replace an existing arc-managed block in place (so a moved scripts
   // dir re-points cleanly); otherwise append. Appending [[hooks.*]] array-of-tables
   // at the end is valid TOML and merges with any hooks the user defined themselves.

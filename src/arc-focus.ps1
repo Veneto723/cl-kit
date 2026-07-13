@@ -1,13 +1,13 @@
-﻿# cl-focus: bring the terminal window hosting a claude session to the foreground.
-# Invoked by the cl-focus: protocol handler when a cl-notify toast is clicked.
-# Arg: the claude process pid (possibly prefixed "cl-focus:" from the URI).
+﻿# arc-focus: bring the terminal window hosting a claude session to the foreground.
+# Invoked by the arc-focus: protocol handler when a arc-notify toast is clicked.
+# Arg: the claude process pid (possibly prefixed "arc-focus:" from the URI).
 #
 # Foregrounding from a background process is deliberately restricted by Windows —
 # a plain SetForegroundWindow just flashes the taskbar button. The reliable recipe
 # (used below) is: clear the foreground-lock timeout, synthesize an ALT keypress
 # so our thread counts as "recently got input", attach to the current foreground
 # thread's input queue, then BringWindowToTop + SetForegroundWindow +
-# SwitchToThisWindow. One-line log at ~/.claude/cache/cl-focus.log for debugging.
+# SwitchToThisWindow. One-line log at ~/.claude/cache/arc-focus.log for debugging.
 param([string]$Target)
 
 $logPath = Join-Path $env:USERPROFILE '.claude\cache\arc-focus.log'

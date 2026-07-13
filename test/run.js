@@ -145,7 +145,7 @@ try {
 // with whichever account happened to be active. Right after a switch it was still
 // TTL-fresh, so the PREVIOUS account's numbers were painted under the new account's
 // label (and, looking fresh, suppressed the refresh that would have fixed them);
-// cl:peek and auto-select scored every oauth account off that same blob.
+// arc:peek and auto-select scored every oauth account off that same blob.
 section('cl-switch-core (per-account usage attribution)');
 try {
   const core = require(path.join(SRC, 'arc-switch-core.js'));
@@ -231,7 +231,7 @@ section('cl-profile (credential isolation)');
 try {
   // hooks/statusLine to sync + a home .claude.json to seed
   writeJSON(path.join(CLAUDE, 'settings.json'), { hooks: { Stop: [] }, statusLine: { type: 'command', command: 'x' }, permissions: { allow: [] }, theme: 'dark' });
-  fs.writeFileSync(path.join(TMP, '.claude.json'), JSON.stringify({ mcpServers: { cl: { type: 'stdio' } }, oauthAccount: { email: 'x@y.z' } }));
+  fs.writeFileSync(path.join(TMP, '.claude.json'), JSON.stringify({ mcpServers: { arc: { type: 'stdio' } }, oauthAccount: { email: 'x@y.z' } }));
   // a real shared transcript, to prove the junction/symlink shares the "brain"
   const projDir = path.join(CLAUDE, 'projects', 'proj');
   fs.mkdirSync(projDir, { recursive: true });
@@ -247,7 +247,7 @@ try {
   ok('cl-owned settings synced (hooks/statusLine/permissions)', ps.hooks && ps.statusLine && ps.permissions);
   ok('non-cl settings NOT synced (theme left per-profile)', ps.theme === undefined);
   const cj = JSON.parse(fs.readFileSync(path.join(dirA, '.claude.json'), 'utf8'));
-  ok('.claude.json seeded with mcp servers, oauthAccount stripped', cj.mcpServers && cj.mcpServers.cl && cj.oauthAccount === undefined);
+  ok('.claude.json seeded with mcp servers, oauthAccount stripped', cj.mcpServers && cj.mcpServers.arc && cj.oauthAccount === undefined);
 
   ok('fresh profile hasCreds=false', P.hasCreds('acctA') === false);
   const src = path.join(TMP, 'seed.json'); fs.writeFileSync(src, JSON.stringify(OAUTH_CRED));
@@ -328,27 +328,27 @@ try {
   const S = 'expsess';
 
   // exact path: the dir holding the CURRENT conversation wins (no encoding guess)
-  fs.writeFileSync(path.join(cacheDir, `cl-state-${S}.json`), JSON.stringify({ convId: 'conv-here', cwd: 'E:\\somewhere-else' }));
+  fs.writeFileSync(path.join(cacheDir, `arc-state-${S}.json`), JSON.stringify({ convId: 'conv-here', cwd: 'E:\\somewhere-else' }));
   ok('currentProject uses the dir holding the current conversation', sync.currentProject(S, fake) === 'E--');
 
   // fallback: no convId -> encode the LAUNCH cwd, accepted only if that dir exists
-  fs.writeFileSync(path.join(cacheDir, `cl-state-${S}.json`), JSON.stringify({ cwd: 'E:\\whalephone' }));
+  fs.writeFileSync(path.join(cacheDir, `arc-state-${S}.json`), JSON.stringify({ cwd: 'E:\\whalephone' }));
   ok('currentProject falls back to the encoded launch cwd', sync.currentProject(S, fake) === 'E--whalephone');
 
   // fallback rejects a cwd with no matching project dir
-  fs.writeFileSync(path.join(cacheDir, `cl-state-${S}.json`), JSON.stringify({ cwd: 'Z:\\nothing-here' }));
+  fs.writeFileSync(path.join(cacheDir, `arc-state-${S}.json`), JSON.stringify({ cwd: 'Z:\\nothing-here' }));
   ok('currentProject returns null when it cannot tell', sync.currentProject(S, fake) === null);
 
   // and doExport refuses `all` (rather than guessing) when the project is unknown
   const r = sync.doExport(S, 'all');
-  ok('`cl:export all` refuses when the project is undeterminable', r.ok === false && /which project folder/.test(r.message));
+  ok('`arc:export all` refuses when the project is undeterminable', r.ok === false && /which project folder/.test(r.message));
   ok('  and it points at `arc:export global`', /arc:export global/.test(r.message));
 
-  try { fs.unlinkSync(path.join(cacheDir, `cl-state-${S}.json`)); } catch {}
+  try { fs.unlinkSync(path.join(cacheDir, `arc-state-${S}.json`)); } catch {}
 } catch (e) { ok('cl-sync export selectors work', false, e.message); }
 
-// ---- cl:import destination: a BARE positional == --dest ------------------------
-// Regression: `cl:import <archive> E:` silently IGNORED the `E:` — the import ran with
+// ---- arc:import destination: a BARE positional == --dest ------------------------
+// Regression: `arc:import <archive> E:` silently IGNORED the `E:` — the import ran with
 // no re-rooting and landed in the archive's original project dir, so --dest looked
 // broken. The bare form is what people actually type; it must mean the same as the flag.
 section('cl-sync (import destination)');
@@ -377,7 +377,7 @@ try {
   fs.unlinkSync(tgz);
 } catch (e) { ok('cl-sync import destination works', false, e.message); }
 
-// ---- cl-sync — cl:import --dest re-rooting (office/home path parity) ----------
+// ---- cl-sync — arc:import --dest re-rooting (office/home path parity) ----------
 section('cl-sync (import --dest re-rooting)');
 try {
   const sync = require(path.join(SRC, 'arc-sync.js'));
@@ -552,8 +552,8 @@ try {
   const { execFileSync } = require('child_process');
 
   // --- parsing ---
-  const doc = 'blah\n<!-- cl:anchor src/auth.ts#handleLogin -->\nit validates the nonce\n'
-    + '# cl:anchor lib/db.py#connect\n';
+  const doc = 'blah\n<!-- arc:anchor src/auth.ts#handleLogin -->\nit validates the nonce\n'
+    + '# arc:anchor lib/db.py#connect\n';
   const parsed = A.parseAnchors(doc, 'docs/plan.md');
   ok('finds anchors in any comment syntax', parsed.length === 2);
   ok('splits file#symbol', parsed[0].file === 'src/auth.ts' && parsed[0].symbol === 'handleLogin');
@@ -592,19 +592,19 @@ try {
   fs.mkdirSync(path.join(repo, 'src')); fs.mkdirSync(path.join(repo, 'docs'));
   fs.writeFileSync(path.join(repo, 'src', 'auth.js'), src);
   fs.writeFileSync(path.join(repo, 'docs', 'plan.md'),
-    '<!-- cl:anchor src/auth.js#handleLogin -->\nhandleLogin validates the request.\n');
+    '<!-- arc:anchor src/auth.js#handleLogin -->\nhandleLogin validates the request.\n');
   g('add', '-A'); g('commit', '-qm', 'seed');
 
   const room = RM.resolveRoom(repo);
   ok('git grep finds the anchored doc', A.anchorDocs(room.root).includes('docs/plan.md'));
   // an UNCOMMITTED doc still makes claims about the code — --untracked, not just tracked
-  fs.writeFileSync(path.join(repo, 'docs', 'draft.md'), '<!-- cl:anchor src/auth.js#handleLogin -->\n');
+  fs.writeFileSync(path.join(repo, 'docs', 'draft.md'), '<!-- arc:anchor src/auth.js#handleLogin -->\n');
   ok('and finds an uncommitted one too', A.anchorDocs(room.root).includes('docs/draft.md'));
   fs.rmSync(path.join(repo, 'docs', 'draft.md'));
   // …but never an ignored one
   fs.writeFileSync(path.join(repo, '.gitignore'), 'secret/\n');
   fs.mkdirSync(path.join(repo, 'secret'));
-  fs.writeFileSync(path.join(repo, 'secret', 'x.md'), '<!-- cl:anchor src/auth.js#handleLogin -->\n');
+  fs.writeFileSync(path.join(repo, 'secret', 'x.md'), '<!-- arc:anchor src/auth.js#handleLogin -->\n');
   ok('ignored paths are never scanned', !A.anchorDocs(room.root).some((d) => d.startsWith('secret/')));
   fs.rmSync(path.join(repo, 'secret'), { recursive: true, force: true });
   fs.rmSync(path.join(repo, '.gitignore'));
@@ -613,10 +613,10 @@ try {
   ok('first sighting SEALS the anchor', rep.results.length === 1 && rep.results[0].status === 'sealed');
   A.writeState(room, rep.next);
 
-  // A doc EXAMPLE (`cl:anchor src/auth.ts#handleLogin` in a README) points at nothing
+  // A doc EXAMPLE (`arc:anchor src/auth.ts#handleLogin` in a README) points at nothing
   // and never has. It must never nag — cl-kit's own README contains exactly this.
   fs.writeFileSync(path.join(repo, 'docs', 'readme.md'),
-    'Put one next to a claim: <!-- cl:anchor src/nowhere.ts#imaginary -->\n');
+    'Put one next to a claim: <!-- arc:anchor src/nowhere.ts#imaginary -->\n');
   g('add', '-A'); g('commit', '-qm', 'add a doc with an example anchor');
   const ex = A.checkAndNotify(room, 'coding', { force: true, quiet: true });
   const exRes = ex.results.find((r) => r.symbol === 'imaginary');
@@ -665,7 +665,7 @@ try {
 
     // reseal: the current code becomes the baseline again
     const rr = A.requestAnchors(S, 'reseal', repo);
-    ok('cl:anchors reseal clears the stale flags', /resealed 2 anchor\(s\)/.test(rr.message));
+    ok('arc:anchors reseal clears the stale flags', /resealed 2 anchor\(s\)/.test(rr.message));
     // Reseal means "the current code is the baseline", NOT "stop telling me". An anchor
     // whose target file is still gone is still a lie, so it speaks again on the next
     // check. Only fixing the doc (or deleting the anchor) actually silences it.
@@ -741,7 +741,7 @@ try {
   fs.writeFileSync(roleFile, JSON.stringify({ room: room.root, role: 'coding' }));
   try {
     D.recordBaseline(room, S, '7', base);
-    process.env.CL_DONE_GATE = 'note';
+    process.env.ARC_DONE_GATE = 'note';
     const r = D.onTaskCompleted({ task_id: '7', task_subject: 'Implement P-014', cwd: repo }, S);
     ok('a proven completion posts a note', r.posted === true && r.proven === true && r.block === false);
     const notes = RM.allNotes(room);
@@ -755,21 +755,21 @@ try {
     // strict mode, nothing committed since -> the tick is refused
     const base2 = D.head(repo);
     D.recordBaseline(room, S, '8', base2);
-    process.env.CL_DONE_GATE = 'strict';
+    process.env.ARC_DONE_GATE = 'strict';
     const r2 = D.onTaskCompleted({ task_id: '8', task_subject: 'Claim without committing', cwd: repo }, S);
     ok('strict REFUSES a completion with no commit', r2.block === true);
     ok('and tells the agent why, on stderr', /no commit found/.test(r2.stderr));
     ok('and posts NOTHING when it blocks', RM.allNotes(room).length === notes.length);
 
     // a session with no role stays silent rather than inventing a sender
-    process.env.CL_DONE_GATE = 'note';
+    process.env.ARC_DONE_GATE = 'note';
     const r3 = D.onTaskCompleted({ task_id: '9', task_subject: 'x', cwd: repo }, 'no-role-session');
     ok('no role -> no note, no crash', !r3.posted && r3.block === false);
 
     // NO REPO, NO GATE. "there is no git here" != "git says you committed nothing".
     // Caught live: a cwd that drifted to a non-repo made strict refuse EVERY completion.
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'norepo-'));
-    process.env.CL_DONE_GATE = 'strict';
+    process.env.ARC_DONE_GATE = 'strict';
     const r4 = D.onTaskCompleted({ task_id: '1', task_subject: 'x', cwd: bare }, S);
     ok('strict does NOT block outside a git repo', r4.block === false);
     fs.rmSync(bare, { recursive: true, force: true });
@@ -791,7 +791,7 @@ try {
       fs.writeFileSync(path.join(repo, 'after.js'), 'work');
       g('add', '-A'); g('commit', '-qm', 'work done after the task was born');
 
-      process.env.CL_DONE_GATE = 'strict';
+      process.env.ARC_DONE_GATE = 'strict';
       const r5 = D.onTaskCompleted({ task_id: '10', task_subject: 'orphaned baseline', cwd: repo }, S);
       ok('an orphaned baseline sha falls back to birth time, does not block', r5.block === false);
       ok('and it still posts PROVEN, with the real sha', r5.posted === true && r5.proven === true);
@@ -800,7 +800,7 @@ try {
       fs.rmSync(cfg, { recursive: true, force: true });
     }
   } finally {
-    delete process.env.CL_DONE_GATE;
+    delete process.env.ARC_DONE_GATE;
     try { fs.unlinkSync(roleFile); } catch {}
     fs.rmSync(repo, { recursive: true, force: true });
   }
@@ -820,17 +820,17 @@ try {
   // arm a role for our session (cache is under the sandbox HOME)
   const cacheDir = path.join(os.homedir(), '.claude', 'cache');
   fs.mkdirSync(cacheDir, { recursive: true });
-  fs.writeFileSync(path.join(cacheDir, 'cl-role-pcsess.json'), JSON.stringify({ room: room.root, role: 'android' }));
+  fs.writeFileSync(path.join(cacheDir, 'arc-role-pcsess.json'), JSON.stringify({ room: room.root, role: 'android' }));
 
-  // no CL_SESSION -> no note (a non-cl commit must not spam the fridge)
+  // no ARC_SESSION -> no note (a non-cl commit must not spam the fridge)
   fs.writeFileSync(path.join(repo, 'a.js'), 'x'); g('add', '-A'); g('commit', '-qm', 'first');
-  delete process.env.CL_SESSION;
-  ok('a commit with no CL_SESSION posts nothing', PC.run(repo).posted === false);
+  delete process.env.ARC_SESSION;
+  ok('a commit with no ARC_SESSION posts nothing', PC.run(repo).posted === false);
   ok('  and the fridge is still empty', RM.allNotes(room).length === 0);
 
-  // CL_SESSION with a role -> a note attributed to that role
+  // ARC_SESSION with a role -> a note attributed to that role
   fs.writeFileSync(path.join(repo, 'feature.js'), 'y'); g('add', '-A'); g('commit', '-qm', 'add the overlay fix');
-  process.env.CL_SESSION = 'pcsess';
+  process.env.ARC_SESSION = 'pcsess';
   try {
     const r = PC.run(repo);
     ok('a cl commit posts a note', r.posted === true && r.role === 'android');
@@ -842,19 +842,19 @@ try {
       RM.unreadFor(room, 'frontend').count === 1 && RM.unreadFor(room, 'android').count === 0);
 
     // a role claimed in a DIFFERENT room does not attribute here
-    fs.writeFileSync(path.join(cacheDir, 'cl-role-elsewhere.json'), JSON.stringify({ room: 'z:\\other', role: 'x' }));
+    fs.writeFileSync(path.join(cacheDir, 'arc-role-elsewhere.json'), JSON.stringify({ room: 'z:\\other', role: 'x' }));
     ok('roleFor ignores a role from another room', PC.roleFor('elsewhere', room) === null);
   } finally {
-    delete process.env.CL_SESSION;
-    try { fs.unlinkSync(path.join(cacheDir, 'cl-role-pcsess.json')); } catch {}
+    delete process.env.ARC_SESSION;
+    try { fs.unlinkSync(path.join(cacheDir, 'arc-role-pcsess.json')); } catch {}
     fs.rmSync(repo, { recursive: true, force: true });
   }
 } catch (e) { ok('cl-postcommit works', false, e.message); }
 
-// ---- cl-runner fridge CLI (cl note / cl role — the AGENT-facing surface) --------
-// The agent can't TYPE cl:note (the hook eats it), but it can RUN `cl note ...` via
+// ---- arc-runner fridge CLI (arc note / arc role — the AGENT-facing surface) --------
+// The agent can't TYPE arc:note (the hook eats it), but it can RUN `cl note ...` via
 // Bash. This exercises that dispatch end to end through the real cl-runner process.
-section('cl-runner fridge CLI (cl note / cl role)');
+section('arc-runner fridge CLI (arc note / arc role)');
 try {
   const runner = path.join(SRC, 'arc-runner.js');
   const RM = require(path.join(SRC, 'arc-room.js'));
@@ -863,27 +863,27 @@ try {
   const room = RM.resolveRoom(repo); RM.ensureRoom(room);
   const S = 'clicli-sess';
   fs.mkdirSync(path.join(CLAUDE, 'cache'), { recursive: true });
-  fs.writeFileSync(path.join(CLAUDE, 'cache', `cl-role-${S}.json`), JSON.stringify({ room: room.root, role: 'android' }));
-  const env = { ...process.env, CL_SESSION: S };
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-role-${S}.json`), JSON.stringify({ room: room.root, role: 'android' }));
+  const env = { ...process.env, ARC_SESSION: S };
 
   const post = spawnSync(process.execPath, [runner, 'note', 'all', 'shared: /login is 202 now'], { cwd: repo, env, encoding: 'utf8' });
-  ok('`cl note` exits 0', post.status === 0, (post.stderr || '').split('\n')[0]);
-  ok('`cl note` posts to the fridge, attributed to the role',
+  ok('`arc note` exits 0', post.status === 0, (post.stderr || '').split('\n')[0]);
+  ok('`arc note` posts to the fridge, attributed to the role',
     RM.allNotes(room).some((n) => /login is 202/.test(n.body) && n.from === 'android'));
-  ok('`cl note` output leaks no cl: sentinel form', !/cl:(note|role|notes)/.test(post.stdout));
+  ok('`arc note` output leaks no arc: sentinel form', !/arc:(note|role|notes)/.test(post.stdout));
 
   const role = spawnSync(process.execPath, [runner, 'role'], { cwd: repo, env, encoding: 'utf8' });
-  ok('`cl role` reports your role', /your role: android/.test(role.stdout));
+  ok('`arc role` reports your role', /your role: android/.test(role.stdout));
 
   // a session with no role can't post; the hint is rewritten to the CLI form (this is
-  // where the cl:role -> cl role rewrite is actually exercised).
-  const noRole = spawnSync(process.execPath, [runner, 'note', 'all', 'x'], { cwd: repo, env: { ...process.env, CL_SESSION: 'no-role-sess' }, encoding: 'utf8' });
+  // where the arc:role -> cl role rewrite is actually exercised).
+  const noRole = spawnSync(process.execPath, [runner, 'note', 'all', 'x'], { cwd: repo, env: { ...process.env, ARC_SESSION: 'no-role-sess' }, encoding: 'utf8' });
   const out = noRole.stdout + noRole.stderr;
-  ok('`cl note` with no role is refused and points to `cl role`', noRole.status !== 0 && /cl role/.test(out) && !/cl:role/.test(out));
+  ok('`arc note` with no role is refused and points to `arc role`', noRole.status !== 0 && /arc role/.test(out) && !/arc:role/.test(out));
 
   fs.rmSync(repo, { recursive: true, force: true });
-  try { fs.unlinkSync(path.join(CLAUDE, 'cache', `cl-role-${S}.json`)); } catch {}
-} catch (e) { ok('cl-runner fridge CLI works', false, e.message); }
+  try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-role-${S}.json`)); } catch {}
+} catch (e) { ok('arc-runner fridge CLI works', false, e.message); }
 
 // ---- cl-watch (wake a delegate session on an incoming delegation) ---------------
 // A delegate (e.g. research) can't be pushed to while idle; it runs `cl watch` in the
@@ -1032,8 +1032,8 @@ try {
   fs.writeFileSync(A.REGISTRY_PATH, registryGood);
   const env = A.buildEnv(work, 'wrapper-1', first.id);
   ok('Codex child env carries runtime, account, wrapper, and logical identities',
-    env.CODEX_HOME === work.home && env.CL_SESSION === 'wrapper-1' && env.CL_LOGICAL_SESSION === first.id
-    && env.CL_RUNTIME === 'codex' && env.CL_RUNTIME_ACCOUNT === 'codex-work');
+    env.CODEX_HOME === work.home && env.ARC_SESSION === 'wrapper-1' && env.ARC_LOGICAL_SESSION === first.id
+    && env.ARC_RUNTIME === 'codex' && env.ARC_RUNTIME_ACCOUNT === 'codex-work');
 
   // Codex reads lifecycle hooks from `[hooks]` in config.toml (TOML array-of-tables),
   // NOT a JSON hooks.json — verified empirically against the real codex binary + a live
@@ -1061,9 +1061,9 @@ try {
   const codexHook = path.join(SRC, 'arc-codex-hook.js');
   const hookEnv = {
     ...process.env,
-    CL_SESSION: 'codex-wrapper-1',
-    CL_LOGICAL_SESSION: first.id,
-    CL_RUNTIME_ACCOUNT: 'codex-work',
+    ARC_SESSION: 'codex-wrapper-1',
+    ARC_LOGICAL_SESSION: first.id,
+    ARC_RUNTIME_ACCOUNT: 'codex-work',
   };
   const start = spawnSync(process.execPath, [codexHook], {
     env: hookEnv,
@@ -1075,11 +1075,11 @@ try {
     O.readSession(first.id).bindings.codex.nativeSessionId === 'codex-native-2');
   const codexHelp = spawnSync(process.execPath, [codexHook], {
     env: hookEnv,
-    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'codex-native-2', cwd: TMP, prompt: 'cl:help' }),
+    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'codex-native-2', cwd: TMP, prompt: 'arc:help' }),
     encoding: 'utf8',
   });
   let codexHelpOut = {}; try { codexHelpOut = JSON.parse(codexHelp.stdout || '{}'); } catch {}
-  ok('Codex UserPromptSubmit hook blocks cl:help before the model',
+  ok('Codex UserPromptSubmit hook blocks arc:help before the model',
     codexHelpOut.decision === 'block' && /arc — Codex commands/.test(codexHelpOut.reason || '')
     && !/(arc|cl):switch/.test(codexHelpOut.reason || ''));
 } catch (e) { ok('runtime orchestration works', false, e.message); }
@@ -1093,14 +1093,14 @@ try {
   const nativeHome = path.join(TMP, 'launch-codex-home');
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.writeFileSync(fakeJs,
-    `require('fs').writeFileSync(process.env.FAKE_CODEX_CAPTURE, JSON.stringify({args:process.argv.slice(2),env:{CODEX_HOME:process.env.CODEX_HOME,CL_SESSION:process.env.CL_SESSION,CL_LOGICAL_SESSION:process.env.CL_LOGICAL_SESSION,CL_RUNTIME:process.env.CL_RUNTIME,CL_RUNTIME_ACCOUNT:process.env.CL_RUNTIME_ACCOUNT}}));`);
+    `require('fs').writeFileSync(process.env.FAKE_CODEX_CAPTURE, JSON.stringify({args:process.argv.slice(2),env:{CODEX_HOME:process.env.CODEX_HOME,ARC_SESSION:process.env.ARC_SESSION,ARC_LOGICAL_SESSION:process.env.ARC_LOGICAL_SESSION,ARC_RUNTIME:process.env.ARC_RUNTIME,ARC_RUNTIME_ACCOUNT:process.env.ARC_RUNTIME_ACCOUNT}}));`);
   fs.writeFileSync(path.join(fakeBin, 'codex.cmd'), `@echo off\r\n"${process.execPath}" "${fakeJs}" %*\r\n`);
   const launched = spawnSync(process.execPath, [path.join(SRC, 'arc-runner.js'), 'codex', '--account', 'default', '--help'], {
     cwd: TMP,
     env: {
       ...process.env,
       PATH: `${fakeBin};${process.env.PATH || ''}`,
-      CL_HOME: launchHome,
+      ARC_HOME: launchHome,
       CODEX_HOME: nativeHome,
       FAKE_CODEX_CAPTURE: capture,
     },
@@ -1109,11 +1109,12 @@ try {
   });
   ok('cl codex launches and returns the child exit code', launched.status === 0, launched.stderr);
   const got = JSON.parse(fs.readFileSync(capture, 'utf8'));
-  ok('cl codex forwards native arguments (after the hook-trust flag)',
-    got.args[0] === '--dangerously-bypass-hook-trust' && got.args.slice(1).join(' ') === '--help');
+  ok('arc codex forwards native arguments after the global flags (--dangerously-bypass-hook-trust + --yolo)',
+    got.args.includes('--dangerously-bypass-hook-trust') && got.args.includes('--yolo')
+    && got.args[got.args.length - 1] === '--help');
   ok('cl codex supplies isolated account and orchestration environment',
-    got.env.CODEX_HOME === nativeHome && got.env.CL_RUNTIME === 'codex' && got.env.CL_RUNTIME_ACCOUNT === 'default'
-    && got.env.CL_SESSION && got.env.CL_LOGICAL_SESSION);
+    got.env.CODEX_HOME === nativeHome && got.env.ARC_RUNTIME === 'codex' && got.env.ARC_RUNTIME_ACCOUNT === 'default'
+    && got.env.ARC_SESSION && got.env.ARC_LOGICAL_SESSION);
   const launchSessions = fs.readdirSync(path.join(launchHome, 'sessions')).map((f) => JSON.parse(fs.readFileSync(path.join(launchHome, 'sessions', f), 'utf8')));
   ok('cl codex persists a logical session and marks the exited binding',
     launchSessions.length === 1 && launchSessions[0].bindings.codex.state === 'exited');
@@ -1141,13 +1142,13 @@ try {
     "const cwd=root;",
     "fs.writeFileSync(transcript,[JSON.stringify({type:'permission-mode',permissionMode:'auto',cwd}),JSON.stringify({type:'user',cwd,message:{role:'user',content:'continue this work'}}),JSON.stringify({type:'assistant',cwd,message:{role:'assistant',content:[{type:'text',text:'ready to continue'}]}})].join('\\n')+'\\n');",
     "const cache=path.join(process.env.USERPROFILE,'.claude','cache');fs.mkdirSync(cache,{recursive:true});",
-    "const trigger=path.join(cache,'arc-handoff-'+(process.env.ARC_SESSION||process.env.CL_SESSION)+'.trigger');",
-    "fs.writeFileSync(trigger,JSON.stringify({source:'claude',target:'codex',account:null,keepLast:0,transcriptPath:transcript,cwd,nativeSessionId:'claude-loop-native',logicalSessionId:process.env.CL_LOGICAL_SESSION,at:Date.now()}));",
+    "const trigger=path.join(cache,'arc-handoff-'+(process.env.ARC_SESSION||process.env.ARC_SESSION)+'.trigger');",
+    "fs.writeFileSync(trigger,JSON.stringify({source:'claude',target:'codex',account:null,keepLast:0,transcriptPath:transcript,cwd,nativeSessionId:'claude-loop-native',logicalSessionId:process.env.ARC_LOGICAL_SESSION,at:Date.now()}));",
     "setInterval(()=>{},1000);",
   ].join('\n'));
   fs.writeFileSync(fakeCodex, [
     "const fs=require('fs'),path=require('path');",
-    "const args=process.argv.slice(2);fs.appendFileSync(process.env.FAKE_CODEX_CALLS,JSON.stringify({args,logical:process.env.CL_LOGICAL_SESSION||null})+'\\n');",
+    "const args=process.argv.slice(2);fs.appendFileSync(process.env.FAKE_CODEX_CALLS,JSON.stringify({args,logical:process.env.ARC_LOGICAL_SESSION||null})+'\\n');",
     "if(args[0]==='exec'){",
     " const id='11111111-2222-4333-8444-555555555555',dir=path.join(process.env.CODEX_HOME,'sessions');fs.mkdirSync(dir,{recursive:true});",
     " const marker=args.join(' '),turn='turn-loop';",
@@ -1172,7 +1173,7 @@ try {
       HOME: loopUser,
       USERPROFILE: loopUser,
       PATH: `${loopBin};${process.env.PATH || ''}`,
-      CL_HOME: loopClHome,
+      ARC_HOME: loopClHome,
       CODEX_HOME: loopCodexHome,
       FAKE_LOOP_ROOT: loopRoot,
       FAKE_CODEX_CALLS: codexCalls,
@@ -1184,9 +1185,8 @@ try {
   const calls = fs.readFileSync(codexCalls, 'utf8').split('\n').filter(Boolean).map(JSON.parse);
   // The seed is a throwaway `codex exec` spawned directly (no trust flag — the untrusted
   // hook is harmlessly skipped, keeping the seed rollout clean). The resume goes through
-  // the launch adapter, which prepends --dangerously-bypass-hook-trust so the fridge hook
-  // fires on the resumed session; and because the handed-off Claude transcript is in
-  // "auto" mode, --yolo carries the hands-off posture into Codex.
+  // the launch adapter, which prepends --dangerously-bypass-hook-trust (so the fridge hook
+  // fires) and --yolo (arc-launched Codex runs hands-off, no approval prompts).
   const resumeArgs = calls[1].args;
   const resumeIdx = resumeArgs.indexOf('resume');
   ok('handoff seeds Codex and then resumes the minted native session',
@@ -1194,7 +1194,7 @@ try {
     && resumeIdx >= 0 && resumeArgs[resumeIdx + 1] === '11111111-2222-4333-8444-555555555555');
   ok('handoff carries the hook-trust bypass so the fridge hook fires on resume',
     resumeArgs.includes('--dangerously-bypass-hook-trust'));
-  ok('handoff maps Claude "auto" mode to codex --yolo on resume',
+  ok('arc-launched Codex always runs --yolo (before the subcommand)',
     resumeArgs.includes('--yolo') && resumeArgs.indexOf('--yolo') < resumeIdx);
   const loopSessions = fs.readdirSync(path.join(loopClHome, 'sessions'))
     .map((f) => JSON.parse(fs.readFileSync(path.join(loopClHome, 'sessions', f), 'utf8')));
@@ -1213,7 +1213,7 @@ try {
 section('cl-profile (adoptIntoShared: migrate, never clobber)');
 try {
   const P = require(path.join(SRC, 'arc-profile.js'));
-  ok('tasks is shared (so cl:switch keeps the task list)', P.SHARED_DIRS.includes('tasks'));
+  ok('tasks is shared (so arc:switch keeps the task list)', P.SHARED_DIRS.includes('tasks'));
 
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'adopt-'));
   const shared = path.join(base, 'shared');
@@ -1285,8 +1285,8 @@ try {
     pickConvId('live-28118b62', null, false, has) === 'live-28118b62');
 } catch (e) { ok('cl-conv pickConvId works', false, e.message); }
 
-// ---- cl-help + the cl:help hook (zero-token cheat sheet) --------------------
-section('cl-help + cl:help hook');
+// ---- cl-help + the arc:help hook (zero-token cheat sheet) --------------------
+section('cl-help + arc:help hook');
 try {
   const renderHelp = require(path.join(SRC, 'arc-help.js'));
   ok('cl-help exports a render function', typeof renderHelp === 'function');
@@ -1296,11 +1296,11 @@ try {
   ok('Codex help lists only implemented sentinels and names pending directions',
     /arc:notes/.test(codexSheet) && !/(arc|cl):switch/.test(codexSheet) && /not implemented yet/.test(codexSheet));
 
-  // End-to-end: the hook must BLOCK cl:help / cl:cl (case-insensitive) and return
-  // the sheet as the reason — zero model tokens, exactly like cl:peek.
+  // End-to-end: the hook must BLOCK arc:help / arc:cl (case-insensitive) and return
+  // the sheet as the reason — zero model tokens, exactly like arc:peek.
   const hook = path.join(SRC, 'arc-switch-hook.js');
-  // arc: is the current prefix; cl: is the deprecated alias — BOTH must trigger.
-  for (const trig of ['arc:help', 'arc:arc', 'ARC:HELP', 'cl:help', 'cl:cl', 'CL:HELP']) {
+  // arc: is the current prefix; arc: is the deprecated alias — BOTH must trigger.
+  for (const trig of ['arc:help', 'arc:arc', 'ARC:HELP']) {
     const r = spawnSync(process.execPath, [hook], { input: JSON.stringify({ prompt: trig }), encoding: 'utf8' });
     let out = {}; try { out = JSON.parse(r.stdout || '{}'); } catch {}
     ok(`hook blocks "${trig}" with the cheat sheet`, out.decision === 'block' && /(arc|cl) — commands/.test(out.reason || ''));
@@ -1313,9 +1313,9 @@ try {
   fs.writeFileSync(handoffTranscript, '{}\n');
   const handoffSession = 'hook-handoff-session';
   const handoff = spawnSync(process.execPath, [hook], {
-    env: { ...process.env, CL_SESSION: handoffSession, CL_LOGICAL_SESSION: 'logical-hook-1' },
+    env: { ...process.env, ARC_SESSION: handoffSession, ARC_LOGICAL_SESSION: 'logical-hook-1' },
     input: JSON.stringify({
-      prompt: 'cl:handoff codex --account default --keep-last 20',
+      prompt: 'arc:handoff codex --account default --keep-last 20',
       transcript_path: handoffTranscript,
       session_id: 'claude-native-hook',
       cwd: TMP,
@@ -1325,13 +1325,13 @@ try {
   let handoffOut = {}; try { handoffOut = JSON.parse(handoff.stdout || '{}'); } catch {}
   const handoffTrigger = path.join(CLAUDE, 'cache', `arc-handoff-${handoffSession}.trigger`);
   const handoffPayload = JSON.parse(fs.readFileSync(handoffTrigger, 'utf8'));
-  ok('cl:handoff is blocked and queued for the supervisor',
+  ok('arc:handoff is blocked and queued for the supervisor',
     handoffOut.decision === 'block' && handoffPayload.target === 'codex');
   ok('handoff trigger carries transcript, account, cap, and logical identity',
     handoffPayload.transcriptPath === handoffTranscript && handoffPayload.account === 'default'
     && handoffPayload.keepLast === 20 && handoffPayload.logicalSessionId === 'logical-hook-1');
   fs.unlinkSync(handoffTrigger);
-} catch (e) { ok('cl:help hook works', false, e.message); }
+} catch (e) { ok('arc:help hook works', false, e.message); }
 
 // ---- cl-room (the "fridge": per-room append-only sticky-note ledger) ---------
 section('cl-room (sticky-note ledger)');
@@ -1399,7 +1399,7 @@ try {
   // (This is the bug the end-to-end test caught — pid alone is not identity.)
   const second = R.claimRole(rTop, 'coding', process.pid, 's2');
   ok('a different live session is refused (even with same pid)', second.ok === false && second.holder.sessionId === 's1');
-  // cl:restart re-execs cl-runner: SAME session, NEW pid → must reclaim its own role.
+  // arc:restart re-execs cl-runner: SAME session, NEW pid → must reclaim its own role.
   ok('same session reclaims under a NEW pid (restart-safe)', R.claimRole(rTop, 'coding', process.pid + 1, 's1').ok === true);
   fs.writeFileSync(path.join(rTop.planDir, 'lease-coding.json'), JSON.stringify({ role: 'coding', pid: 999999, sessionId: 's9', at: Date.now() }));
   ok('a DEAD holder\'s lease is vacant', R.roleHolder(rTop, 'coding') === null);
@@ -1407,7 +1407,7 @@ try {
   ok('liveRoles lists live holders only', R.liveRoles(rTop).map((l) => l.role).join(',') === 'coding');
 } catch (e) { ok('cl-room works', false, e.message); }
 
-// ---- cl-fridge (the cl: sentinels over the ledger) ---------------------------
+// ---- cl-fridge (the arc: sentinels over the ledger) ---------------------------
 section('cl-fridge (role / note / notes)');
 try {
   const F = require(path.join(SRC, 'arc-fridge.js'));
@@ -1417,28 +1417,28 @@ try {
   fs.mkdirSync(path.join(repo2, 'sub'), { recursive: true });
   fs.mkdirSync(path.join(repo2, '.git'));
   const cache = path.join(CLAUDE, 'cache'); fs.mkdirSync(cache, { recursive: true });
-  const mkSession = (sid, pid) => writeJSON(path.join(cache, `cl-state-${sid}.json`), { pid, cwd: repo2 });
+  const mkSession = (sid, pid) => writeJSON(path.join(cache, `arc-state-${sid}.json`), { pid, cwd: repo2 });
   mkSession('sa', process.pid); mkSession('sb', process.pid); mkSession('sc', process.pid);
 
   // roles claimed from a SUBDIR still land in the repo-root room
   const ra = F.requestRole('sa', 'research', path.join(repo2, 'sub'));
-  ok('cl:role claims a role from a subdir (room = repo root)', ra.ok === true && /room "proj"/.test(ra.message));
-  ok('cl:role coding (second roommate)', F.requestRole('sb', 'coding', repo2).ok === true);
+  ok('arc:role claims a role from a subdir (room = repo root)', ra.ok === true && /room "proj"/.test(ra.message));
+  ok('arc:role coding (second roommate)', F.requestRole('sb', 'coding', repo2).ok === true);
   const rc = F.requestRole('sc', 'coding', repo2);
   ok('a third session is REFUSED a held role', rc.ok === false && /already held by a LIVE session/.test(rc.message));
 
   // notes
-  ok('cl:note needs a role', F.requestNote('sc', 'coding hi', repo2).ok === false);
-  ok('cl:note rejects a note to yourself', F.requestNote('sa', 'research hi', repo2).ok === false);
-  ok('cl:note usage error on bad args', F.requestNote('sa', 'onlyone', repo2).ok === false);
-  ok('cl:note appends', F.requestNote('sa', 'coding P-014 spec changed', repo2).ok === true);
-  ok('cl:note broadcast (all)', F.requestNote('sa', 'all repo layout moved', repo2).ok === true);
+  ok('arc:note needs a role', F.requestNote('sc', 'coding hi', repo2).ok === false);
+  ok('arc:note rejects a note to yourself', F.requestNote('sa', 'research hi', repo2).ok === false);
+  ok('arc:note usage error on bad args', F.requestNote('sa', 'onlyone', repo2).ok === false);
+  ok('arc:note appends', F.requestNote('sa', 'coding P-014 spec changed', repo2).ok === true);
+  ok('arc:note broadcast (all)', F.requestNote('sa', 'all repo layout moved', repo2).ok === true);
 
   // notes readout + rd()-only cursor
   const n1 = F.requestNotes('sb', '', repo2);
-  ok('cl:notes shows both (addressed + broadcast)', /2 new from research/.test(n1.message));
+  ok('arc:notes shows both (addressed + broadcast)', /2 new from research/.test(n1.message));
   const n2 = F.requestNotes('sb', '', repo2);
-  ok('cl:notes is empty after reading (cursor advanced)', /nothing new/.test(n2.message));
+  ok('arc:notes is empty after reading (cursor advanced)', /nothing new/.test(n2.message));
   const room2 = R2.resolveRoom(repo2);
   ok('notes were NOT consumed', R2.noteCount(room2) === 2);
   // rd()-only, proved properly: coding just read everything, yet a DIFFERENT reader
@@ -1446,7 +1446,7 @@ try {
   ok('a fresh role still sees the broadcast after coding read it', R2.unreadFor(room2, 'qa').count === 1);
   ok('research never sees its own two notes', R2.unreadFor(room2, 'research').count === 0);
   const nAll = F.requestNotes('sc', 'all', repo2);
-  ok('cl:notes all = landlord view, no role needed', /ALL 2 note\(s\)/.test(nAll.message));
+  ok('arc:notes all = landlord view, no role needed', /ALL 2 note\(s\)/.test(nAll.message));
 
   // restart: same session, NEW pid → role + lease survive
   mkSession('sb', process.pid + 1);                       // simulate cl-runner re-exec
@@ -1499,11 +1499,11 @@ try {
   while (R2.unreadFor(room2, 'coding').count && guard++ < 30) drained += F.injection('sb', repo2).shown;
   ok('the whole backlog drains over turns — every note once, none skipped',
     drained === 80 && R2.unreadFor(room2, 'coding').count === 0);
-  // and a returning session catches up in ONE uncapped `cl:notes`
+  // and a returning session catches up in ONE uncapped `arc:notes`
   R2.writeCursor(room2, 'coding', 0);
   const expected = R2.unreadFor(room2, 'coding').count;
   const catchUp = F.requestNotes('sb', '', repo2);
-  ok('cl:notes catches a returning roommate up in one uncapped call',
+  ok('arc:notes catches a returning roommate up in one uncapped call',
     (catchUp.message.match(/#\s*\d+/g) || []).length === expected && expected > 40 && R2.unreadFor(room2, 'coding').count === 0);
 } catch (e) { ok('cl-fridge works', false, e.message); }
 

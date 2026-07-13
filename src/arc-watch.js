@@ -6,12 +6,12 @@
 // never sees a delegation until someone nudges it. A DELEGATE (e.g. a `research`
 // session) fixes that by running this as a BACKGROUND task / Monitor:
 //
-//     Monitor / background:  cl watch research
+//     Monitor / background:  arc watch research
 //
-// Each delegation a roommate posts (`cl note research "investigate X"`) then prints a
+// Each delegation a roommate posts (`arc note research "investigate X"`) then prints a
 // line here → that line is an event that re-invokes the (otherwise idle) session, which
-// runs `cl notes` to read it and acts. This only OBSERVES — it never advances the read
-// cursor; `cl notes` does the actual read. Each unread note is emitted once per process.
+// runs `arc notes` to read it and acts. This only OBSERVES — it never advances the read
+// cursor; `arc notes` does the actual read. Each unread note is emitted once per process.
 //
 // It runs until stopped. The session must stay ALIVE (terminal open) — a background
 // waker can pull back an idle session, but nothing can wake a closed one.
@@ -45,14 +45,14 @@ function poll(room, role, emitted, write) {
 }
 
 function run(roleArg, cwd) {
-  const session = ((process.env.ARC_SESSION || process.env.CL_SESSION) || '').trim();
+  const session = (process.env.ARC_SESSION || '').trim();
   const room = R.resolveRoom(cwd || process.cwd());
   const role = resolveRole(roleArg, session, room);
   if (!role) {
-    process.stderr.write('[cl watch] no role to watch — pass one (`cl watch research`) or claim one first (`cl role research`).\n');
+    process.stderr.write('[arc watch] no role to watch — pass one (`arc watch research`) or claim one first (`arc role research`).\n');
     process.exit(1);
   }
-  process.stderr.write(`[cl watch] watching room "${room.name}" for delegations to "${role}" (Ctrl+C / stop to end)\n`);
+  process.stderr.write(`[arc watch] watching room "${room.name}" for delegations to "${role}" (Ctrl+C / stop to end)\n`);
   const emitted = new Set();
   const write = (line) => process.stdout.write(line + '\n');
   poll(room, role, emitted, write);              // fire any PENDING delegation immediately

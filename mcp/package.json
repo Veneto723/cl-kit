@@ -1,9 +1,9 @@
 {
-  "name": "cl-mcp",
+  "name": "arc-mcp",
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "cl-kit MCP server: manage switcher accounts + pool metrics",
+  "description": "arc MCP server: manage switcher accounts + pool metrics",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "pg": "^8.11.0"
