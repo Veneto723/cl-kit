@@ -40,6 +40,8 @@ Move chats between PCs (discrete export/import — no realtime sync):
   cl:export global       archive every session on this machine (everything)
   cl:export <project|id> archive one project's sessions, or one conversation
   cl:import <archive>    merge sessions in (newer-wins; live chats protected)
+  cl:import <archive> <dest>   re-root them under <dest> so they resume at a LOCAL path
+                         (e.g. home's E:\whaletech\proj → E:\proj.  --dest <d> is the same)
 
 The fridge — sticky notes between sessions working in the same folder:
   cl:role <name>         claim a role in this room (research | coding | …) — survives

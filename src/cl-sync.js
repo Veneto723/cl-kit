@@ -14,8 +14,9 @@
 //                              (newer-wins; overwritten local copies are backed
 //                               up; a conversation OPEN in a live cl is never
 //                               touched; --dry-run / --force / --skip-existing)
-//   cl:import <a> --dest <d> → re-root every project in the bundle under OUTER
-//                              folder <d>, keeping each project's own name:
+//   cl:import <a> <d>        → re-root every project in the bundle under OUTER
+//   cl:import <a> --dest <d>   folder <d> (the bare form and the flag are the same
+//                              thing), keeping each project's own name:
 //                              E:\whalephone → <d>\whalephone. Lets two machines
 //                              store projects at different roots (office E:\x,
 //                              home E:\whaletech\x) and still resume. Rewrites the
@@ -313,7 +314,7 @@ function doExport(session, argStr) {
 function doImport(session, argStr) {
   const { flags, pos } = parseFlags(argStr);
   const archive = pos[0] ? path.resolve(pos[0]) : null;
-  if (!archive) return { ok: false, message: 'usage: cl:import <archive.tgz> [--dest "E:\\outer\\folder"] [--dry-run] [--force] [--skip-existing]' };
+  if (!archive) return { ok: false, message: 'usage: cl:import <archive.tgz> [<dest> | --dest "E:\\outer\\folder"] [--dry-run] [--force] [--skip-existing]' };
   if (!fs.existsSync(archive)) return { ok: false, message: `archive not found: ${archive}` };
 
   // --dest re-roots each imported project under an OUTER folder, KEEPING its own name:
@@ -321,9 +322,16 @@ function doImport(session, argStr) {
   // other project in the bundle → E:\whaletech\<its name>), so they resume at the local
   // path. Requires an absolute path. Sessions whose source path can't be recovered are
   // skipped and reported rather than guessed.
-  const destRoot = flags.dest ? String(flags.dest).replace(/[\\/]+$/, '') : null;
+  //
+  // A BARE second positional means the same thing: `cl:import <archive> E:` == `--dest E:`.
+  // The flagless form is what people actually type, and it used to be SILENTLY IGNORED —
+  // the import ran with no re-rooting and landed in the archive's original project dir,
+  // looking like --dest was broken. Nothing else ever read pos[1], so adopting it costs
+  // no compatibility. The explicit flag still wins if both are given.
+  const destArg = flags.dest !== undefined ? flags.dest : pos[1];
+  const destRoot = destArg ? String(destArg).replace(/[\\/]+$/, '') : null;
   if (destRoot !== null && !path.win32.isAbsolute(destRoot + '\\')) {
-    return { ok: false, message: `--dest must be an absolute folder path (got "${flags.dest}"), e.g. --dest "E:\\whaletech".` };
+    return { ok: false, message: `the destination must be an ABSOLUTE folder path (got "${destArg}") — e.g. \`cl:import <archive> "E:\\whaletech"\` or \`--dest "E:\\whaletech"\`.` };
   }
   const remaps = []; // {name, from, to} for the report
   const destSeen = new Map(); // destProjName -> source proj (collision guard)

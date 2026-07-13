@@ -442,6 +442,8 @@ cl:export global          # every session on this machine (everything)
 cl:export <project|id>    # one project's sessions, or one conversation   ·   --since <days>
 cl:export ... --out <f>   # choose the archive path
 cl:import <archive.tgz>   # merge into ~/.claude/projects  ( --dry-run / --force / --skip-existing )
+cl:import <archive> E:    # re-root every project in the bundle under E:\ so it resumes at a
+                          # LOCAL path (home's E:\whaletech\proj → E:\proj). `--dest E:` is identical.
 ```
 
 Export bundles each session's transcript **plus** its sidecar (subagents, tool

@@ -347,6 +347,36 @@ try {
   try { fs.unlinkSync(path.join(cacheDir, `cl-state-${S}.json`)); } catch {}
 } catch (e) { ok('cl-sync export selectors work', false, e.message); }
 
+// ---- cl:import destination: a BARE positional == --dest ------------------------
+// Regression: `cl:import <archive> E:` silently IGNORED the `E:` — the import ran with
+// no re-rooting and landed in the archive's original project dir, so --dest looked
+// broken. The bare form is what people actually type; it must mean the same as the flag.
+section('cl-sync (import destination)');
+try {
+  const sync = require(path.join(SRC, 'cl-sync.js'));
+  const tgz = path.join(TMP, 'fake.tgz');
+  fs.writeFileSync(tgz, 'not-a-real-archive');       // must exist; we never get as far as untar
+
+  // an absolute bare positional is accepted as the destination (no "must be absolute" error)
+  const bare = sync.doImport('nosess', `"${tgz}" E: --dry-run`);
+  ok('bare positional dest is not rejected as non-absolute', !/must be an ABSOLUTE/.test(bare.message));
+
+  // a RELATIVE bare positional is caught and explained (not silently ignored, as before)
+  const rel = sync.doImport('nosess', `"${tgz}" not-absolute --dry-run`);
+  ok('a relative bare dest is REFUSED, not ignored', rel.ok === false && /must be an ABSOLUTE/.test(rel.message));
+  ok('  and the error shows BOTH forms', /--dest/.test(rel.message) && /cl:import <archive>/.test(rel.message));
+
+  // the explicit flag is still honoured, and wins over a positional
+  const flag = sync.doImport('nosess', `"${tgz}" --dest bad-relative --dry-run`);
+  ok('an explicit --dest is still validated', flag.ok === false && /must be an ABSOLUTE/.test(flag.message));
+  ok('the flag WINS over a bare positional', /bad-relative/.test(
+    sync.doImport('nosess', `"${tgz}" E: --dest bad-relative --dry-run`).message));
+
+  // a missing archive is still the first thing reported
+  ok('a missing archive still errors first', /archive not found/.test(sync.doImport('nosess', 'nope.tgz E:').message));
+  fs.unlinkSync(tgz);
+} catch (e) { ok('cl-sync import destination works', false, e.message); }
+
 // ---- cl-sync — cl:import --dest re-rooting (office/home path parity) ----------
 section('cl-sync (import --dest re-rooting)');
 try {
