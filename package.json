@@ -2,7 +2,7 @@
   "name": "cl-kit",
   "version": "2.0.0",
   "private": true,
-  "description": "Claude Code account switcher & session manager (cl) for Windows 11",
+  "description": "Claude-first Claude/Codex session wrapper and orchestrator for Windows 11",
   "os": [
     "win32"
   ],

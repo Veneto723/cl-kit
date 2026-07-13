@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// cl-wire-settings: merge cl's hooks + statusline + switch allow-rule into
+// cl-wire-settings: merge cl's hooks + statusline into
 // ~/.claude/settings.json WITHOUT clobbering the user's existing entries. Called
 // by the installers (install.sh today; install.ps1 keeps its own copy) so every
 // platform wires the exact same set. Idempotent — safe to re-run.

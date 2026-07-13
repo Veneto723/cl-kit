@@ -5,10 +5,11 @@ description: You may be sharing this repo with ANOTHER cl session — a "roommat
 
 # Share with your roommate
 
-Two `cl` sessions in one repo are **roommates**: independent Claude Code sessions that
-can't see each other's context. The **fridge** is how they leave each other notes — and
-you, the agent, put a note there by **running a command** (you cannot type `cl:note` as a
-prompt; the hook eats it before it reaches you — but `cl note …` run via Bash works).
+Two `cl` sessions in one repo are **roommates**: independent Claude Code or Codex
+sessions that can't see each other's context. The **fridge** is how they leave each
+other notes — and you, the agent, put a note there by **running a terminal command**
+(do not submit `cl:note` as a prompt; the runtime hook consumes that form before it
+reaches the model).
 
 ## When to leave a note (high signal only)
 
@@ -34,8 +35,8 @@ cl notes                        # read what your roommate left you (also arrives
 
 `cl note all` broadcasts to everyone in the room (simplest — you don't need to know their
 role name). Target a specific role only when it's for one of them. Your own notes never
-come back to you; the roommate sees them at the start of their next turn, and a `📌` mark
-shows in their statusline meanwhile.
+come back to you; the roommate receives them through cl at the start of their next turn.
+Claude sessions also show a waiting-note mark in their statusline.
 
 ## Notes
 

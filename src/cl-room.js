@@ -108,6 +108,15 @@ function allNotes(room) {
 
 function noteCount(room) { return allNotes(room).length; }
 
+// Highest physical record position, including a torn line. Cursors are positions
+// in the append-only file, not counts of successfully parsed notes.
+function latestSeq(room) {
+  let raw; try { raw = fs.readFileSync(notesPath(room), 'utf8'); } catch { return 0; }
+  let latest = 0;
+  raw.split('\n').forEach((line, i) => { if (line.trim()) latest = i + 1; });
+  return latest;
+}
+
 // ---- cursors (rd()-only: nothing is consumed, the cursor just advances) --------
 // Keyed by ROLE, not session id — a restarted terminal gets a new session id but is
 // still "coding in this room", and must resume where it left off, not re-read all.
@@ -124,20 +133,21 @@ function writeCursor(room, role, seq) {
 // What `role` hasn't seen: addressed to it, or broadcast; never its own notes.
 function unreadFor(room, role) {
   const all = allNotes(room);
+  const latest = latestSeq(room);
   let cursor = readCursor(room, role);
   // FAIL-OPEN: a cursor past the end means the ledger was truncated or rewritten
   // (it is supposed to be append-only). Re-read from the start rather than silently
   // skipping notes — a duplicate note is noise; a missed one is the bug this whole
   // design exists to prevent.
-  if (cursor > all.length) cursor = 0;
+  if (cursor > latest) cursor = 0;
   const notes = all.filter(
     (n) => n.seq > cursor && n.from !== role && (n.to == null || n.to === role));
   const senders = [...new Set(notes.map((n) => n.from))];
-  return { cursor, count: notes.length, notes, senders, latest: all.length };
+  return { cursor, count: notes.length, notes, senders, latest, total: all.length };
 }
 
 // Advance past everything currently in the ledger (called after injection).
-function markRead(room, role) { return writeCursor(room, role, noteCount(room)); }
+function markRead(room, role) { return writeCursor(room, role, latestSeq(room)); }
 
 // ---- role lease --------------------------------------------------------------
 // Cursors are keyed by role, so TWO live "coding" sessions in one room would share
@@ -189,7 +199,7 @@ function releaseRole(room, role, pid) {
 module.exports = {
   PLAN_DIR, GITIGNORE_BODY,
   canonical, repoRoot, resolveRoom, ensureRoom,
-  notesPath, appendNote, allNotes, noteCount,
+  notesPath, appendNote, allNotes, noteCount, latestSeq,
   readCursor, writeCursor, unreadFor, markRead,
   isAlive, roleHolder, claimRole, releaseRole, liveRoles,
 };

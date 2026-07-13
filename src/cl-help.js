@@ -6,7 +6,35 @@
 
 const C = require('./cl-config');
 
-function renderHelp() {
+function renderCodexHelp() {
+  return `cl — Codex commands
+===================
+Inside this Codex session (caught by a hook before the model runs):
+  cl:help                this cheat sheet — ZERO tokens
+  cl:role <name>         claim a role in this repo's shared fridge
+  cl:role                show your role and active roommates
+  cl:note <role> <text>  leave a note · cl:note all <text> broadcasts
+  cl:notes               read your unread notes now — ZERO tokens
+  cl:notes all           show the whole fridge without marking it read
+
+In a terminal:
+  cl codex [args]                    launch Codex (native args pass through)
+  cl codex --account <id> [args]     launch with an isolated CODEX_HOME
+  cl codex accounts                  show aliases, native login status, and homes
+  cl codex add-account <id>          create an isolated home and run codex login
+  cl codex login [id]                refresh a native Codex login
+  cl codex remove-account <id>       remove only the alias; its home stays intact
+  cl sessions                        list logical sessions and native bindings
+
+Runtime handoff:
+  Claude → Codex is available from a cl-managed Claude prompt with
+  cl:handoff codex [--account <id>] [--keep-last N].
+  Codex → Claude and cl:delegate are not implemented yet.
+`;
+}
+
+function renderHelp(runtime = process.env.CL_RUNTIME || 'claude') {
+  if (String(runtime).toLowerCase() === 'codex') return renderCodexHelp();
   let accounts = [];
   try { accounts = C.loadConfig().accounts.map((a) => a.id); } catch {}
   const example = accounts[1] || accounts[0] || 'pool';
@@ -89,13 +117,11 @@ Why the cl: forms?
           exhausted account). That's why everything here is a cl: sentinel — there
           are no cl slash commands anymore.
 
-Take this conversation into Codex (transpile, then codex resume):
-  cl handoff codex               convert THIS Claude conversation into a Codex session
-                                 that Codex RESUMES natively — text at full fidelity,
-                                 tool calls become short "[ran …]" markers, the repo
-                                 files are already shared. Prints the codex resume <id>.
-  cl handoff codex --dry-run     show what would transpile, without touching Codex
-  cl handoff codex --keep-last N cap a huge session to its last N messages
+Take this conversation into Codex (same terminal, same logical cl session):
+  cl:handoff codex               transpile THIS Claude conversation, then continue
+                                  it in Codex using Codex's native resume path
+  cl:handoff codex --account <id> choose an isolated Codex account / CODEX_HOME
+  cl:handoff codex --keep-last N cap a huge session to its last N messages
 
 In your terminal (not inside a session):
   cl                     launch
@@ -103,6 +129,10 @@ In your terminal (not inside a session):
   cl add-account <id>    guided browser login to add a subscription (own profile)
   cl capture <id>        adopt the current active login into <id>'s profile
   cl trash [restore <id>|empty]   manage the deleted-conversation trash
+  cl codex [args]        launch Codex; native Codex arguments pass through
+  cl codex accounts      show Codex aliases, login status, and isolated homes
+  cl codex add-account <id> [--home <dir>]   add an alias + run native login
+  cl sessions            list logical cl sessions and their runtime bindings
   cl doctor              health check    ·    cl setup    reconfigure
 
 Fridge from a terminal (also how an AGENT posts — it can RUN these, though it can't

@@ -134,6 +134,19 @@ function stateCwd(session) {
 // conversation.
 const encodeProject = (cwd) => String(cwd).replace(/[^A-Za-z0-9]/g, '-');
 
+// GNU tar needs --force-local for Windows drive-letter archive paths. The bsdtar
+// shipped by newer Windows releases rejects that option, but already treats those
+// paths as local. Try the GNU-safe form first, then retry only for that option error.
+function runTar(args, opts = {}) {
+  const options = { encoding: 'utf8', windowsHide: true, timeout: 300_000, ...opts };
+  let r = spawnSync('tar', ['--force-local', ...args], options);
+  const detail = String(r.stderr || '') + '\\n' + String(r.error && r.error.message || '');
+  if (r.status !== 0 && /force-local.*(?:not supported|unknown|unrecognized|illegal)/i.test(detail)) {
+    r = spawnSync('tar', args, options);
+  }
+  return r;
+}
+
 // ---- --dest re-rooting (import a session so it resumes at a DIFFERENT path) ----
 // A project folder is encodeProject(launchCwd), and that launch cwd is stored on the
 // transcript's message lines — so we can recover the real source path even though the
@@ -291,7 +304,7 @@ function doExport(session, argStr) {
     fs.writeFileSync(listPath, ['.cl-manifest.json', ...rels].join('\n'));
     // --force-local: GNU tar otherwise reads a Windows `C:\...` archive path as a
     // remote host `C` ("Cannot connect to C"). This makes colons mean drive letters.
-    const r = spawnSync('tar', ['--force-local', '-czf', out, '-C', PROJECTS, '-T', listPath], { encoding: 'utf8', windowsHide: true, timeout: 300_000 });
+    const r = runTar(['-czf', out, '-C', PROJECTS, '-T', listPath]);
     if (r.status !== 0) return { ok: false, message: `export FAILED — tar: ${(r.stderr || r.error && r.error.message || 'unknown').toString().slice(0, 200)}` };
   } catch (e) {
     return { ok: false, message: `export FAILED — ${e.message}` };
@@ -339,7 +352,7 @@ function doImport(session, argStr) {
   const tmp = path.join(CACHE, `cl-import-${process.pid}-${Date.now()}`);
   try {
     fs.mkdirSync(tmp, { recursive: true });
-    const r = spawnSync('tar', ['--force-local', '-xzf', archive, '-C', tmp], { encoding: 'utf8', windowsHide: true, timeout: 300_000 });
+    const r = runTar(['-xzf', archive, '-C', tmp]);
     if (r.status !== 0) { rm(tmp); return { ok: false, message: `import FAILED — tar: ${(r.stderr || 'unknown').toString().slice(0, 200)}` }; }
   } catch (e) { rm(tmp); return { ok: false, message: `import FAILED — ${e.message}` }; }
 
@@ -619,4 +632,4 @@ function emptyTrash() {
   return { ok: failed === 0, count: entries.length, bytes, failed };
 }
 
-module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession, listTrash, restoreSession, emptyTrash, transcriptMeta, human, currentProject, encodeProject, sniffLaunchCwd, remapCwd, underPath, copyRemappingCwd, tokenize };
+module.exports = { doExport, doImport, discover, findTranscriptFile, trashSession, listTrash, restoreSession, emptyTrash, transcriptMeta, human, currentProject, encodeProject, sniffLaunchCwd, remapCwd, underPath, copyRemappingCwd, tokenize, runTar };

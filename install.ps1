@@ -13,9 +13,13 @@ Write-Host "cl-kit installer" -ForegroundColor Cyan
 node --version *> $null
 if ($LASTEXITCODE -ne 0) { throw 'Node.js is required on PATH.' }
 $hasClaude = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
+$hasCodex = $null -ne (Get-Command codex -ErrorAction SilentlyContinue)
 if (-not $hasClaude) {
   Write-Host "  ! 'claude' CLI not found on PATH — install Claude Code first (https://claude.com/claude-code)." -ForegroundColor Yellow
   Write-Host "    Continuing; the cl MCP server registration will be skipped." -ForegroundColor Yellow
+}
+if (-not $hasCodex) {
+  Write-Host "  i 'codex' CLI not found on PATH - Claude support will still be installed; Codex hosting is optional." -ForegroundColor DarkGray
 }
 
 # 1. scripts
@@ -73,7 +77,17 @@ if (($userPath -split ';') -notcontains $bin) {
 $skills = Join-Path $claudeDir 'skills'
 New-Item -ItemType Directory -Force $skills | Out-Null
 Copy-Item (Join-Path $kit 'skills\*') $skills -Recurse -Force
-Write-Host "  skills -> $skills (show-image)"
+Write-Host "  Claude skills -> $skills"
+
+# The roommate protocol is runtime-neutral and uses cl's terminal commands, so
+# publish it at the cross-agent discovery path as well. The responder and
+# show-image skills stay Claude-only until their harness-specific behavior is
+# supported and tested under Codex.
+$agentSkills = Join-Path $env:USERPROFILE '.agents\skills'
+$roommateSkill = Join-Path $agentSkills 'share-with-roommate'
+New-Item -ItemType Directory -Force $roommateSkill | Out-Null
+Copy-Item (Join-Path $kit 'skills\share-with-roommate\*') $roommateSkill -Recurse -Force
+Write-Host "  shared skill -> $roommateSkill (Claude + Codex)"
 
 # 4. toast icons
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts 'icons\make-icons.ps1') | Out-Null
@@ -141,10 +155,13 @@ if (-not $settings.statusLine) {
 # Write UTF-8 *without* BOM: PS 5.1's `Set-Content -Encoding utf8` prepends a BOM
 # that Node's JSON.parse (used by cl-runner / doctor) rejects as invalid JSON.
 [System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
-Write-Host "  settings.json hooks + statusline + switch allow-rule wired (backup at settings.json.bak-cl-kit)"
+Write-Host "  settings.json hooks + statusline wired (backup at settings.json.bak-cl-kit)"
 
 Write-Host ""
 Write-Host "Done. Next:" -ForegroundColor Green
 Write-Host "  cl setup    # choose your account style (single / two subs / sub+pool / pool only)"
 Write-Host "  cl doctor   # verify"
 Write-Host "  cl          # launch"
+if ($hasCodex) {
+  Write-Host "  cl codex    # optional: launch Codex under the same cl session registry"
+}

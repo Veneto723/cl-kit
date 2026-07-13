@@ -1,14 +1,17 @@
 # cl-kit
 
-**A native-stdio wrapper for [Claude Code](https://claude.com/claude-code) that adds instant, zero-token account switching, an interactive account picker, session toasts, and a usage statusline — all driven by one config file.** Windows 11.
+**A Claude-first native-stdio wrapper that adds account switching, session tools, and a small orchestration layer for hosting [Claude Code](https://claude.com/claude-code) and Codex under one `cl` command.** Windows 11.
 
 `cl` launches Claude Code with `stdio: inherit` (claude owns the TTY, so its own
 slash menus and rendering are pixel-perfect — no PTY/ConPTY garble) and layers on
 everything the built-in CLI can't do: switch between accounts mid-conversation,
 pick an account from an arrow-key menu without spending a token, get a desktop
 toast when a session finishes, and see live rate-limit usage in your statusline.
+`cl codex` is an explicit second runtime: it launches the native Codex CLI, keeps
+Codex authentication in isolated `CODEX_HOME` directories, and records Claude/Codex
+bindings under one runtime-neutral logical session. Plain `cl` remains unchanged.
 
-One config file fits any setup:
+The Claude account config fits any of these setups:
 
 | Style | Example |
 |---|---|
@@ -33,6 +36,8 @@ One config file fits any setup:
 - **Desktop toasts** labeled with the session's `/rename` name, with colored state icons; **click a toast to focus that terminal window**.
 - **Usage statusline** — subscription 5h/7d %, reset times, pace ETA, blink warnings near the limit; gateway cost/tokens for api accounts.
 - **Safety rails** — refuses to open one conversation in two processes (a crash cause), warns before removing an account live sessions are using, logs every launch/exit, and backs up config before every change.
+- **Opt-in Codex host** — `cl codex` preserves the native Codex terminal, supports isolated Codex logins, and shares the fridge skill/protocol with Claude.
+- **Supervised Claude → Codex handoff** — `cl:handoff codex` captures the hook-authoritative Claude transcript, converts it, and continues in Codex in the same terminal while retaining logical session lineage.
 
 ---
 
@@ -47,7 +52,7 @@ account's live usage inline:
    1. max   ·  MAX  [oauth]   5h 31% · 7d 26%              ← current
  ❯ 2. mate  ·  MATE [api]     $118 today · 66.3M tok · unlimited   ← selected
 
-  tip: cl:switch <name> jumps directly · /cl lists all commands
+  tip: cl:switch <name> jumps directly · cl:help lists all commands
 ```
 
 `cl:peek` prints the same usage for every account as a plain, zero-token readout:
@@ -74,6 +79,7 @@ cl usage — peek
   lean on Windows. (It used to be cross-platform; that was dropped as untested weight.)
 - **Node.js**
 - **Claude Code** — the `claude` CLI on your PATH
+- **Codex CLI** *(optional)* — required only for `cl codex` and `cl:handoff codex`
 
 ## Install
 
@@ -91,7 +97,10 @@ The installer is re-runnable and idempotent: it deploys scripts + commands into
 `~/.claude`, adds a `cl` launcher to `~/.local/bin`, installs and registers the MCP
 server, generates toast icons, registers the `cl-focus:` click-to-focus protocol, and
 **merges** hooks + statusline into `settings.json` (backing it up first — never
-removing your existing entries).
+removing your existing entries). It also publishes the runtime-neutral
+`share-with-roommate` skill to `~/.agents/skills`; other bundled skills remain
+Claude-only. Codex lifecycle hooks are merged into the selected `CODEX_HOME` on the
+first `cl codex` launch.
 
 **Gateway keys:** by default `cl set-key` / the add-account wizard store the key as a
 DPAPI-encrypted `apiKeyEnc` blob in the config, bound to this Windows user+machine (a
@@ -104,7 +113,7 @@ To update later: `git pull`, re-run the installer, and `cl:restart` any live ses
 
 ## Commands
 
-**In a session** (type into the normal prompt):
+**In a Claude session** (type into the normal prompt):
 
 | Command | What it does | Tokens |
 |---|---|---|
@@ -129,7 +138,12 @@ To update later: `git pull`, re-run the installer, and `cl:restart` any live ses
 | `cl:notes all` | the whole fridge, nothing marked read | **0** |
 | `cl:anchors` | which doc claims about the code have gone **stale** | **0** |
 | `cl:anchors reseal` | after fixing the docs, make the current code the baseline | **0** |
+| `cl:handoff codex [--account <id>] [--keep-last N]` | continue this conversation in Codex | **0** |
 | `cl:help` (`cl:cl`) | print this cheat sheet | **0** |
+
+In a cl-managed Codex session, the currently supported sentinels are `cl:help`,
+`cl:role`, `cl:note`, and `cl:notes`. Account switching, reverse handoff, and
+delegation are not presented as available until their Codex paths are implemented.
 
 The `cl:` forms are plain messages caught by a hook **before** the model runs —
 that's why they cost nothing and keep working when the account is rate-limited (a
@@ -269,6 +283,11 @@ decision. An anchor that never resolved (a doc *example*, or a typo) is reported
 | `cl capture <id>` | adopt the currently-active login into an account's profile |
 | `cl setup` | (re)configure accounts |
 | `cl doctor` | print resolved config + health checks |
+| `cl codex [native args]` | launch Codex; arguments pass through to the native CLI |
+| `cl codex --account <id> [args]` | launch with an isolated Codex account |
+| `cl codex accounts` | show Codex aliases, native login status, and homes |
+| `cl codex add-account <id> [--home <dir>]` | create an alias/home and run native `codex login` |
+| `cl sessions` | list logical cl sessions and their active native binding |
 
 ---
 
@@ -407,6 +426,13 @@ and never echoes secrets. Changes are `cl:switch`-able immediately, no restart.
   owns the real terminal — its slash menus and differential renderer work exactly
   as designed. cl coordinates out-of-band via trigger files, never by intercepting
   keystrokes.
+- **Runtime adapters, not a synthetic terminal.** `cl codex` also gives the native
+  CLI the terminal. Runtime-specific launch, auth, hooks, and transcript handling stay
+  behind adapters; the shared registry stores only orchestration metadata.
+- **Logical identity above native identity.** A cl session can bind a Claude
+  conversation and a Codex rollout without pretending their formats are the same.
+  Handoff appends lineage and changes the active binding; native transcripts remain
+  owned by their respective products.
 - **Switching is manual, via triggers.** The `cl:switch` hook drops a per-session
   trigger file; the wrapper polls for it, kills claude, and relaunches the *same
   conversation* (`--resume <uuid>`) on the other account, re-applying model /
@@ -452,34 +478,60 @@ transcript entry's timestamp), backs up any local copy it overwrites (to
 `~/.claude/backups/cl-import-<ts>/`), and **never touches a conversation that's
 open in a live cl session**. Also available as terminal `cl export` / `cl import`.
 
+**Resume caveat:** `claude --resume <id>` is scoped to the cwd's project dir, so
+both machines must use the **same project paths** (e.g. work in `E:\proj` on
+both) for the imported chat to resume cleanly.
+
 ## Take a conversation into Codex
 
-Different products, one disk. Both Claude Code and Codex store sessions as local
-JSONL conversation logs, so cl-kit can **transpile** the current Claude conversation
-into a Codex session that **Codex resumes natively** — you keep scrolling the real
-chat history, not a summary:
+Different products, one disk. In a cl-managed Claude session, the prompt hook can
+identify the authoritative transcript and ask the supervising wrapper to **transpile**
+it into a Codex session. The wrapper stops Claude, seeds a native Codex rollout, binds
+both native sessions to one logical cl session, and resumes Codex in the same terminal:
 
 ```
-cl handoff codex               # this conversation → a Codex session; prints `codex resume <id>`
-cl handoff codex --dry-run     # show what would convert, without touching Codex
-cl handoff codex --keep-last N # cap a huge session to its last N messages
+cl:handoff codex                         # use the default Codex account
+cl:handoff codex --account work          # choose an isolated CODEX_HOME
+cl:handoff codex --keep-last 80          # cap a huge transcript
 ```
 
 **Text-first, by design.** Humans re-read the *words*, so text messages convert at
 full fidelity; tool calls degrade to a short marker (`[ran Bash: …]`). The repo files
 are already shared, so the *code* state transfers losslessly — only the conversation
-is re-homed. It works by letting Codex mint a valid, current-version session skeleton
-(a throwaway seed turn), then splicing the transpiled history in — so it's robust to
-Codex's undocumented, versioned rollout format rather than hardcoding it.
+is re-homed. Codex mints the current session skeleton; cl then preserves its
+scaffolding and replaces the conversational records.
 
-**Honest limits.** It's a one-way relay, not a lossless round-trip. Claude's tool
-*history* becomes inert text (which is fine — the files carry the real state), and no
-model can re-ingest a giant transcript, so a long session is capped (`--keep-last`)
-or compacted on load regardless. Requires the `codex` CLI on your PATH.
+**Honest limits.** This is currently Claude → Codex only, not a lossless round-trip.
+Claude's tool history becomes inert text, and long context may still be compacted by
+the destination runtime. The seed-and-splice step necessarily touches Codex's
+undocumented rollout format; preserving native scaffolding reduces version coupling
+but does not eliminate it. The suite tests conversion and supervision with a fake
+Codex launcher, while a real account/model call remains an integration boundary.
 
-**Resume caveat:** `claude --resume <id>` is scoped to the cwd's project dir, so
-both machines must use the **same project paths** (e.g. work in `E:\proj` on
-both) for the imported chat to resume cleanly.
+## Codex accounts and session registry
+
+`cl codex` uses Codex's native authentication rather than translating Claude
+credentials. The implicit `default` alias points at the current `CODEX_HOME` (or
+`~/.codex`). Additional aliases default to `~/.cl/accounts/codex/<id>` and are
+logged in independently:
+
+```
+cl codex add-account work
+cl codex accounts
+cl codex --account work
+cl codex --account work resume <codex-session-id>
+```
+
+The alias registry at `~/.cl/accounts.json` stores only ids, labels, and home paths;
+tokens remain owned by Codex inside each home. Removing an alias does not delete that
+home. Logical session metadata lives in `~/.cl/sessions/<id>.json` and records native
+ids, runtime/account bindings, cwd, state, and handoff lineage, but no credentials.
+
+Codex may ask you to trust newly installed hooks on first use; inspect them with
+`/hooks`. cl merges `SessionStart` and `UserPromptSubmit` entries into
+`<CODEX_HOME>/hooks.json` without replacing unrelated hooks. Codex's native status
+line remains native for now; use `cl codex accounts` and `cl sessions` for cl-owned
+account/session state.
 
 ## Setting up a second machine
 
@@ -520,9 +572,8 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
 ## Repo layout
 
 ```
-src/            wrapper + hooks (cl-runner, cl-config, cl-platform, cl-profile,
-                cl-switch-*, cl-conv, cl-notify, cl-help, cl-focus.*,
-                cl-wire-settings, usage-monitor, gw-usage, cl-sync, cl-setup)
+src/            wrapper + hooks, runtime adapters, Codex account isolation,
+                logical session registry, transcript conversion, status/usage tools
 mcp/            cl MCP server (account management + pool metrics tools)
 pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)
 test/           test suite (run.js; `npm test`) — Windows, incl. a real DPAPI round-trip
@@ -535,9 +586,10 @@ install.ps1     Windows 11 installer (idempotent)
   the directory junctions behind per-account credential isolation all lean on Windows.
   (It was tri-platform once; that support was untested weight and got removed.) Keys
   are a DPAPI `apiKeyEnc` blob by default, or `apiKeyEnv` / `apiKeyFrom`.
-- All caches/state live under `~/.claude/cache/cl-*`; stale files are swept
+- Claude wrapper caches live under `~/.claude/cache/cl-*`; stale files are swept
   automatically (state daily, effort memories after 7 days, conversation locks by
-  process liveness).
+  process liveness). Runtime-neutral aliases and logical sessions live under
+  `~/.cl`.
 - `cl:switch` is the token-free interactive path. Slash commands can't match it:
   a *custom* slash command always costs a small model turn (Claude Code reserves
   the instant path for built-ins), which is why the old `/switch`, `/restart`, and

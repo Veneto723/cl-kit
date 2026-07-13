@@ -12,6 +12,7 @@
 //   cl:switch            → cycle to the next account
 //   cl:switch <id>       → switch to a named account
 //   cl:restart           → reload the wrapper + relaunch, same account
+//   cl:handoff [codex]   → continue this conversation in Codex
 //   cl:help  (cl:cl)     → print the command cheat sheet (zero tokens)
 //   cl:role <name>       → claim a role in this room (the "fridge" — see cl-room.js)
 //   cl:note <to> <text>  → leave a sticky note for a roommate ("all" = broadcast)
@@ -36,7 +37,7 @@ const core = require('./cl-switch-core');
 // a CONVERSATION delete. They route to remove-account (account removal), not delete.
 // `notes` MUST precede `note` (a plain alternation would try `note` first and only
 // backtrack; being explicit costs nothing and documents the intent).
-const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|cl)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*cl:(switch|restart|handoff|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|cl)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -141,6 +142,15 @@ function run(raw) {
   }
   if (action === 'restart') {
     const r = core.requestRestart(session);
+    return clBlock(r.message);
+  }
+  if (action === 'handoff') {
+    const r = core.requestHandoff(session, arg || '', {
+      transcriptPath: hook.transcript_path || null,
+      cwd: hook.cwd || null,
+      nativeSessionId: hook.session_id || null,
+      logicalSessionId: process.env.CL_LOGICAL_SESSION || null,
+    });
     return clBlock(r.message);
   }
   if (action === 'add-account' || action === 'add') {

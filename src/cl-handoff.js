@@ -6,8 +6,8 @@
 // scaffolding (the developer role-setup / multi-agent records). A hand-built minimal
 // rollout is rejected with "direct app-server input is not allowed for multi-agent v2
 // sub-agents". So we let CODEX ITSELF mint a valid, current-version session with a throwaway
-// seed turn, then splice our transpiled conversation in where the seed turn was. That also
-// makes it robust to Codex format drift — we never hardcode Codex internals.
+// seed turn, then splice our transpiled conversation in where the seed turn was. Keeping
+// Codex's own scaffolding reduces format coupling, but the rollout remains undocumented.
 //
 // Flow:  locate transcript -> transpile (text-first, tools-as-text) -> seed a codex session
 //        -> replace the seed turn with the transplanted history -> print `codex resume <id>`.
@@ -21,7 +21,7 @@ const { spawnSync } = require('child_process');
 const T = require('./cl-transpile');
 
 const CACHE_DIR = path.join(os.homedir(), '.claude', 'cache');
-const SESSIONS = path.join(os.homedir(), '.codex', 'sessions');
+const defaultCodexHome = () => path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
 
 // ---- locate the Claude transcript for a conversation -------------------------
 // Project dirs are named after the launch cwd, which can differ from the shell cwd, so we
@@ -61,11 +61,11 @@ function asstRec(text, turnId, ts) {
 }
 
 // Find the rollout Codex just wrote for our seed (newest file whose text contains marker).
-function findSeedRollout(marker) {
+function findSeedRollout(marker, sessionsDir) {
   let hits = [];
   (function walk(d) { let e = []; try { e = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const x of e) { const p = path.join(d, x.name); if (x.isDirectory()) walk(p);
-      else if (/^rollout-.*\.jsonl$/.test(x.name)) hits.push({ p, t: fs.statSync(p).mtimeMs }); } })(SESSIONS);
+      else if (/^rollout-.*\.jsonl$/.test(x.name)) hits.push({ p, t: fs.statSync(p).mtimeMs }); } })(sessionsDir || path.join(defaultCodexHome(), 'sessions'));
   hits.sort((a, b) => b.t - a.t);
   for (const h of hits.slice(0, 8)) { try { if (fs.readFileSync(h.p, 'utf8').includes(marker)) return h.p; } catch {} }
   return null;
@@ -95,13 +95,18 @@ function rebuild(rolloutPath, messages) {
 const HANDOFF_MARKER_TAG = '__CL_HANDOFF_SEED__';
 
 // ---- the command -------------------------------------------------------------
-// opts: { convId, cwd, keepLast, dryRun }
+// opts: { transcript, convId, cwd, keepLast, dryRun }
+// The `cl:handoff` hook passes `transcript` directly (UserPromptSubmit carries
+// transcript_path); the terminal/test path resolves it from a convId.
 function handoff(session, opts = {}) {
   const cur = currentSession(session);
-  const convId = opts.convId || cur.convId;
-  if (!convId) return { ok: false, message: 'no conversation to hand off — pass a convId, or run this inside a cl session.' };
-  const transcript = findTranscript(convId);
-  if (!transcript) return { ok: false, message: `couldn't find the transcript for ${convId} under ~/.claude/projects.` };
+  let transcript = opts.transcript;
+  if (!transcript) {
+    const convId = opts.convId || cur.convId;
+    if (!convId) return { ok: false, message: 'no conversation to hand off — run this inside a cl session (`cl:handoff codex`).' };
+    transcript = findTranscript(convId);
+  }
+  if (!transcript || !fs.existsSync(transcript)) return { ok: false, message: `couldn't find the transcript to hand off (${transcript || opts.convId || '?'}).` };
 
   const records = T.readTranscript(transcript);
   const cwd = opts.cwd || transcriptCwd(records, cur.cwd) || process.cwd();
@@ -118,10 +123,11 @@ function handoff(session, opts = {}) {
   // word chars only so no cmd metacharacter needs escaping.
   const marker = `${HANDOFF_MARKER_TAG} ${Date.now()} ${rand(8)}`;
   const codexArgs = ['exec', '--skip-git-repo-check', '-s', 'read-only', '-C', cwd, `${marker} reply only ok`];
+  const codexHome = path.resolve(opts.codexHome || defaultCodexHome());
   const seed = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'codex', ...codexArgs],
-    { encoding: 'utf8', timeout: 180000, windowsHide: true });
+    { encoding: 'utf8', timeout: 180000, windowsHide: true, env: { ...process.env, CODEX_HOME: codexHome } });
   if (seed.error) return { ok: false, message: `couldn't run codex (${seed.error.message}). Is the codex CLI on PATH?` };
-  const rollout = findSeedRollout(HANDOFF_MARKER_TAG);
+  const rollout = findSeedRollout(marker, path.join(codexHome, 'sessions'));
   if (!rollout) return { ok: false, message: 'seeded a Codex session but could not locate its rollout file. (codex output: ' + (seed.stdout || seed.stderr || '').slice(-200) + ')' };
 
   const r = rebuild(rollout, messages);
@@ -132,4 +138,4 @@ function handoff(session, opts = {}) {
       `  (tool calls became short text markers; the repo files are already shared, so the code state is intact.)` };
 }
 
-module.exports = { handoff, findTranscript, currentSession, rebuild, HANDOFF_MARKER_TAG };
+module.exports = { handoff, findTranscript, currentSession, findSeedRollout, rebuild, HANDOFF_MARKER_TAG };
