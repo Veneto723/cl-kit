@@ -95,10 +95,38 @@ function ensureHooks(account) {
   return file;
 }
 
+// Codex has a native, configurable status line: `[tui] status_line = [<segment>…]`
+// + `status_line_use_colors`. Segments incl. model-with-reasoning, git-branch,
+// context-remaining/used, five-hour-limit, weekly-limit, used-tokens (codex fetches
+// the limit data itself from account/rateLimits/read; it populates after a real turn).
+// arc SEEDS a sensible default into an account's config.toml so every arc-launched
+// codex session shows usage + context — mirroring arc's Claude statusline — but only
+// if the user hasn't chosen their own via codex's /statusline (never clobbers it).
+const STATUS_LINE_SEGMENTS = ['model-with-reasoning', 'git-branch', 'context-remaining', 'five-hour-limit', 'weekly-limit'];
+
+function ensureStatusLine(account, segments = STATUS_LINE_SEGMENTS) {
+  fs.mkdirSync(account.home, { recursive: true });
+  const file = path.join(account.home, 'config.toml');
+  let toml = '';
+  try { toml = fs.readFileSync(file, 'utf8'); } catch { /* no config yet */ }
+  if (/^\s*status_line\s*=/m.test(toml)) return file; // user configured it via /statusline — respect it
+  // Only add status_line_use_colors if it isn't already set (a duplicate TOML key is rejected).
+  const colors = /^\s*status_line_use_colors\s*=/m.test(toml) ? '' : '\nstatus_line_use_colors = true';
+  const block = `status_line = [${segments.map((s) => `"${s}"`).join(', ')}]${colors}`;
+  let next;
+  if (/^\[tui\]\s*$/m.test(toml)) next = toml.replace(/^\[tui\]\s*$/m, (h) => `${h}\n${block}`); // add keys under existing [tui]
+  else next = `${toml.replace(/\s*$/, '')}\n\n[tui]\n${block}\n`.replace(/^\n+/, '');
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, next);
+  try { fs.renameSync(tmp, file); } catch { try { fs.unlinkSync(file); } catch {} fs.renameSync(tmp, file); }
+  return file;
+}
+
 function launch(opts = {}) {
   const account = A.findAccount(opts.account);
   if (!account) throw new Error(`unknown Codex account "${opts.account}" (configured: ${A.accounts().map((a) => a.id).join(', ')})`);
   ensureHooks(account);
+  ensureStatusLine(account);
   const env = A.buildEnv(account, opts.sessionId, opts.logicalSessionId);
   const spec = commandSpec(opts.args || [], { bypassHookTrust: true, yolo: !!opts.yolo });
   const child = spawn(spec.bin, spec.args, { cwd: opts.cwd || process.cwd(), env, stdio: 'inherit' });
@@ -119,4 +147,4 @@ function loginStatus(account) {
   return { ok: r.status === 0, status: r.status, message: String(r.stdout || r.stderr || '').trim() };
 }
 
-module.exports = { commandSpec, ensureHooks, launch, login, loginStatus };
+module.exports = { commandSpec, ensureHooks, ensureStatusLine, STATUS_LINE_SEGMENTS, launch, login, loginStatus };

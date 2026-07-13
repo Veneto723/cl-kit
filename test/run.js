@@ -1058,6 +1058,23 @@ try {
     yoloSpec.includes('--yolo') && yoloSpec.indexOf('--yolo') < yoloSpec.indexOf('resume')
     && !CR.commandSpec(['resume', 'x'], { bypassHookTrust: true }).args.includes('--yolo'));
 
+  // ensureStatusLine — seed codex's native [tui] status_line, non-clobbering.
+  const slHome = (name) => { const h = path.join(TMP, 'sl-' + name); fs.mkdirSync(h, { recursive: true }); return h; };
+  const slRead = (h) => fs.readFileSync(path.join(h, 'config.toml'), 'utf8');
+  const h1 = slHome('fresh'); CR.ensureStatusLine({ id: 'x', home: h1 });
+  ok('status line: fresh config gets [tui] status_line + colors',
+    /\[tui\]/.test(slRead(h1)) && /status_line = \["model-with-reasoning"/.test(slRead(h1)) && /status_line_use_colors = true/.test(slRead(h1)));
+  const h2 = slHome('mine'); fs.writeFileSync(path.join(h2, 'config.toml'), 'model="x"\n[tui]\nstatus_line = ["weekly-limit"]\n');
+  CR.ensureStatusLine({ id: 'x', home: h2 });
+  ok('status line: a user-set status_line is left untouched', slRead(h2).includes('["weekly-limit"]') && !slRead(h2).includes('model-with-reasoning'));
+  const h3 = slHome('tui'); fs.writeFileSync(path.join(h3, 'config.toml'), 'model="x"\n[tui]\nstatus_line_use_colors = true\n[tui.model_availability_nux]\n"gpt-5.5" = 4\n\n# >>> arc managed hooks >>>\n[[hooks.SessionStart]]\n');
+  CR.ensureStatusLine({ id: 'x', home: h3 });
+  const s3 = slRead(h3);
+  ok('status line: inserts under existing [tui], no DUPLICATE use_colors key, preserves rest',
+    /status_line = \[/.test(s3) && (s3.match(/status_line_use_colors/g) || []).length === 1
+    && /model_availability_nux/.test(s3) && /arc managed hooks/.test(s3));
+  ok('status line is idempotent (2nd call no-op)', (CR.ensureStatusLine({ id: 'x', home: h1 }), (slRead(h1).match(/status_line = \[/g) || []).length === 1));
+
   const codexHook = path.join(SRC, 'arc-codex-hook.js');
   const hookEnv = {
     ...process.env,
