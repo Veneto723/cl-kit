@@ -1233,6 +1233,11 @@ try {
   // roles claimed from a SUBDIR still land in the repo-root board
   const ra = F.requestRole('sa', 'research', path.join(repo2, 'sub'));
   ok('arc:role claims a role from a subdir (board = repo root)', ra.ok === true && /the "proj" board/.test(ra.message));
+  // The claim makes you ADDRESSABLE, not yet reachable-while-idle — a listener needs a TURN,
+  // and the sentinel form has none (proven live: the user claimed via arc:role, no Stop fired).
+  // The confirmation must say so, or a human believes a bare claim made a live responder.
+  ok('...and the confirmation tells the truth about WHEN the listener arms',
+    /listener: arms at the end of the next agent turn/.test(ra.message) && /arc await research/.test(ra.message));
   ok('arc:role coding (second peer)', F.requestRole('sb', 'coding', repo2).ok === true);
   const rc = F.requestRole('sc', 'coding', repo2);
   ok('a third session is REFUSED a held role', rc.ok === false && /already held by a LIVE session/.test(rc.message));

@@ -132,10 +132,19 @@ function requestRole(session, arg, cwd) {
   }
   setRole(session, board, role);
   const unread = R.unreadFor(board, role);
+  // The claim makes you ADDRESSABLE, not yet REACHABLE-while-idle: a listener can only be
+  // armed by the agent's own background command, and that takes a turn. The sentinel form is
+  // hook-handled (zero tokens, NO turn) — so say the truth here, where the human reads it,
+  // instead of letting them believe a bare claim already made this session a live responder.
+  const listen = require('./arc-await').isWaiting(session)
+    ? '  listener: ✓ already armed — you are reachable while idle'
+    : `  listener: arms at the end of the next agent turn (any instruction works)\n` +
+      `            — or arm now, in the background:  arc await ${role}`;
   return { ok: true, message:
     `✓ you are "${role}" on the "${board.name}" board  (${board.root})\n` +
     `  peers: ${peers(board, role)}\n` +
-    (unread.count ? `  📌 ${unread.count} unread note(s) — read them: arc:notes` : '  board is empty for you') };
+    (unread.count ? `  📌 ${unread.count} unread note(s) — read them: arc:notes\n` : '  board is empty for you\n') +
+    listen };
 }
 
 // ---- arc:note -----------------------------------------------------------------
