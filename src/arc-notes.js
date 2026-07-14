@@ -414,4 +414,5 @@ function injection(session, cwd) {
 }
 
 module.exports = { requestRole, requestNote, requestNotes, refreshRole, badge, injection, getRole, sessionPid, roleFile,
-  unarmedRequests, markRequestsArmed, readArmed };
+  unarmedRequests, markRequestsArmed, readArmed,
+  sessionConv, resolveCwd, VALID_ROLE };   // arc-invite builds on the same primitives

@@ -82,15 +82,37 @@ function coreHookEntries(scriptsDir) {
 }
 
 // Wire arc's core hooks + statusline into settings.json.
+// The BOARD commands an agent must be able to run UNATTENDED. Found by the first live
+// arc:invite: the invited session's whole job is to arm its listener with nobody watching —
+// it sat forever at a Bash permission prompt instead, claimed but deaf. The same prompt would
+// wedge every Stop-hook re-arm in an unattended session. These are coordination commands
+// (claim, listen, read, post) — nothing destructive is on this list, and `arc invite` itself
+// is deliberately NOT (an agent spawning sessions should stay a human decision per spawn).
+const BOARD_PERMISSIONS = [
+  'Bash(arc join:*)', 'Bash(arc join)',
+  'Bash(arc await:*)', 'Bash(arc await)',
+  'Bash(arc role:*)', 'Bash(arc role)',
+  'Bash(arc notes:*)', 'Bash(arc notes)',
+  'Bash(arc note:*)',
+];
+
+function mergePermissions(settings, allow) {
+  if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
+  const cur = Array.isArray(settings.permissions.allow) ? settings.permissions.allow : (settings.permissions.allow = []);
+  for (const p of allow) if (!cur.includes(p)) cur.push(p);
+  return settings;
+}
+
 function wireArcSettings(scriptsDir = path.join(CLAUDE_DIR, 'scripts'), settingsPath = settingsPathDefault) {
   const { settings, raw } = readSettings(settingsPath);
   mergeHooks(settings, coreHookEntries(scriptsDir));
+  mergePermissions(settings, BOARD_PERMISSIONS);
   setStatusline(settings, `node "${scriptsDir.replace(/\\/g, '/')}/usage-monitor.js" --compact`);
   writeSettings(settingsPath, settings, raw);
   return { settingsPath, backedUp: raw != null };
 }
 
-module.exports = { readSettings, writeSettings, mergeHooks, setStatusline, coreHookEntries, wireArcSettings };
+module.exports = { readSettings, writeSettings, mergeHooks, mergePermissions, BOARD_PERMISSIONS, setStatusline, coreHookEntries, wireArcSettings };
 
 if (require.main === module) {
   try {

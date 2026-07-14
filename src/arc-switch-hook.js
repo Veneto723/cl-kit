@@ -38,7 +38,7 @@ const core = require('./arc-switch-core');
 // backtrack; being explicit costs nothing and documents the intent).
 // `arc:` is the current prefix; `arc:` is kept as a deprecated alias through the
 // migration so running sessions and muscle memory don't break.
-const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|delegate|mode|stance|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|join|anchors|help|arc)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|delegate|mode|stance|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|join|invite|anchors|help|arc)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -123,6 +123,14 @@ function run(raw) {
     // Cheat sheet — rendered here from arc-help (no trigger, no relaunch, ZERO
     // tokens). Self-contained (own header), so no `[arc]` prefix.
     return block(require('./arc-help')());
+  }
+  // arc:invite <role> — spawn a peer session: a new tab that forks THIS conversation's
+  // context, claims <role>, and arms itself (its opening prompt is the arc:role sentinel,
+  // so the pass-through does the arming with machinery that already exists). Zero tokens
+  // HERE — the one small turn happens in the NEW tab.
+  if (action === 'invite') {
+    const r = require('./arc-invite').requestInvite(session, arg || '', typeof hook.cwd === 'string' ? hook.cwd : null);
+    return clBlock(r.message);
   }
   if (action === 'role' || action === 'join' || action === 'note' || action === 'notes') {
     // The board: a per-board append-only sticky-note ledger shared by the sessions

@@ -1333,6 +1333,13 @@ async function main() {
     require('./arc-await').awaitOnce(userArgs[1], process.cwd()).then((code) => process.exit(code));
     return;
   }
+  // `arc invite <role>` — the agent form of arc:invite: spawn a peer session (new tab, forked
+  // context, claims <role>, arms itself). Heavier initiative: on the user's order, or ACTIVE.
+  if (userArgs[0] === 'invite') {
+    const r = require('./arc-invite').requestInvite(process.env.ARC_SESSION || '', userArgs.slice(1).join(' '), process.cwd());
+    process.stdout.write(String(r.message).replace(/arc:invite/g, 'arc invite').replace(/arc:role/g, 'arc role') + '\n');
+    process.exit(r.ok ? 0 : 1);
+  }
   if (userArgs[0] === 'role' || userArgs[0] === 'note' || userArgs[0] === 'notes') {
     const board = require('./arc-notes');
     const session = process.env.ARC_SESSION || '';
@@ -1440,11 +1447,17 @@ async function main() {
   // on a /restart re-exec (ARC_RESPAWNED): that's the same logical session handing
   // off to itself, and the old process is already exiting.
   const forceDup = forceDupFlag || process.env.ARC_FORCE_DUP === '1';
+  // A FORK is not a duplicate: `--resume <id> --fork-session` READS the source transcript
+  // once, then writes its own — no collision to guard. And the fork must NOT claim the
+  // source conversation's lock (claimConv would OVERWRITE the real owner's lock file, after
+  // which the owner could not even restart itself). This is what lets `arc:invite` fork a
+  // LIVE caller: the caller keeps its lock; the fork never touches it.
+  const isFork = userArgs.includes('--fork-session');
   // Guard the ids we know pre-launch: a managed convId (incl. /restart re-exec),
   // OR an explicit `arc --resume <uuid>`. A bare picker resume has no id yet — it
   // gets claimed once the statusline bridges its real id (see below).
   const guardConv = convId || explicitId;
-  if (!forceDup && guardConv) {
+  if (!forceDup && !isFork && guardConv) {
     const owner = liveOwnerOf(guardConv);
     if (owner) {
       process.stderr.write(

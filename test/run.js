@@ -1166,6 +1166,141 @@ try {
   fs.rmSync(noRepo, { recursive: true, force: true });
 } catch (e) { ok('arc join', false, e.message + '\n' + (e.stack || '')); }
 
+// ---- arc:invite (spawn a peer session: new tab, forked context, self-arming) --------
+// invite adds a TAB, not a mechanism: the new tab runs `arc --account <caller's> --resume
+// <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
+// does the claiming + arming in the new session's first turn. These tests inject a spawn
+// recorder — nothing real opens.
+section('arc:invite (new tab, forked context, self-arming peer)');
+try {
+  const I = require(path.join(SRC, 'arc-invite.js'));
+  const RM3 = require(path.join(SRC, 'arc-board.js'));
+  const vrepo = fs.mkdtempSync(path.join(os.tmpdir(), 'invite-'));
+  fs.mkdirSync(path.join(vrepo, '.git'), { recursive: true });
+  const VS = 'invite-sess-' + process.pid;
+  fs.mkdirSync(path.join(CLAUDE, 'cache'), { recursive: true });
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${VS}.json`),
+    JSON.stringify({ pid: process.pid, cwd: vrepo, convId: 'conv-abc-123' }));
+
+  let spawned = null;
+  const rec = (bin, args) => { spawned = { bin, args }; return { status: 0 }; };
+  const psOf = () => (spawned ? spawned.args[spawned.args.indexOf('-Command') + 1] : '');
+
+  // The happy path, wt present. The launcher is SYNCHRONOUS POWERSHELL — both facts are
+  // load-bearing and were bisected live: wt.exe is a WindowsApps execution alias that drops
+  // its args when CreateProcess'd from node, and its COM handoff to the running Terminal dies
+  // if the spawner exits first (detached => status 0, no tab, silence).
+  const okr = I.requestInvite(VS, 'frontend', vrepo, { spawn: rec, hasWt: true });
+  ok('invite launches via SYNC PowerShell: a wt tab in the CURRENT window at the repo root',
+    okr.ok === true && spawned && spawned.bin === 'powershell.exe'
+    && /wt -w 0 new-tab/.test(psOf()) && psOf().includes(`-d '${vrepo}'`));
+  ok('...running a FORK of the caller\'s conversation',
+    /--resume conv-abc-123 --fork-session/.test(psOf()));
+  ok('...whose opening prompt is the arc:role sentinel, quote-nested to survive PS->wt->cmd',
+    psOf().includes(`'"arc:role frontend"'`));
+  ok('...and the confirmation tells the caller how to reach the newcomer',
+    /inviting a "frontend" peer/.test(okr.message));
+
+  // Account pinning: conversations live in per-account profiles — a tab that auto-selected a
+  // different account would not find the transcript and the fork would die.
+  const oldAcct = process.env.ARC_RUNTIME_ACCOUNT;
+  process.env.ARC_RUNTIME_ACCOUNT = 'veneto';
+  I.requestInvite(VS, 'backend', vrepo, { spawn: rec, hasWt: true });
+  ok('invite PINS the caller\'s account (the transcript only exists in that profile)',
+    /arc --account veneto --resume/.test(psOf()));
+  if (oldAcct === undefined) delete process.env.ARC_RUNTIME_ACCOUNT; else process.env.ARC_RUNTIME_ACCOUNT = oldAcct;
+
+  // No wt: fall back to a fresh console window via `start`.
+  I.requestInvite(VS, 'scout', vrepo, { spawn: rec, hasWt: false });
+  ok('without Windows Terminal, invite falls back to a new console window',
+    /cmd \/c start "arc: scout"/.test(psOf()));
+
+  // A failing launcher must be REPORTED, not swallowed — a silent no-tab cost an hour once.
+  const bad = I.requestInvite(VS, 'flaky', vrepo, { spawn: () => ({ status: 1 }), hasWt: true });
+  ok('a launcher failure is reported to the caller (never a silent no-tab)',
+    bad.ok === false && /launcher exit 1/.test(bad.message));
+
+  // ---- the trust dialog: the invited tab has NO HUMAN to answer it -------------------
+  // Claude Code asks "Do you trust the files in this folder?" per PROJECT PATH, per account
+  // profile. Found live: invite launched at the CANONICAL board root ("e:\\arc") while the
+  // caller ran as "E:\\arc" — a DIFFERENT project key, so it inherited none of the caller's
+  // trust and the tab sat at the dialog forever: claimed, deaf, silent about why.
+  const canonRoot2 = RM3.resolveBoard(vrepo).root;   // canonical = LOWERCASED (board identity)
+  I.requestInvite(VS, 'pathcheck', vrepo, { spawn: rec, hasWt: true });
+  ok('invite launches at the CALLER\'s real path, NOT the canonical (lowercased) board root',
+    psOf().includes(`-d '${vrepo}'`) && !psOf().includes(`-d '${canonRoot2}'`)
+    && vrepo !== canonRoot2);   // the two really do differ, or this proves nothing
+
+  // The profile config it must seed (a throwaway stand-in for ~/.claude/arc-profiles/<id>).
+  const prof = fs.mkdtempSync(path.join(os.tmpdir(), 'prof-'));
+  const pcfg = path.join(prof, '.claude.json');
+  fs.writeFileSync(pcfg, JSON.stringify({ projects: { 'E:/other': { hasTrustDialogAccepted: true } } }, null, 2));
+
+  const t1 = I.ensureTrusted('E:\\arc', { configDir: prof });
+  const after = JSON.parse(fs.readFileSync(pcfg, 'utf8'));
+  ok('ensureTrusted pre-accepts the folder, keyed with FORWARD SLASHES like Claude Code does',
+    t1.ok === true && t1.seeded === true && after.projects['E:/arc'].hasTrustDialogAccepted === true);
+  ok('...and it backs up Claude Code\'s live config before touching it',
+    fs.existsSync(pcfg + '.bak-arc'));
+  ok('...and it leaves every OTHER project untouched',
+    after.projects['E:/other'].hasTrustDialogAccepted === true && Object.keys(after.projects).length === 2);
+
+  // Already trusted => a no-op. The common case must not rewrite the user's config every invite.
+  fs.unlinkSync(pcfg + '.bak-arc');
+  const t2 = I.ensureTrusted('E:\\arc', { configDir: prof });
+  ok('an already-trusted folder is a NO-OP (no needless rewrite of a live config)',
+    t2.ok === true && t2.already === true && !fs.existsSync(pcfg + '.bak-arc'));
+
+  // No profile => say so plainly; never guess a path to write.
+  ok('with no account profile, ensureTrusted refuses and explains (never writes blind)',
+    I.ensureTrusted('E:\\arc', { configDir: '' }).ok === false);
+
+  // THE SAFETY PROPERTY: invite only ever trusts the folder the CALLER is already working in.
+  // It is spawn-time-derived from the caller's own session, never taken from the argument, so
+  // there is no path by which `arc:invite <role>` can trust somewhere else.
+  let trustedPath = null;
+  I.requestInvite(VS, 'auditor', vrepo, {
+    spawn: rec, hasWt: true,
+    ensureTrusted: (dir) => { trustedPath = dir; return { ok: true, already: true }; },
+  });
+  ok('invite ONLY ever trusts the caller\'s own repo root — never an arbitrary path',
+    trustedPath === RM3.repoRoot(vrepo));
+
+  fs.rmSync(prof, { recursive: true, force: true });
+
+  // Refusals — every one is a zero-token block and must NOT spawn anything.
+  spawned = null;
+  ok('invite with no role shows usage', I.requestInvite(VS, '', vrepo, { spawn: rec, hasWt: true }).ok === false);
+  ok('invite refuses an invalid role name',
+    /invalid role/.test(I.requestInvite(VS, 'Bad Role!', vrepo, { spawn: rec, hasWt: true }).message));
+  const noRepo3 = fs.mkdtempSync(path.join(os.tmpdir(), 'invite-nr-'));
+  ok('invite refuses outside a git repo (same guard as a claim)',
+    /not a git repository/.test(I.requestInvite(VS, 'frontend', noRepo3, { spawn: rec, hasWt: true }).message));
+  // A held role: the would-be invite target already exists — point at the note instead.
+  const board3 = RM3.resolveBoard(vrepo); RM3.ensureBoard(board3);
+  RM3.claimRole(board3, 'research', process.pid, 'other-sess', null);
+  const heldr = I.requestInvite(VS, 'research', vrepo, { spawn: rec, hasWt: true });
+  ok('invite refuses a role a LIVE session already holds — that session IS the peer',
+    heldr.ok === false && /already held/.test(heldr.message) && /arc note research/.test(heldr.message));
+  // No conversation id: nothing to fork.
+  const VS2 = 'invite-noconv-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${VS2}.json`), JSON.stringify({ pid: process.pid, cwd: vrepo }));
+  ok('invite refuses when the conversation has no id yet (nothing to fork)',
+    /nothing to fork/.test(I.requestInvite(VS2, 'frontend', vrepo, { spawn: rec, hasWt: true }).message));
+  ok('no refusal ever spawned anything', spawned === null);
+
+  // The runner-side enabler: a FORK must skip the duplicate-conversation guard AND must not
+  // claim (or later release) the source conversation's lock — claimConv would overwrite the
+  // real owner's lock file, after which the owner could not even restart itself.
+  const runnerSrc = fs.readFileSync(path.join(SRC, 'arc-runner.js'), 'utf8');
+  ok('the duplicate-launch guard skips forks (invite forks a LIVE caller by design)',
+    /isFork = userArgs\.includes\('--fork-session'\)/.test(runnerSrc)
+    && /!forceDup && !isFork && guardConv/.test(runnerSrc));
+
+  fs.rmSync(vrepo, { recursive: true, force: true });
+  fs.rmSync(noRepo3, { recursive: true, force: true });
+} catch (e) { ok('arc:invite', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- arc-await (the ONLY thing that can reach an idle session) -------------------
 // arc runs claude on a real TTY and holds no handle into it; Claude Code has no timer hook.
 // So exactly one thing pulls back an idle session: a background command IT started, whose
