@@ -1171,6 +1171,35 @@ try {
 // <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
 // does the claiming + arming in the new session's first turn. These tests inject a spawn
 // recorder — nothing real opens.
+// ---- board permissions (an unattended peer must be able to run the board commands) -------
+// The first INVITED peer reported `No such tool available: Bash` — it had only PowerShell. A
+// Bash-only allowlist therefore matched nothing, `arc join` raised a permission prompt, and the
+// tab sat there claimed-but-deaf: the exact failure the allowlist exists to prevent. (Found by
+// the scout peer, in its own runtime.)
+section('board permissions (every shell tool, or an invited peer hangs)');
+try {
+  const W = require(path.join(SRC, 'arc-wire-settings.js'));
+  const perms = W.BOARD_PERMISSIONS;
+  for (const tool of ['Bash', 'PowerShell']) {
+    ok(`the allowlist covers ${tool} (a session may be given either shell tool)`,
+      perms.includes(`${tool}(arc join:*)`) && perms.includes(`${tool}(arc notes:*)`)
+      && perms.includes(`${tool}(arc note:*)`) && perms.includes(`${tool}(arc role:*)`));
+  }
+  // `arc invite` is deliberately NOT allowlisted: an agent spawning whole sessions stays a
+  // per-spawn human decision.
+  ok('`arc invite` is NOT auto-allowed (spawning sessions stays a human decision)',
+    !perms.some((p) => /invite/.test(p)));
+
+  const st = {};
+  W.mergePermissions(st, perms);
+  W.mergePermissions(st, perms);        // idempotent: re-running the installer must not duplicate
+  ok('mergePermissions is idempotent (a re-install never duplicates a rule)',
+    st.permissions.allow.length === perms.length);
+  ok('...and it PRESERVES rules the user added themselves',
+    (() => { const u = { permissions: { allow: ['Bash(git status)'] } }; W.mergePermissions(u, perms);
+      return u.permissions.allow.includes('Bash(git status)') && u.permissions.allow.length === perms.length + 1; })());
+} catch (e) { ok('board permissions', false, e.message); }
+
 section('arc:invite (new tab, forked context, self-arming peer)');
 try {
   const I = require(path.join(SRC, 'arc-invite.js'));
@@ -1215,10 +1244,28 @@ try {
   ok('without Windows Terminal, invite falls back to a new console window',
     /cmd \/c start "arc: scout"/.test(psOf()));
 
-  // A failing launcher must be REPORTED, not swallowed — a silent no-tab cost an hour once.
-  const bad = I.requestInvite(VS, 'flaky', vrepo, { spawn: () => ({ status: 1 }), hasWt: true });
-  ok('a launcher failure is reported to the caller (never a silent no-tab)',
-    bad.ok === false && /launcher exit 1/.test(bad.message));
+  // A failing launcher must be REPORTED, not swallowed. The obvious guard was WRONG: spawnSync
+  // returns status:NULL on both real failure paths — timeout (ETIMEDOUT) and missing binary
+  // (ENOENT) — so `status !== 0 && status !== null` fired on NEITHER and invite printed its ✓
+  // with no tab. The exact silent no-tab the guard existed to catch. (Found by the scout peer.)
+  const badExit = I.requestInvite(VS, 'flaky', vrepo, { spawn: () => ({ status: 1 }), hasWt: true });
+  ok('a launcher that exits non-zero is reported (never a silent no-tab)',
+    badExit.ok === false && /could not open the new tab/.test(badExit.message));
+  const badTimeout = I.requestInvite(VS, 'flaky', vrepo, {
+    spawn: () => ({ status: null, error: { code: 'ETIMEDOUT' } }), hasWt: true });
+  ok('...and a TIMEOUT (status null + ETIMEDOUT) is reported, not read as success',
+    badTimeout.ok === false && /ETIMEDOUT/.test(badTimeout.message));
+  const badEnoent = I.requestInvite(VS, 'flaky', vrepo, {
+    spawn: () => ({ status: null, error: { code: 'ENOENT' } }), hasWt: true });
+  ok('...and a MISSING BINARY (status null + ENOENT) is reported, not read as success',
+    badEnoent.ok === false && /ENOENT/.test(badEnoent.message));
+
+  // The peer's tab must be identifiable. Claude Code sets the terminal title from the project
+  // folder, so without --suppressApplicationTitle both tabs read "arc" and you cannot tell the
+  // caller from the peer it spawned.
+  I.requestInvite(VS, 'titled', vrepo, { spawn: rec, hasWt: true });
+  ok('the peer tab is titled by ROLE and keeps it (--suppressApplicationTitle)',
+    /--title 'arc: titled' --suppressApplicationTitle/.test(psOf()));
 
   // ---- the trust dialog: the invited tab has NO HUMAN to answer it -------------------
   // Claude Code asks "Do you trust the files in this folder?" per PROJECT PATH, per account
@@ -1273,9 +1320,25 @@ try {
   ok('invite with no role shows usage', I.requestInvite(VS, '', vrepo, { spawn: rec, hasWt: true }).ok === false);
   ok('invite refuses an invalid role name',
     /invalid role/.test(I.requestInvite(VS, 'Bad Role!', vrepo, { spawn: rec, hasWt: true }).message));
+  // A SESSION whose own home is not a repo: there is no board to invite anyone onto.
   const noRepo3 = fs.mkdtempSync(path.join(os.tmpdir(), 'invite-nr-'));
-  ok('invite refuses outside a git repo (same guard as a claim)',
-    /not a git repository/.test(I.requestInvite(VS, 'frontend', noRepo3, { spawn: rec, hasWt: true }).message));
+  const VS3 = 'invite-norepo-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${VS3}.json`),
+    JSON.stringify({ pid: process.pid, cwd: noRepo3, convId: 'c9' }));
+  ok('invite refuses when the SESSION is not in a git repo (same guard as a claim)',
+    /not a git repository/.test(I.requestInvite(VS3, 'frontend', noRepo3, { spawn: rec, hasWt: true }).message));
+  // THE ENFORCEMENT: the folder we launch in and pre-trust comes from the RUNNER'S recorded cwd,
+  // never from the caller's argument — otherwise an agent could `cd` into any repo on the machine
+  // and have invite pre-trust it. The security rule was documentation; now it is enforced.
+  // (Found by the scout peer.)
+  let trustedFrom = null;
+  I.requestInvite(VS, 'sneaky', noRepo3, {          // a HOSTILE cwd argument: a different folder
+    spawn: rec, hasWt: true,
+    ensureTrusted: (dir) => { trustedFrom = dir; return { ok: true, already: true }; },
+  });
+  ok('a caller-supplied cwd CANNOT redirect the launch or the trust (agent-forgeable input)',
+    trustedFrom === RM3.repoRoot(vrepo) && psOf().includes(`-d '${vrepo}'`));
+  spawned = null;    // that one legitimately spawned; the refusal assertions below need a clean slate
   // A held role: the would-be invite target already exists — point at the note instead.
   const board3 = RM3.resolveBoard(vrepo); RM3.ensureBoard(board3);
   RM3.claimRole(board3, 'research', process.pid, 'other-sess', null);
@@ -1341,6 +1404,22 @@ try {
   ok('clearWaiting is idempotent (safe on an already-gone marker)',
     (() => { try { A.clearWaiting(WS); A.clearWaiting(WS); return true; } catch { return false; } })());
 
+  // RE-ARMING must not leak. markWaiting overwrites the marker, so a previous listener for the
+  // same session would keep polling while being unfindable BY session — an invisible orphan
+  // that nothing could ever clean up. Re-arming is routine (a manual `arc join`, a restart's
+  // re-arm), so each one would leak a process for the rest of the machine's uptime.
+  // (Found by the arc:invite loop: a duplicate `join code` survived a restart exactly this way.)
+  const { spawn: spawnBg } = require('child_process');
+  const ghost = spawnBg(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  A.markWaiting(WS, 'research', ghost.pid);
+  const prevEnv = process.env.ARC_SESSION;            // awaitOnce reads the session from the env
+  process.env.ARC_SESSION = WS;
+  A.awaitOnce('research', repo, { pollMs: 5, maxPolls: 1, write: () => {} });
+  if (prevEnv === undefined) delete process.env.ARC_SESSION; else process.env.ARC_SESSION = prevEnv;
+  ok('re-arming SUPERSEDES the session\'s previous listener (never leaks a polling orphan)',
+    (() => { try { process.kill(ghost.pid, 0); return false; } catch { return true; } })());
+  try { ghost.kill(); } catch {}
+
   // awaitOnce checks the board SYNCHRONOUSLY on entry (inside the Promise executor), so a note
   // that is already waiting is reported before the first poll interval — no wait, no flake.
   RM.appendNote(board, { from: 'android', to: 'research', body: 'investigate the tap drop' });
@@ -1352,6 +1431,28 @@ try {
     said.some((l) => /arc notes/.test(l)));   // ...turn-start injection does NOT fire for it
   ok('await only OBSERVES — it never advances the read cursor',
     RM.readCursor(board, 'research') === 0 && RM.unreadFor(board, 'research').count === 1);
+
+  // A listener exists to WAKE ITS SESSION. When that session dies it has nothing left to wake,
+  // and nothing stops it: it is a detached background process whose poll loop would happily run
+  // for the rest of the machine's uptime. Found by the arc:invite loop — five listeners alive,
+  // most of them orphans of long-dead sessions, each still polling the board every 2.5s.
+  const ORPH = 'orphan-sess-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${ORPH}.json`),
+    JSON.stringify({ pid: 999999, cwd: repo }));          // an owner pid that cannot be alive
+  const before = fs.existsSync(A.awaitFile(ORPH));
+  const orphRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'orph-'));
+  fs.mkdirSync(path.join(orphRepo, '.git'), { recursive: true });
+  const oc = spawnSync(process.execPath, ['-e',
+    `process.env.ARC_SESSION = ${JSON.stringify(ORPH)};`
+    + `require(${JSON.stringify(path.join(SRC, 'arc-await.js'))}).awaitOnce('research', ${JSON.stringify(orphRepo)}, { pollMs: 20 })`
+    + `.then((c) => process.exit(c));`,
+  ], { encoding: 'utf8', timeout: 8000, env: { ...process.env, ARC_SESSION: ORPH } });
+  ok('a listener whose SESSION DIED exits instead of polling forever (no leaked process)',
+    oc.status === 0 && !oc.error, oc.error ? 'timed out — it kept polling' : '');
+  ok('...and it clears its own armed marker on the way out',
+    !before && !fs.existsSync(A.awaitFile(ORPH)));
+  fs.rmSync(orphRepo, { recursive: true, force: true });
+  try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${ORPH}.json`)); } catch {}
 
   fs.rmSync(repo, { recursive: true, force: true });
 } catch (e) { ok('arc-await works', false, e.message + '\n' + (e.stack || '')); }

@@ -75,14 +75,28 @@ function ensureTrusted(launchDir, opts) {
   const entry = projects[key] || (projects[key] = { allowedTools: [], hasTrustDialogAccepted: false, projectOnboardingSeenCount: 0 });
   if (entry.hasTrustDialogAccepted) return { ok: true, already: true };
 
-  entry.hasTrustDialogAccepted = true;
-  try {
-    fs.copyFileSync(p, `${p}.bak-arc`);          // Claude Code's live config — always a way back
-    const tmp = `${p}.arc-tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(j, null, 2));
-    fs.renameSync(tmp, p);                        // atomic swap
-    return { ok: true, seeded: true };
-  } catch (e) { return { ok: false, why: e.message }; }
+  // The dangerous race is not ours clobbering Claude Code — it is CLAUDE CODE flushing its own
+  // in-memory copy over ours a moment later, silently ERASING the flag and regressing the fix
+  // with no error anywhere. So: write, then READ BACK, and retry a couple of times. If the flag
+  // still will not stick, say so plainly rather than promise a tab that will hang. (Raised by
+  // the scout peer.)
+  try { fs.copyFileSync(p, `${p}.bak-arc`); } catch { /* best effort — never block on the backup */ }
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const cur = JSON.parse(fs.readFileSync(p, 'utf8'));      // re-read: keep whatever CC just wrote
+      const projs = cur.projects || (cur.projects = {});
+      const e2 = projs[key] || (projs[key] = { allowedTools: [], hasTrustDialogAccepted: false, projectOnboardingSeenCount: 0 });
+      e2.hasTrustDialogAccepted = true;
+      const tmp = `${p}.arc-tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(cur, null, 2));
+      fs.renameSync(tmp, p);                                    // atomic swap
+      const back = JSON.parse(fs.readFileSync(p, 'utf8'));      // and PROVE it survived
+      if (back.projects && back.projects[key] && back.projects[key].hasTrustDialogAccepted) {
+        return { ok: true, seeded: true };
+      }
+    } catch (e) { if (attempt === 3) return { ok: false, why: e.message }; }
+  }
+  return { ok: false, why: 'the trust flag did not stick (Claude Code kept overwriting it)' };
 }
 
 // HOW THE TAB IS OPENED — two hard-won facts (bisected live; each costs a silent no-tab):
@@ -98,7 +112,11 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 function buildLaunch(wt, account, conv, role, root) {
   const acct = account ? ` --account ${account}` : '';
   if (wt) {
-    return `wt -w 0 new-tab --title ${psQuote('arc: ' + role)} -d ${psQuote(root)} `
+    // --suppressApplicationTitle is what makes the title STICK. Without it the tab shows "arc"
+    // like every other tab: Claude Code sets the terminal title from the project folder, and an
+    // application title escape overrides wt's --title. With two identical "arc" tabs you cannot
+    // tell the caller from the peer it spawned — so the peer's tab is pinned to its ROLE.
+    return `wt -w 0 new-tab --title ${psQuote('arc: ' + role)} --suppressApplicationTitle -d ${psQuote(root)} `
       + `cmd /c arc${acct} --resume ${conv} --fork-session '"arc:role ${role}"'`;
   }
   // No Windows Terminal: a fresh console window via start (best-effort fallback).
@@ -120,7 +138,10 @@ function requestInvite(session, arg, cwd, opts) {
   }
   if (!N.VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
 
-  const board = R.resolveBoard(N.resolveCwd(session, cwd));
+  // The board, the launch dir and the trusted folder ALL anchor to the session's own recorded
+  // cwd (see launchDir below) — never to the caller's argument. Otherwise an agent could `cd`
+  // anywhere and invite a peer onto a different repo's board than the tab it opens.
+  const board = R.resolveBoard(N.resolveCwd(session, null));
   // Same guard as a claim, same reason: a board is the repo the peers SHARE.
   if (!fs.existsSync(path.join(board.root, '.git'))) {
     return { ok: false, message:
@@ -147,18 +168,36 @@ function requestInvite(session, arg, cwd, opts) {
   // keys a PROJECT (trust, settings, history) by the literal path, so launching the tab at the
   // canonical spelling invents a second project that inherits nothing from the caller — which is
   // exactly how the first live invite ended up stuck at the trust dialog.
-  const launchDir = R.repoRoot(N.resolveCwd(session, cwd));
+  //
+  // AND IT IS DERIVED FROM THE RUNNER'S RECORDED CWD, NEVER FROM THE CALLER'S ARGUMENT. This is
+  // what makes "only the caller's own folder" a GUARANTEE instead of a comment: the passed cwd
+  // is process.cwd() on the CLI path, so an agent could `cd` into any repo on the machine and
+  // have invite pre-trust it. arc-state's cwd is written by the runner at launch and no agent
+  // can forge it, so the folder we trust is always the one the session actually lives in.
+  // (Caught by the scout peer: the security rule was documentation, not enforcement.)
+  const launchDir = R.repoRoot(N.resolveCwd(session, null));
   const trust = (o.ensureTrusted || ensureTrusted)(launchDir, o);
 
   // -w 0 = a tab in the CURRENT window (verified; -w -1 would open a new window).
+  //
+  // FAILURE DETECTION IS THE WHOLE POINT HERE, and the obvious guard is wrong: spawnSync
+  // returns status:NULL on both failure paths that matter — a timeout (error.code ETIMEDOUT)
+  // and a missing binary (ENOENT) — so `status !== 0 && status !== null` fires on NEITHER, and
+  // invite would print its ✓ with no tab anywhere. That is the exact silent no-tab this guard
+  // exists to catch. (Caught by the scout peer reviewing the code that invited it; verified.)
+  // Only status === 0 is success. And the timeout must stay SHORT: this runs inside the
+  // UserPromptSubmit hook, so a wedged launcher stalls the user's own prompt. wt's COM handoff
+  // takes ~0.5s.
   const psCmd = buildLaunch(wt, account, conv, role, launchDir);
+  let r;
   try {
-    const r = doSpawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 20000 });
-    if (r && r.status !== 0 && r.status !== null) {
-      return { ok: false, message: `could not open the new tab (launcher exit ${r.status}).` };
-    }
+    r = doSpawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 5000 });
   } catch (e) {
     return { ok: false, message: `could not open the new tab: ${e.message}` };
+  }
+  if (!r || r.error || r.status !== 0) {
+    const why = r && r.error ? r.error.code || r.error.message : `exit ${r ? r.status : '?'}`;
+    return { ok: false, message: `could not open the new tab (${why}) — no peer was started.` };
   }
 
   const me = N.getRole(session, board);

@@ -108,7 +108,25 @@ function awaitOnce(roleArg, cwd, opts) {
     process.stderr.write(`[${tag}] no role — \`arc join research\` claims one and listens.\n`);
     return Promise.resolve(1);
   }
-  if (session) markWaiting(session, role, process.pid);
+  // SUPERSEDE the listener this session already has, if any. markWaiting is about to overwrite
+  // its marker, which would orphan it INVISIBLY — still polling, but no longer findable by
+  // session, so nothing would ever clean it up. Re-arming happens routinely (a manual `arc
+  // join`, a restart's re-arm), so without this every re-arm leaks a process for the rest of
+  // the machine's uptime. One session, one listener.
+  if (session) {
+    const prev = waitingFor(session);
+    if (prev && prev.pid !== process.pid) { try { process.kill(prev.pid); } catch { /* already gone */ } }
+    markWaiting(session, role, process.pid);
+  }
+
+  // A listener exists to WAKE ITS SESSION — so when that session dies, it has nothing left to
+  // wake and must stop. It does not stop on its own: it is a detached background process, and
+  // the poll loop is happy to run forever. Every restart, close, or crash was therefore leaking
+  // one node process that polls the board every 2.5s for the rest of the machine's uptime.
+  // (Found by the arc:invite loop: five listeners alive, most of them orphans.)
+  // The session's arc-runner pid is the liveness proxy the whole board already uses for claims.
+  const ownerPid = session ? F.sessionPid(session) : 0;
+  const orphaned = () => ownerPid && !R.isAlive(ownerPid);
 
   const check = () => {
     let u;
@@ -127,8 +145,9 @@ function awaitOnce(roleArg, cwd, opts) {
     if (check()) return done(0);
     const t = setInterval(() => {
       // opts.maxPolls: a test hatch only. Nothing in production stops this early — see the
-      // header on why a timeout would make a session wake forever.
+      // header on why a TIMEOUT would make a session wake forever.
       if (check()) { clearInterval(t); return done(0); }
+      if (orphaned()) { clearInterval(t); return done(0); }   // my session is gone: nothing to wake
       if (o.maxPolls && (o._n = (o._n || 0) + 1) >= o.maxPolls) { clearInterval(t); return done(0); }
     }, pollMs);
   });

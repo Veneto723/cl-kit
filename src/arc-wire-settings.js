@@ -88,13 +88,16 @@ function coreHookEntries(scriptsDir) {
 // wedge every Stop-hook re-arm in an unattended session. These are coordination commands
 // (claim, listen, read, post) — nothing destructive is on this list, and `arc invite` itself
 // is deliberately NOT (an agent spawning sessions should stay a human decision per spawn).
-const BOARD_PERMISSIONS = [
-  'Bash(arc join:*)', 'Bash(arc join)',
-  'Bash(arc await:*)', 'Bash(arc await)',
-  'Bash(arc role:*)', 'Bash(arc role)',
-  'Bash(arc notes:*)', 'Bash(arc notes)',
-  'Bash(arc note:*)',
-];
+// EVERY shell tool, not just Bash. A session does not always get the Bash tool: the first
+// INVITED peer reported `No such tool available: Bash` and had only PowerShell — so a Bash-only
+// allowlist matched nothing, `arc join` raised a permission prompt, and the tab sat there
+// claimed-but-deaf. That is precisely the failure this allowlist exists to prevent, so it must
+// cover whichever shell the harness hands the session. (Found by the scout peer, in its own
+// runtime.)
+const BOARD_COMMANDS = ['arc join', 'arc await', 'arc role', 'arc notes', 'arc note'];
+const SHELL_TOOLS = ['Bash', 'PowerShell'];
+const BOARD_PERMISSIONS = SHELL_TOOLS.flatMap((tool) =>
+  BOARD_COMMANDS.flatMap((cmd) => [`${tool}(${cmd}:*)`, `${tool}(${cmd})`]));
 
 function mergePermissions(settings, allow) {
   if (!settings.permissions || typeof settings.permissions !== 'object') settings.permissions = {};
