@@ -151,15 +151,34 @@ function run(raw) {
     // reachable. Query / refusal / already-armed still block at zero tokens — the turn is
     // spent only when it buys the one thing a block cannot.
     if ((action === 'role' || action === 'join') && r.ok && !r.plain && r.armNeeded) {
+      // A FORKED peer needs its identity corrected before anything else. It inherited the
+      // caller's whole transcript, so it believes it IS the caller, mid-conversation with the
+      // human — and it will keep addressing that human, offering them work, and asking them to
+      // decide things a PEER asked it to decide. (Observed twice, live.) The transcript cannot
+      // tell it otherwise; only we can, and only here.
+      const forked = board.isForkedSession(session);
+      const identity = forked
+        ? `[arc] YOU ARE A FORKED PEER — read this before anything else.\n`
+          + `The conversation above is INHERITED CONTEXT, not your history. The session that lived\n`
+          + `it still exists; it is now a PEER of yours on the board, and it is NOT you. You were\n`
+          + `forked from it so that you would already know this project — that is the whole point —\n`
+          + `but you did not do the work you can see above, and its conversation with the human is\n`
+          + `not yours to continue.\n\n`
+          + `You are "${r.role}". Your work arrives on the BOARD, from peers. Your answers go back\n`
+          + `to the BOARD, to whoever asked. The human in this tab has not necessarily asked you\n`
+          + `anything: do not offer them work, and never ask them to decide something a peer asked\n`
+          + `YOU to decide — reply to that peer instead (arc note <them> --reply-to <seq> "...").\n\n`
+        : '';
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
-          additionalContext: `[arc] The user's role claim was already handled by a hook — the claim is DONE:\n`
+          additionalContext: identity
+            + `[arc] The role claim was already handled by a hook — the claim is DONE:\n`
             + `${r.message}\n\n`
             + `Your ONLY job this turn: make this session reachable while idle.\n`
             + `  1. run in the BACKGROUND (run_in_background: true)  →  arc join ${r.role}\n`
-            + `  2. Tell the user you are standing by as "${r.role}" — and if they gave no other\n`
-            + `     instruction, STOP there. Do not start work nobody asked for.\n`
+            + `  2. Say, in ONE line, that you are standing by as "${r.role}" — then STOP.\n`
+            + `     Do not start work nobody asked for, and do not offer any.\n`
             + `(That background command blocks until a note lands, then EXITS — the exit is what\n`
             + `wakes this session. Without it, notes sit unread until a human types something.)`,
         },

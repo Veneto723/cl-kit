@@ -1544,7 +1544,7 @@ async function main() {
         : [...a, '--session-id', convId, ...effFlag];
     }
 
-    writeState({ account, switchCount, convId, pinnedEffort });
+    writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
     // The board role survives /restart and /switch the same way model + effort do.
     // A restart re-execs this wrapper with a NEW pid, so the role's claim would point
     // at a dead process and another session could steal it — re-assert it here.
@@ -1610,7 +1610,7 @@ async function main() {
       // Re-exec the whole wrapper so freshly-edited on-disk code loads too. State
       // (incl. convId) persists and ARC_SESSION is inherited, so the child re-opens
       // THIS same conversation with --resume; pass only the user's original args.
-      writeState({ account, switchCount, convId, pinnedEffort });
+      writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       process.stdout.write('\x1b[36m[arc] reloading wrapper + restarting claude...\x1b[0m\n');
       const r = spawnSync(process.execPath, [__filename, ...passArgs], {
         stdio: 'inherit',
@@ -1631,7 +1631,7 @@ async function main() {
       convId = crypto.randomUUID();
       convStarted = false; userManagesConv = false;
       claimConv(convId);
-      writeState({ account, switchCount, convId, pinnedEffort });
+      writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       process.stdout.write(res.moved.length
         ? `\x1b[33m[arc] deleted this conversation → recoverable trash: ${res.trashDir}\x1b[0m\n\x1b[2m[arc] list/restore/purge later with arc:trash — starting a fresh session…\x1b[0m\n`
         : `\x1b[33m[arc] (no transcript found to delete) — starting a fresh session…\x1b[0m\n`);
@@ -1650,7 +1650,7 @@ async function main() {
         doAddAccount(argv); // prints its own progress; never exits
       }
       process.stdout.write('\x1b[2m[arc] returning to your conversation…\x1b[0m\n');
-      writeState({ account, switchCount, convId, pinnedEffort });
+      writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       await new Promise(r => setTimeout(r, 300));
       continue; // relaunch --resume convId on the SAME account
     }
@@ -1667,7 +1667,7 @@ async function main() {
       } else {
         process.stdout.write(`\x1b[2m[arc] staying on ${accountLabel(account)}.\x1b[0m\n`);
       }
-      writeState({ account, switchCount, convId, pinnedEffort });
+      writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       if (moved) core.refreshUsageNow(6_000); // same as arc:switch — don't paint the old account's usage
       await new Promise(r => setTimeout(r, 200));
       continue; // loop top relaunches --resume convId on `account`
@@ -1697,7 +1697,7 @@ async function main() {
         logLine(`rename failed ${oldId}->${newId}: ${e.message}`);
         process.stdout.write(`\x1b[31m[arc] rename failed — ${e.message}. Staying on "${account}".\x1b[0m\n`);
       }
-      writeState({ account, switchCount, convId, pinnedEffort });
+      writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       await new Promise(r => setTimeout(r, 400));
       continue; // loop top relaunches --resume convId on `account` (new profile)
     }
@@ -1711,7 +1711,7 @@ async function main() {
         switchCount++;
         account = next.id;
       }
-      writeState({ account, switchCount, convId, pinnedEffort });
+      writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       // The loop top re-opens THIS conversation via --resume convId (convStarted
       // is now true), so the same chat continues on the other account.
       process.stdout.write(`\x1b[36m[arc] switching to ${accountLabel(account)} — continuing conversation...\x1b[0m\n`);
@@ -1729,7 +1729,7 @@ async function main() {
       adoptFixDone = true;
       const actual = readActiveConv();
       if (actual) { convId = actual; userManagesConv = false; }
-      writeState({ account, switchCount, convId, pinnedEffort });
+      writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       process.stdout.write(`\x1b[36m[arc] restoring this conversation's effort — relaunching...\x1b[0m\n`);
       await new Promise(r => setTimeout(r, 400));
       continue;

@@ -1170,6 +1170,78 @@ try {
 // <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
 // does the claiming + arming in the new session's first turn. These tests inject a spawn
 // recorder — nothing real opens.
+// ---- peer identity: a fork believes it is the session it was forked FROM -------------
+// arc:invite forks the caller's conversation into the peer, so the peer inherits a transcript in
+// which "the assistant" has been talking to the human for hours. Its default self-model is
+// therefore "I am that session, reporting to that human" — and it behaves accordingly: it
+// addresses the user, offers THEM work, and asks THEM to decide things a PEER asked it to decide.
+// Observed twice, live. Claiming a role gives it a NAME; it does not overwrite an inherited
+// relationship. Only the birth instruction can say the thing the transcript cannot.
+section('peer identity (a forked peer must be told it is not who it remembers being)');
+try {
+  const F7 = require(path.join(SRC, 'arc-notes.js'));
+  const swhook3 = path.join(SRC, 'arc-switch-hook.js');
+  const irepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ident-'));
+  fs.mkdirSync(path.join(irepo, '.git'), { recursive: true });
+  const cache3 = path.join(CLAUDE, 'cache');
+
+  const claim = (session, role = 'scout') => {
+    const r = spawnSync(process.execPath, [swhook3], {
+      input: JSON.stringify({ prompt: `arc:role ${role}`, cwd: irepo }), encoding: 'utf8',
+      env: { ...process.env, ARC_SESSION: session },
+    });
+    try {
+      const j = JSON.parse(r.stdout || '{}');
+      return (j.hookSpecificOutput && j.hookSpecificOutput.additionalContext) || '';
+    } catch { return ''; }
+  };
+
+  // A FORKED session — the runner records it, because the model cannot know it.
+  const FK = 'ident-fork-' + process.pid;
+  fs.writeFileSync(path.join(cache3, `arc-state-${FK}.json`),
+    JSON.stringify({ pid: process.pid, cwd: irepo, convId: 'c-fork', forked: true }));
+  ok('the runner records forkedness (the model cannot infer it — the transcript lies)',
+    F7.isForkedSession(FK) === true);
+
+  const fctx = claim(FK);
+  ok('a forked peer is told the inherited transcript is NOT its history',
+    /FORKED PEER/.test(fctx) && /INHERITED CONTEXT, not your history/.test(fctx));
+  ok('...that the session it remembers being is now a PEER, and is not it',
+    /is now a PEER of yours/.test(fctx) && /is NOT you/i.test(fctx));
+  ok('...that the human in its tab is not its principal (do not offer them work)',
+    /do not offer them work/i.test(fctx));
+  ok('...and that a peer\'s decision goes back to that PEER, never to the human',
+    /never ask them to decide something a peer asked/i.test(fctx) && /--reply-to/.test(fctx));
+
+  // A NORMAL session (started by hand, no inherited context) must NOT get the identity lecture —
+  // it has no false self-model to correct, and the words would just be confusing noise.
+  const NM = 'ident-normal-' + process.pid;
+  fs.writeFileSync(path.join(cache3, `arc-state-${NM}.json`),
+    JSON.stringify({ pid: process.pid, cwd: irepo, convId: 'c-normal' }));
+  const nctx = claim(NM, 'code');     // its OWN role: the fork above already holds "scout"
+  ok('a normally-started session gets NO identity lecture (nothing to correct)',
+    !/FORKED PEER/.test(nctx) && /arc join code/.test(nctx));
+
+  // The standing rule, on the channel every woken peer actually reads: the injection.
+  const notesSrc2 = fs.readFileSync(path.join(SRC, 'arc-notes.js'), 'utf8');
+  ok('the note injection teaches ANSWER WHERE YOU WERE ASKED (the deliverable is the reply note)',
+    /ANSWER WHERE YOU WERE ASKED/.test(notesSrc2) && /--reply-to/.test(notesSrc2)
+    && /decide something a PEER asked YOU to decide/.test(notesSrc2));
+
+  // And in the protocol doc, so it survives beyond the birth turn.
+  const skill2 = fs.readFileSync(path.join(ROOT, 'skills', 'peers', 'SKILL.md'), 'utf8');
+  ok('the peers skill states who you serve, and what an INVITED peer must not assume',
+    /WHO YOU SERVE/.test(skill2) && /Answer where you were asked/i.test(skill2)
+    && /forked peer/i.test(skill2) && /did not do the work you can see above/i.test(skill2));
+
+  fs.rmSync(irepo, { recursive: true, force: true });
+  for (const s of [FK, NM]) {
+    for (const f of [`arc-state-${s}.json`, `arc-role-${s}.json`]) {
+      try { fs.unlinkSync(path.join(cache3, f)); } catch {}
+    }
+  }
+} catch (e) { ok('peer identity', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- BUG-4: a FORKED session had no conversation identity ---------------------------
 // A fork's conversation id does not exist at launch — Claude Code mints it after the runner has
 // already written arc-state, and the runner only reconciles the real id AFTER claude exits. So
