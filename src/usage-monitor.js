@@ -648,10 +648,19 @@ function fridgeSeg(f) {
   return `\x1b[1;93m📌 ${f.count} from ${f.senders.join(', ')}\x1b[0m`;
 }
 
-function renderCompact(data, sessionEta, poolRows, acc, model, effort, fridge) {
+// The initiative dial (arc:mode). The circle FILLS as the agent gets more proactive:
+// ○ passive (dim, the default) → ◐ balanced (cyan) → ● active (green). Always shown so the
+// dial is visible, but passive stays quiet.
+function stanceSeg(stance) {
+  if (stance === 'active') return '\x1b[1;92m● active\x1b[0m';
+  if (stance === 'balanced') return '\x1b[1;96m◐ balanced\x1b[0m';
+  return '\x1b[2m○ passive\x1b[0m';
+}
+
+function renderCompact(data, sessionEta, poolRows, acc, model, effort, fridge, stance) {
   // Two-row layout: line 1 = accounts/usage (switching-critical), line 2 = this
-  // session's stats (model/effort + unread notes). Loading/alert states stay single line.
-  const line2 = [formatModel(model, effort), fridgeSeg(fridge)].filter(Boolean).join(' | ');
+  // session's stats (model/effort · stance · unread notes). Loading/alert states stay single line.
+  const line2 = [formatModel(model, effort), stanceSeg(stance), fridgeSeg(fridge)].filter(Boolean).join(' | ');
   const withL2 = (line1) => (line2 ? `${line1}\n${line2}` : line1);
 
   if (!acc) return 'arc: run `arc setup`';
@@ -793,10 +802,12 @@ async function main() {
     fridge = require('./arc-fridge').badge(
       process.env.ARC_SESSION, sl && sl.workspace ? sl.workspace.current_dir : null);
   } catch {}
+  let stance = 'passive';
+  try { stance = require('./arc-stance').getStance(process.env.ARC_SESSION); } catch {}
 
   process.stdout.write(
     compact
-      ? renderCompact(usageData, sessionEta, pool.rows, acc, model, effort, fridge)
+      ? renderCompact(usageData, sessionEta, pool.rows, acc, model, effort, fridge, stance)
       : renderFull(usageData, sessionEta, weekEta, pool.rows, acc, model, effort)
   );
 }

@@ -10,6 +10,11 @@ turn, and a turn only starts on a human prompt. So if a roommate delegates somet
 while you sit idle, you won't notice until a human nudges you. This skill removes that
 nudge — you **watch the fridge in the background**, and an incoming delegation *wakes you*.
 
+> **Stance gate.** Auto-acting on delegations without a human is *proactive* behaviour,
+> governed by the arc **stance** (`arc:mode`). Only arm this watch when the user asks you to
+> be the responder, or when you're in an **active** stance (you'll see `[arc stance: ACTIVE]`
+> injected at turn start). Under **passive** (the default), don't self-arm — wait to be told.
+
 ## Set it up (once, at the start of the session)
 
 Arm a background watch on your own role. Two ways — pick whichever your harness has:

@@ -438,6 +438,9 @@ const restartTrigger   = path.join(CACHE_DIR, `arc-restart-${SESSION_ID}.trigger
 // account picker. arc-runner kills claude, renders the picker on the freed TTY,
 // and relaunches on the chosen account — zero model tokens.
 const pickTrigger      = path.join(CACHE_DIR, `arc-pick-${SESSION_ID}.trigger`);
+// Dropped by the arc:mode hook (no arg): open the ←/→ stance bar on the freed TTY, set
+// the stance, and relaunch this conversation (the stance is read live on the next turn).
+const modeTrigger      = path.join(CACHE_DIR, `arc-mode-${SESSION_ID}.trigger`);
 // Dropped by the arc:add-account hook: carries { args } (the id + flags). arc-runner
 // kills claude, runs the guided browser login on the freed TTY, and relaunches.
 const addAcctTrigger   = path.join(CACHE_DIR, `arc-addacct-${SESSION_ID}.trigger`);
@@ -450,7 +453,7 @@ const deleteTrigger    = path.join(CACHE_DIR, `arc-delete-${SESSION_ID}.trigger`
 const renameTrigger    = path.join(CACHE_DIR, `arc-rename-${SESSION_ID}.trigger`);
 
 function clearTriggers() {
-  for (const t of [switchTrigger, restartTrigger, pickTrigger, addAcctTrigger, deleteTrigger, renameTrigger]) {
+  for (const t of [switchTrigger, restartTrigger, pickTrigger, modeTrigger, addAcctTrigger, deleteTrigger, renameTrigger]) {
     try { fs.unlinkSync(t); } catch {}
   }
 }
@@ -575,6 +578,51 @@ function pickAccount(currentId) {
       else if (k === '\x1b' || k === 'q' || k === '\x03') done(null); // Esc / q / Ctrl-C → cancel
     }
 
+    try { stdin.setRawMode(true); } catch {}
+    stdin.resume();
+    stdin.on('data', onKey);
+    render();
+  });
+}
+
+// ---- interactive stance bar (passive · balanced · active, ←/→) -------------
+// Rendered by arc-runner after killing claude (it owns the TTY). Returns the chosen stance,
+// or null on cancel (keep current). Horizontal sibling of pickAccount.
+function pickStance(current) {
+  return new Promise((resolve) => {
+    const St = require('./arc-stance');
+    const stdin = process.stdin, out = process.stdout;
+    const list = St.STANCES;
+    if (!stdin.isTTY) return resolve(null);
+    let sel = Math.max(0, list.indexOf(current));
+    out.write('\x1b[?1049l\x1b[?25l');            // leave alt screen, hide cursor
+
+    function render() {
+      out.write('\x1b[2J\x1b[H');
+      out.write('\r\n  \x1b[1;36marc stance\x1b[0m   \x1b[2m← / →  move · Enter set · Esc keep\x1b[0m\r\n\r\n   ');
+      // the bar: each notch, the selected one in reverse video, joined by a dim rail
+      list.forEach((s, i) => {
+        out.write(i ? '\x1b[2m ──── \x1b[0m' : '');
+        out.write(i === sel ? `\x1b[7m  ${s}  \x1b[0m` : `\x1b[2m  ${s}  \x1b[0m`);
+      });
+      out.write(`\r\n\r\n  \x1b[2m${St.summary(list[sel])}\x1b[0m\r\n`);
+      const cur = list[sel] === current ? '  \x1b[2m(current)\x1b[0m' : '';
+      out.write(`${cur}\r\n`);
+    }
+    function done(v) {
+      try { stdin.removeListener('data', onKey); } catch {}
+      try { stdin.setRawMode(false); } catch {}
+      stdin.pause();
+      out.write('\x1b[?25h\x1b[2J\x1b[H');
+      resolve(v);
+    }
+    function onKey(buf) {
+      const k = buf.toString('utf8');
+      if (k === '\x1b[C' || k === 'l') { sel = (sel + 1) % list.length; render(); }        // →
+      else if (k === '\x1b[D' || k === 'h') { sel = (sel - 1 + list.length) % list.length; render(); } // ←
+      else if (k === '\r' || k === '\n') done(list[sel] === current ? null : list[sel]);
+      else if (k === '\x1b' || k === 'q' || k === '\x03') done(null);
+    }
     try { stdin.setRawMode(true); } catch {}
     stdin.resume();
     stdin.on('data', onKey);
@@ -848,6 +896,10 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
       else if (fs.existsSync(pickTrigger)) {
         // Interactive picker: kill claude, then arc-runner renders the arrow-key UI.
         clearTriggers(); killChild(child); finish('pick');
+      }
+      else if (fs.existsSync(modeTrigger)) {
+        // Stance bar: kill claude, render the ←/→ picker, then relaunch this conversation.
+        clearTriggers(); killChild(child); finish('mode');
       }
       else if (fs.existsSync(addAcctTrigger)) {
         // Guided add-account: kill claude, run the browser login on the freed TTY.
@@ -1556,6 +1608,17 @@ async function main() {
       if (moved) core.refreshUsageNow(6_000); // same as arc:switch — don't paint the old account's usage
       await new Promise(r => setTimeout(r, 200));
       continue; // loop top relaunches --resume convId on `account`
+    }
+
+    if (reason === 'mode') {
+      // Stance bar: claude is dead, arc-runner owns the TTY. The chosen stance is written to
+      // the per-session file; the next turn's injection reads it live — no account change.
+      const St = require('./arc-stance');
+      const chosen = await pickStance(St.getStance(SESSION_ID));
+      if (chosen) { St.setStance(SESSION_ID, chosen); process.stdout.write(`\x1b[36m[arc] stance: ${chosen}\x1b[0m — ${St.summary(chosen)}\n`); }
+      else process.stdout.write('\x1b[2m[arc] stance unchanged.\x1b[0m\n');
+      await new Promise(r => setTimeout(r, 200));
+      continue; // loop top relaunches --resume convId on the SAME account
     }
 
     if (reason === 'rename') {

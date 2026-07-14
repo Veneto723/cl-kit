@@ -77,6 +77,13 @@ The fridge — sticky notes between sessions working in the same folder:
       strict  REFUSES to mark a task done when no commit backs it (the agent is told why)
       off     no notes, no gate
 
+Agent initiative — how proactive your agent is with arc's tools (delegate/note/watch):
+  arc:mode                open the ← / → dial:  passive · balanced · active — ZERO tokens
+  arc:mode active         self-initiate when it helps (note roommates, delegate, watch)
+  arc:mode balanced       may note roommates on real changes; no delegate/fan-out unasked
+  arc:mode passive        (default) act only on your order — no self-initiated anything
+                         (shows in the statusline: ○ passive · ◐ balanced · ● active)
+
 See usage:
   arc:peek                usage of ALL accounts + where a launch would land — ZERO tokens
 

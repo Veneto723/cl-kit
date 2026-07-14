@@ -38,7 +38,7 @@ const core = require('./arc-switch-core');
 // backtrack; being explicit costs nothing and documents the intent).
 // `arc:` is the current prefix; `arc:` is kept as a deprecated alias through the
 // migration so running sessions and muscle memory don't break.
-const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|delegate|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|arc)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|delegate|mode|stance|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|arc)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -89,15 +89,21 @@ function deliverFridge(hook) {
   const session = (process.env.ARC_SESSION || '').trim();
   const cwd = typeof hook.cwd === 'string' ? hook.cwd : null;
   let injected = false, err = null;
+  const parts = [];
+  // Standing behavioural context FIRST: the stance grant (balanced/active only — passive
+  // injects nothing, so the default costs zero tokens). This is what makes the dial actually
+  // steer the agent: it is re-asserted every turn, exactly where the fridge notes ride.
+  try { const d = require('./arc-stance').directive(require('./arc-stance').getStance(session)); if (d) parts.push(d); } catch {}
   try {
-    const inj = require('./arc-fridge').injection(session, cwd);
-    if (inj) {
-      injected = true;
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: inj.text },
-      }));
-    }
+    const inj = require('./arc-fridge').injection(session, cwd); // NB: advances the read cursor
+    if (inj) parts.push(inj.text);
   } catch (e) { err = String(e && e.message).slice(0, 120); /* NEVER wedge a prompt */ }
+  if (parts.length) {
+    injected = true;
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: parts.join('\n\n') },
+    }));
+  }
   fridgeTrace({ session: session || null, cwd, payloadKeys: Object.keys(hook), injected, err });
   process.exit(0);
 }
@@ -166,6 +172,18 @@ function run(raw) {
       + `  running in the BACKGROUND; you keep working. ${spec.advisor ? 'The verdict' : 'The result'} lands on the fridge`
       + (myRole ? ` for "${myRole}"` : ' as a broadcast (claim a role with arc:role to have it addressed to you)') + '.\n'
       + `  arc hands it to this session automatically at the end of a turn — you do not have to ask for it.`);
+  }
+  if (action === 'mode' || action === 'stance') {
+    // The initiative dial: passive · balanced · active. `arc:mode <value>` sets it directly
+    // (zero tokens, no relaunch); a bare `arc:mode` opens the ←/→ bar picker.
+    const St = require('./arc-stance');
+    const set = (arg || '').trim().toLowerCase();
+    if (!set) return clBlock(core.requestModePicker(session).message);
+    if (!St.STANCES.includes(set)) {
+      return clBlock(`unknown stance "${set}" — pick one of: ${St.STANCES.join(' · ')}\n  ${St.renderBar(St.getStance(session))}`);
+    }
+    St.setStance(session, set);
+    return clBlock(`✓ stance: ${set}\n  ${St.renderBar(set)}\n  ${St.summary(set)}`);
   }
   if (action === 'add-account' || action === 'add') {
     const r = core.requestAddAccount(session, arg || '');

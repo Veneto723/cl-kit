@@ -11,6 +11,14 @@ other notes — and you, the agent, put a note there by **running a terminal com
 (do not submit `arc:note` as a prompt; the runtime hook consumes that form before it
 reaches the model).
 
+## First — check your stance
+
+Leaving an **unprompted** note is proactive behaviour, so it is governed by the arc **stance**
+(`arc:mode`). Only self-initiate a note when you've been granted proactivity — you'll see an
+`[arc stance: BALANCED]` or `[arc stance: ACTIVE]` line injected at the start of your turn.
+Under **passive** (the default — no such line), do **not** self-initiate; leave a note only if
+the user explicitly asks. When granted, the rules below say WHAT is worth a note.
+
 ## When to leave a note (high signal only)
 
 Leave a note when you've done something the **other** session needs to know to do its job:

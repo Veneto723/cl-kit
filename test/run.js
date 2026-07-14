@@ -1315,6 +1315,46 @@ try {
   for (const m of lines) ok(m[2], m[1] === 'ok');
 } catch (e) { ok('claudex works', false, e.message + '\n' + (e.stack || '')); }
 
+// ---- arc-stance (the passive·balanced·active initiative dial) -----------------
+section('arc-stance (agent initiative dial)');
+try {
+  const St = require(path.join(SRC, 'arc-stance.js'));
+  const S = 'stance-sess-1';
+  ok('default stance is passive', St.getStance(S) === 'passive' && St.getStance('never-set') === 'passive');
+  ok('setStance persists a valid value, rejects an invalid one (leaves it unchanged)',
+    St.setStance(S, 'active') === 'active' && St.getStance(S) === 'active'
+    && St.setStance(S, 'zoom') === null && St.getStance(S) === 'active');
+  ok('directive: passive injects NOTHING; balanced/active inject a grant',
+    St.directive('passive') === null
+    && /BALANCED/.test(St.directive('balanced')) && /arc note/.test(St.directive('balanced'))
+    && /ACTIVE/.test(St.directive('active')) && /arc delegate/.test(St.directive('active')));
+  ok('renderBar marks only the selected notch',
+    St.renderBar('balanced').includes('[ balanced ]') && !St.renderBar('balanced').includes('[ active ]'));
+
+  // through the REAL hook: set · reject · open picker
+  const swhk = path.join(SRC, 'arc-switch-hook.js');
+  const hookAsk = (prompt, sess) => { const r = spawnSync(process.execPath, [swhk], { input: JSON.stringify({ prompt, cwd: TMP }), encoding: 'utf8', env: { ...process.env, ARC_SESSION: sess } }); let o = {}; try { o = JSON.parse(r.stdout || '{}'); } catch {} return o; };
+  const S2 = 'stance-hook-1';
+  const setOut = hookAsk('arc:mode active', S2);
+  ok('arc:mode <value> sets the stance via the hook (zero tokens, cross-process)',
+    setOut.decision === 'block' && /stance: active/.test(setOut.reason) && St.getStance(S2) === 'active');
+  ok('arc:mode <bad> is rejected and the stance is unchanged',
+    /unknown stance/.test(hookAsk('arc:mode nope', S2).reason || '') && St.getStance(S2) === 'active');
+  ok('bare arc:mode opens the picker (drops a mode trigger)',
+    /stance picker/.test(hookAsk('arc:mode', S2).reason || '')
+    && fs.existsSync(path.join(CLAUDE, 'cache', `arc-mode-${S2}.trigger`)));
+
+  // injection: passive is silent, active injects the grant on EVERY normal prompt
+  const S3 = 'stance-inj-1';
+  St.setStance(S3, 'passive');
+  ok('passive stance injects NOTHING on a normal prompt (zero-token baseline)',
+    !hookAsk('what is 2+2', S3).hookSpecificOutput);
+  St.setStance(S3, 'active');
+  const aj = hookAsk('what is 2+2', S3);
+  ok('active stance injects the grant directive on a normal prompt',
+    aj.hookSpecificOutput && /arc stance: ACTIVE/.test(aj.hookSpecificOutput.additionalContext));
+} catch (e) { ok('arc-stance works', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- arc-delegate (fire a headless task on a chosen runtime -> fridge) --------
 section('arc-delegate (headless task -> fridge note)');
 try {

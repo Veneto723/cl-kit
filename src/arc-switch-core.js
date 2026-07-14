@@ -416,6 +416,19 @@ function requestPicker(session) {
   }
 }
 
+// Drop a stance-picker trigger → arc-runner opens the ←/→ passive·balanced·active bar
+// (zero tokens, then a --resume relaunch, exactly like the account picker).
+function requestModePicker(session) {
+  if (!session) return { ok: false, message: 'NOT PICKING — not running under the arc wrapper (launch with `arc`).' };
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(CACHE_DIR, `arc-mode-${session}.trigger`), JSON.stringify({ at: Date.now() }));
+    return { ok: true, message: 'opening the stance picker — use ← / → and Enter in the terminal…' };
+  } catch (e) {
+    return { ok: false, message: `picker signal FAILED — ${e.message}` };
+  }
+}
+
 // ---- add an api (gateway/pool) account inline -------------------------------
 // No browser / TTY needed (unlike an oauth subscription), so this runs right in
 // the hook: verify the gateway, auto-detect its model names, DPAPI-encrypt the
@@ -1036,4 +1049,4 @@ function requestTrash(session, argStr) {
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, nextClaudexPort, gatewayTranslatesMessages, probeGatewayGptModels, CACHE_DIR };
+module.exports = { requestSwitch, requestRestart, requestPicker, requestModePicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, nextClaudexPort, gatewayTranslatesMessages, probeGatewayGptModels, CACHE_DIR };
