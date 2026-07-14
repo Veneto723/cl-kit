@@ -126,8 +126,44 @@ function readCursor(room, role) {
 }
 function writeCursor(room, role, seq) {
   ensureRoom(room);
-  fs.writeFileSync(cursorPath(room, role), JSON.stringify({ seq, at: Date.now() }));
+  atomicWriteJson(cursorPath(room, role), { seq, at: Date.now() });
   return seq;
+}
+
+// ---- atomic state writes + a claim lock ---------------------------------------
+// A lease or cursor written with a bare writeFileSync can be TORN by a crash mid-write,
+// and a check-then-write claim lets TWO sessions both "win" the same role — after which
+// they share a cursor and silently eat each other's notes (the exact failure this whole
+// design exists to prevent). So: every state write is tmp -> fsync -> rename, and the
+// claim's check+write runs under an atomic lock.
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}
+}
+
+function atomicWriteJson(file, obj) {
+  const tmp = `${file}.tmp-${process.pid}`;
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeSync(fd, JSON.stringify(obj)); fs.fsyncSync(fd); }
+  finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, file);            // atomic within one filesystem
+}
+
+// mkdir is atomic on Windows AND POSIX — the portable lock. A crashed holder must never
+// wedge the room, so a lock older than LOCK_STALE_MS is broken rather than waited on.
+const LOCK_STALE_MS = 10_000;
+function withLock(room, name, fn) {
+  const lock = path.join(room.planDir, `.lock-${name}`);
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    try { fs.mkdirSync(lock); break; }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.rmdirSync(lock); continue; } } catch {}
+      if (Date.now() > deadline) throw new Error(`role state is locked by another session (${name})`);
+      sleepSync(25);
+    }
+  }
+  try { return fn(); } finally { try { fs.rmdirSync(lock); } catch {} }
 }
 
 // What `role` hasn't seen: addressed to it, or broadcast; never its own notes.
@@ -168,15 +204,44 @@ function roleHolder(room, role) {
 // IDENTITY IS THE SESSION, NOT THE PID: `arc:restart` re-execs arc-runner with a NEW pid
 // but the SAME ARC_SESSION, and must be able to reclaim its own role. The pid is only
 // a liveness probe. (Fall back to pid comparison for leases written without a session.)
-function claimRole(room, role, pid, sessionId) {
+// The check and the write happen UNDER A LOCK: without it, two sessions claiming the same
+// role at once both read "vacant" and both write — both believe they hold it, then share a
+// cursor and eat each other's notes. `convId` records WHICH CONVERSATION took the role, so a
+// later session resuming that same conversation can pick it back up (see vacantLeaseForConv).
+function claimRole(room, role, pid, sessionId, convId) {
   ensureRoom(room);
-  const held = roleHolder(room, role);
-  if (held) {
-    const same = (sessionId && held.sessionId) ? held.sessionId === sessionId : held.pid === pid;
-    if (!same) return { ok: false, holder: held };
+  try {
+    return withLock(room, `role-${role}`, () => {
+      const held = roleHolder(room, role);
+      if (held) {
+        const same = (sessionId && held.sessionId) ? held.sessionId === sessionId : held.pid === pid;
+        if (!same) return { ok: false, holder: held };
+      }
+      // don't lose a previously-recorded conversation when this claim doesn't name one
+      const conv = convId || (held && held.convId) || null;
+      atomicWriteJson(leasePath(room, role), { role, pid, sessionId: sessionId || null, convId: conv, at: Date.now() });
+      return { ok: true };
+    });
+  } catch (e) {
+    return { ok: false, holder: null, busy: true, error: String(e && e.message) };
   }
-  fs.writeFileSync(leasePath(room, role), JSON.stringify({ role, pid, sessionId: sessionId || null, at: Date.now() }));
-  return { ok: true };
+}
+
+// The lease this CONVERSATION was working under, now vacant (its session died). That is the
+// role a resumed conversation should pick back up: a relaunch mints a NEW ARC_SESSION, so the
+// role would otherwise be silently lost and the session would stop receiving notes entirely.
+function vacantLeaseForConv(room, convId) {
+  if (!convId) return null;
+  let files = [];
+  try { files = fs.readdirSync(room.planDir); } catch { return null; }
+  for (const f of files) {
+    if (!/^lease-.+\.json$/.test(f)) continue;
+    try {
+      const l = JSON.parse(fs.readFileSync(path.join(room.planDir, f), 'utf8'));
+      if (l.convId && l.convId === convId && !isAlive(l.pid)) return l;   // ours, and vacant
+    } catch { /* torn lease = no lease */ }
+  }
+  return null;
 }
 
 // Who else is live in this flat right now (dead leases are ignored, not deleted —
@@ -202,4 +267,5 @@ module.exports = {
   notesPath, appendNote, allNotes, noteCount, latestSeq,
   readCursor, writeCursor, unreadFor, markRead,
   isAlive, roleHolder, claimRole, releaseRole, liveRoles,
+  atomicWriteJson, withLock, vacantLeaseForConv,
 };

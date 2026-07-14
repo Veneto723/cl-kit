@@ -23,6 +23,12 @@ function sessionPid(session) {
   try { return JSON.parse(fs.readFileSync(stateFile(session), 'utf8')).pid || 0; } catch { return 0; }
 }
 
+// Which CONVERSATION this session is running. A relaunch mints a new ARC_SESSION but resumes
+// the SAME conversation — so this is the identity a role should actually follow.
+function sessionConv(session) {
+  try { return JSON.parse(fs.readFileSync(stateFile(session), 'utf8')).convId || null; } catch { return null; }
+}
+
 // Which folder is this session in? The hook payload SHOULD carry `cwd`, but don't
 // bet the room on it — arc-runner already records the session's cwd authoritatively.
 function resolveCwd(session, cwd) {
@@ -77,7 +83,11 @@ function requestRole(session, arg, cwd) {
   const prev = getRole(session, room);
   if (prev && prev !== role) R.releaseRole(room, prev, pid);   // moving rooms/roles: give the old one back
 
-  const claim = R.claimRole(room, role, pid, session);
+  // Record the CONVERSATION on the lease so a resumed session can pick this role back up.
+  const claim = R.claimRole(room, role, pid, session, sessionConv(session));
+  if (claim.busy) {
+    return { ok: false, message: `role "${role}" is being claimed by another session right now — try again in a moment.` };
+  }
   if (!claim.ok) {
     return { ok: false, message:
       `role "${role}" is already held by a LIVE session (pid ${claim.holder.pid}) in room "${room.name}".\n` +
@@ -155,14 +165,29 @@ function requestNotes(session, arg, cwd) {
 // switch — exactly like the session's model and effort.
 // Returns null if this session has no role here; {ok:false, holder} if a live OTHER
 // session took it while we were down.
-function refreshRole(session, pid, cwd) {
+// Called by arc-runner on every launch. Two jobs:
+//   1. re-assert the lease for a session that still has a role (new pid after a re-exec), and
+//   2. ADOPT the role this CONVERSATION was working under, when the session doesn't have one.
+// (2) is the fix for a real, silent failure: a relaunch mints a NEW ARC_SESSION, so the role —
+// which was keyed by session — was lost, and the session then received NOTHING, with nothing to
+// tell it. Roles follow the conversation, not the terminal that happened to host it.
+function refreshRole(session, pid, cwd, convId) {
   if (!session || !pid) return null;
   try {
     const room = R.resolveRoom(resolveCwd(session, cwd));
     const role = getRole(session, room);
-    if (!role) return null;
-    const c = R.claimRole(room, role, pid, session);
-    return { room: room.name, role, ok: c.ok, holder: c.holder || null };
+    if (role) {
+      const c = R.claimRole(room, role, pid, session, convId || sessionConv(session));
+      return { room: room.name, role, ok: c.ok, holder: c.holder || null, adopted: false };
+    }
+    // no role for this session — was this CONVERSATION holding one before it was relaunched?
+    const conv = convId || sessionConv(session);
+    const vacant = R.vacantLeaseForConv(room, conv);
+    if (!vacant) return null;
+    const c = R.claimRole(room, vacant.role, pid, session, conv);
+    if (!c.ok) return null;                       // someone live took it in the meantime
+    setRole(session, room, vacant.role);          // the cursor is keyed by ROLE, so we resume in place
+    return { room: room.name, role: vacant.role, ok: true, holder: null, adopted: true };
   } catch { return null; }
 }
 
@@ -172,10 +197,16 @@ function refreshRole(session, pid, cwd) {
 // Runs on EVERY statusline repaint, so the first check is the cheapest possible one.
 function badge(session, cwd) {
   try {
-    if (!session || !fs.existsSync(roleFile(session))) return null; // no role → nothing, one stat
+    if (!session) return null;
     const room = R.resolveRoom(resolveCwd(session, cwd));
     const role = getRole(session, room);
-    if (!role) return null;
+    // NO ROLE, BUT THE ROOM HAS NOTES → say so. This used to return null, which meant a session
+    // holding no role received nothing AND was never told: notes piled up completely invisibly.
+    // Falling off the fridge must never be silent.
+    if (!role) {
+      const n = R.noteCount(room);
+      return n ? { noRole: true, count: n, room: room.name } : null;
+    }
     const u = R.unreadFor(room, role);
     return u.count ? { count: u.count, senders: u.senders, role, room: room.name } : null;
   } catch { return null; }

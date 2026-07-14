@@ -645,6 +645,9 @@ function renderFull(data, sessionEta, weekEta, poolRows, acc, model, effort) {
 // notes are read. Nothing has to remember to tell you.
 function fridgeSeg(f) {
   if (!f || !f.count) return '';
+  // Holding NO role means you receive nothing — so say it loudly rather than showing an
+  // empty statusline while notes quietly pile up in the room.
+  if (f.noRole) return `\x1b[1;91m⚠ ${f.count} notes · no role — arc:role <name>\x1b[0m`;
   return `\x1b[1;93m📌 ${f.count} from ${f.senders.join(', ')}\x1b[0m`;
 }
 

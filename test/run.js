@@ -1186,11 +1186,56 @@ try {
   const rr = F.refreshRole('sb', process.pid + 1, repo2);
   ok('refreshRole re-asserts the lease after restart', rr && rr.ok === true && rr.role === 'coding');
   ok('and the role still resolves for that session', F.getRole('sb', room2) === 'coding');
-  ok('refreshRole is a no-op for a session with no role', F.refreshRole('zz', 999, repo2) === null);
+  ok('refreshRole is a no-op for a session with no role and no conversation', F.refreshRole('zz', 999, repo2) === null);
+
+  // ---- ROLE FOLLOWS THE CONVERSATION -------------------------------------------------
+  // A relaunch mints a NEW ARC_SESSION. The role was keyed by session, so it was silently
+  // lost and the session then received NOTHING. A resumed conversation must reclaim its role.
+  const CONV = 'conv-abc-123';
+  const DEAD_PID = 999999;                                  // not a running process
+  writeJSON(path.join(cache, 'arc-state-old.json'), { pid: process.pid, cwd: repo2, convId: CONV });
+  F.requestRole('old', 'android', repo2);
+  ok('claiming a role records the CONVERSATION on the lease',
+    R2.roleHolder(room2, 'android').convId === CONV);
+  R2.writeCursor(room2, 'android', 1);                      // it had read up to note #1
+
+  // the holding session DIES (its own lease now names a dead pid)
+  R2.claimRole(room2, 'android', DEAD_PID, 'old', CONV);
+  ok('a vacant lease is findable by CONVERSATION', R2.vacantLeaseForConv(room2, CONV).role === 'android');
+
+  // a NEW session id resumes the SAME conversation → it must get its role back
+  writeJSON(path.join(cache, 'arc-state-new.json'), { pid: process.pid, cwd: repo2, convId: CONV });
+  const adopted = F.refreshRole('new', process.pid, repo2, CONV);
+  ok('a resumed conversation ADOPTS its old role (no more silent blackout)',
+    adopted && adopted.adopted === true && adopted.role === 'android' && F.getRole('new', room2) === 'android');
+  ok('...and it resumes IN PLACE — the cursor is keyed by role, not session, so nothing is re-read',
+    R2.readCursor(room2, 'android') === 1);
+  ok('a LIVE holder is never adopted away (only a vacant lease is)',
+    R2.vacantLeaseForConv(room2, CONV) === null && R2.roleHolder(room2, 'android').sessionId === 'new');
+
+  // ---- the claim RACE: check-then-write let two sessions both "win" ------------------
+  // claimRole now does check+write under an atomic lock, so a second live session is refused.
+  mkSession('racer', process.pid);
+  const first = R2.claimRole(room2, 'painter', process.pid, 'racer');
+  const second = R2.claimRole(room2, 'painter', process.pid, 'other-session');
+  ok('two live sessions cannot BOTH claim one role (they would share a cursor and eat notes)',
+    first.ok === true && second.ok === false && !!second.holder);
+  ok('the same session re-claiming its own role still succeeds (restart keeps its seat)',
+    R2.claimRole(room2, 'painter', process.pid, 'racer').ok === true);
+  // atomic write: no torn lease/cursor left behind
+  ok('state writes are atomic (no .tmp files left in the room)',
+    !fs.readdirSync(room2.planDir).some((f) => f.includes('.tmp-')));
 
   // the AMBIENT badge (what the statusline paints) — derived, self-clearing
-  ok('badge is null with no role', F.badge('zz', repo2) === null);
+  // NO-ROLE BLACKOUT: badge used to return null with no role, so a session that had fallen off
+  // the fridge received nothing AND was never told — notes piled up invisibly. It must WARN.
+  const emptyRepo = path.join(base2, 'emptyroom');
+  fs.mkdirSync(path.join(emptyRepo, '.git'), { recursive: true });
+  ok('badge stays null with no role AND no notes (nothing to say)', F.badge('zz', emptyRepo) === null);
   R2.appendNote(room2, { from: 'research', to: 'coding', body: 'fresh' });
+  const noRoleBg = F.badge('zz', repo2);
+  ok('badge WARNS when you hold no role but the room HAS notes (never a silent blackout)',
+    noRoleBg && noRoleBg.noRole === true && noRoleBg.count === R2.noteCount(room2));
   const bg = F.badge('sb', repo2);
   ok('badge counts unread + names the sender', bg && bg.count === 1 && bg.senders[0] === 'research');
   R2.markRead(room2, 'coding');
@@ -1477,6 +1522,22 @@ try {
     (() => { let other = null;
       D.run(['codex', droom, JSON.stringify({toRole:'code',session:'sess-1'}), 'x'], { codex: () => { other = D.pendingFor('sess-OTHER', droom); return { ok: true, out: 'y', err: '', status: 0 }; } });
       return other && other.length === 0; })());
+
+  // ---- PHANTOM MARKERS: reconcile against the ledger, don't wait out a timeout ----------
+  // A delegate that dies between appending its note and clearing its marker used to look
+  // "still running" for ELEVEN MINUTES, with the Stop hook nagging you to arm a waker for
+  // work that was already done. The note carries the delegate id, so "finished" is provable.
+  ok('every delegate result stamps its id into the note refs',
+    RM.allNotes(room).some((n) => n.refs && n.refs.delegateId));
+  fs.mkdirSync(D.markerDir(room), { recursive: true });
+  const ghostId = 'codex-ghost-1';
+  fs.writeFileSync(path.join(D.markerDir(room), `${ghostId}.json`),
+    JSON.stringify({ id: ghostId, session: 'sess-1', role: 'code', runtime: 'codex', task: 'ghost', started: Date.now() }));
+  ok('a stranded marker with NO result on the fridge still reports as pending (correctly)',
+    D.pendingFor('sess-1', droom).some((p) => p.id === ghostId));
+  RM.appendNote(room, { from: 'delegate:codex', to: 'code', body: 'ghost finished', refs: { delegateId: ghostId } });
+  ok('once its result IS on the fridge, the phantom marker is reconciled away (no 11-minute nag)',
+    !D.pendingFor('sess-1', droom).some((p) => p.id === ghostId));
 
   fs.rmSync(droom, { recursive: true, force: true });
 } catch (e) { ok('arc-delegate works', false, e.message + '\n' + (e.stack || '')); }

@@ -135,13 +135,20 @@ function clearMarker(room, id) {
 function readMarkers(room) {
   let names = [];
   try { names = fs.readdirSync(markerDir(room)); } catch { return []; }
+  // RECONCILE AGAINST THE LEDGER, don't just wait for a timeout. A delegate that crashes
+  // between appending its note and clearing its marker used to look "still running" for a
+  // full 11 minutes, and the Stop hook would keep nagging you to arm a waker for work that
+  // was already done. The note carries the delegate's id, so a finished delegate is provable.
+  let done = new Set();
+  try { done = new Set(R.allNotes(room).map((n) => n.refs && n.refs.delegateId).filter(Boolean)); } catch {}
   const out = [];
   for (const n of names) {
     if (!n.endsWith('.json')) continue;
     const file = path.join(markerDir(room), n);
     try {
       const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (Date.now() - (rec.started || 0) > TIMEOUT_MS + 60_000) { fs.unlinkSync(file); continue; } // dead delegate
+      if (done.has(rec.id)) { fs.unlinkSync(file); continue; }                                  // its result is on the fridge → finished
+      if (Date.now() - (rec.started || 0) > TIMEOUT_MS + 60_000) { fs.unlinkSync(file); continue; } // never reported → dead
       out.push({ ...rec, file });
     } catch { try { fs.unlinkSync(file); } catch {} }   // unreadable marker = no marker
   }
@@ -229,7 +236,9 @@ function run(argv, runners) {
     body = `[${label}] "${task}"\n\n${clip(res.out) || '(no output)'}\n\n(${secs}s · full: ${full})`;
     priority = 'normal';
   }
-  R.appendNote(room, { from, to: toRole, body, priority });
+  // The delegate id rides on the note, so a stranded marker can be RECONCILED against the
+  // ledger (see readMarkers) instead of haunting the Stop hook until it expires.
+  R.appendNote(room, { from, to: toRole, body, priority, refs: { delegateId: id } });
   // ORDER MATTERS: the note must exist BEFORE the marker goes. If we cleared first, a Stop
   // firing in the gap would see no note AND no in-flight delegate — and go idle with the
   // result seconds away and no waker armed. Appending first makes the gap harmless.

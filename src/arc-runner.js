@@ -1493,7 +1493,12 @@ async function main() {
     // The fridge role survives /restart and /switch the same way model + effort do.
     // A restart re-execs this wrapper with a NEW pid, so the role's lease would point
     // at a dead process and another session could steal it — re-assert it here.
-    try { require('./arc-fridge').refreshRole(SESSION_ID, process.pid, process.cwd()); } catch {}
+    // Pass the CONVERSATION: a relaunch mints a new ARC_SESSION, so the role must be adopted
+    // from the conversation's vacant lease — otherwise this session silently receives nothing.
+    try {
+      const rr = require('./arc-fridge').refreshRole(SESSION_ID, process.pid, process.cwd(), convId);
+      if (rr && rr.adopted) process.stdout.write(`\x1b[2m[arc] resumed as "${rr.role}" in room "${rr.room}" (role follows the conversation)\x1b[0m\n`);
+    } catch {}
     // Seed the sticky baseline with what we ACTUALLY applied, so the statusline
     // never claims an effort the session isn't really at.
     if (effConv) seedEffort(effConv, applied);
