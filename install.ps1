@@ -13,13 +13,9 @@ Write-Host "arc installer" -ForegroundColor Cyan
 node --version *> $null
 if ($LASTEXITCODE -ne 0) { throw 'Node.js is required on PATH.' }
 $hasClaude = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
-$hasCodex = $null -ne (Get-Command codex -ErrorAction SilentlyContinue)
 if (-not $hasClaude) {
   Write-Host "  ! 'claude' CLI not found on PATH — install Claude Code first (https://claude.com/claude-code)." -ForegroundColor Yellow
   Write-Host "    Continuing; the arc MCP server registration will be skipped." -ForegroundColor Yellow
-}
-if (-not $hasCodex) {
-  Write-Host "  i 'codex' CLI not found on PATH - Claude support will still be installed; Codex hosting is optional." -ForegroundColor DarkGray
 }
 
 # 1. scripts
@@ -85,7 +81,7 @@ $agentSkills = Join-Path $env:USERPROFILE '.agents\skills'
 $roommateSkill = Join-Path $agentSkills 'share-with-roommate'
 New-Item -ItemType Directory -Force $roommateSkill | Out-Null
 Copy-Item (Join-Path $kit 'skills\share-with-roommate\*') $roommateSkill -Recurse -Force
-Write-Host "  shared skill -> $roommateSkill (Claude + Codex)"
+Write-Host "  shared skill -> $roommateSkill"
 
 # 3c. bundles — first-party add-ons under bundles/<name>/arc-bundle.json, deployed by
 #     the data-driven bundle installer (arc-bundle.js) instead of being hardcoded here.
@@ -169,6 +165,3 @@ Write-Host "Done. Next:" -ForegroundColor Green
 Write-Host "  arc setup    # choose your account style (single / two subs / sub+pool / pool only)"
 Write-Host "  arc doctor   # verify"
 Write-Host "  arc          # launch"
-if ($hasCodex) {
-  Write-Host "  arc codex    # optional: launch Codex under the same arc session registry"
-}

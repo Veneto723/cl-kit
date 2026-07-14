@@ -32,9 +32,16 @@ function cleanEnv() {
   return env;
 }
 
+// `codex exec` is a DOCUMENTED, headless surface — a task in, a text answer out. It needs
+// no codex-side skills, hooks, MCP or config, which is why delegation survived the decision
+// to stop peer-hosting the Codex TUI: it costs nothing on the codex side to maintain.
+// --yolo (alias of --dangerously-bypass-approvals-and-sandbox) is a GLOBAL flag: it parses
+// BEFORE the subcommand. On Windows `codex` is a shim, so it must be invoked through cmd.
 function runCodex(cwd, task) {
-  const CX = require('./arc-runtime-codex');
-  const spec = CX.commandSpec(['exec', '--skip-git-repo-check', '-C', cwd, task], { bypassHookTrust: true, yolo: true });
+  const args = ['--yolo', 'exec', '--skip-git-repo-check', '-C', cwd, task];
+  const spec = process.platform === 'win32'
+    ? { bin: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', 'codex', ...args] }
+    : { bin: 'codex', args };
   const r = spawnSync(spec.bin, spec.args, { encoding: 'utf8', timeout: TIMEOUT_MS, env: cleanEnv(), input: '', windowsHide: true });
   return { ok: r.status === 0, out: String(r.stdout || '').trim(), err: String(r.stderr || '').trim(), status: r.status };
 }

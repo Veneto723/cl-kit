@@ -924,305 +924,6 @@ try {
   fs.rmSync(repo, { recursive: true, force: true });
 } catch (e) { ok('arc-watch works', false, e.message); }
 
-// ---- arc-transpile (Claude transcript -> text-first codex messages) --------------
-// Proven live end to end: these messages, injected into a Codex rollout, let `codex
-// resume` recall a fact that only existed in the Claude session. This locks the pure
-// conversion: text at full fidelity, tools as short markers, noise dropped.
-section('arc-transpile (Claude -> Codex text-first)');
-try {
-  const T = require(path.join(SRC, 'arc-transpile.js'));
-  const recs = [
-    { type: 'system', subtype: 'x' },                                                    // meta -> skip
-    { type: 'user', message: { role: 'user', content: 'Add retries to the task_log schema.' } },
-    { type: 'assistant', message: { role: 'assistant', content: [
-      { type: 'thinking', thinking: 'internal deliberation' },                            // dropped
-      { type: 'text', text: 'Reading the schema first.' },
-      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'grep -n retries db.sql' } }] } },
-    { type: 'user', isSidechain: true, message: { role: 'user', content: 'subagent noise' } }, // sidechain -> skip
-    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'db.sql: no match', is_error: false }] } },
-    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Added retries INT DEFAULT 0.' }] } },
-  ];
-  const { messages, stats } = T.transpile(recs);
-  ok('meta + sidechain turns are dropped', stats.records === 6 && messages.length === 4 && stats.droppedTurns === 1);
-  ok('user string content becomes a user turn', messages[0].role === 'user' && /Add retries/.test(messages[0].text));
-  ok('thinking is dropped', !/internal deliberation/.test(JSON.stringify(messages)));
-  ok('tool_use renders as a short text marker (Bash -> command)', /\[ran Bash: grep -n retries db\.sql\]/.test(messages[1].text));
-  ok('tool_result renders as a short text marker on a user turn', /\[result: db\.sql: no match\]/.test(messages[2].text));
-  ok('an errored tool_result is flagged', /\(error\)/.test(T.blockToText({ type: 'tool_result', content: 'boom', is_error: true })));
-  ok('history alternates and starts on a user turn', messages[0].role === 'user' && messages[3].role === 'assistant');
-  // huge tool output is clipped, not dumped
-  ok('a giant tool result is clipped', T.blockToText({ type: 'tool_result', content: 'x'.repeat(5000) }).length < 400);
-  // keepLast tail-cap keeps the recent messages and never starts on assistant
-  const many = []; for (let i = 0; i < 10; i++) many.push({ type: i % 2 ? 'assistant' : 'user', message: { role: i % 2 ? 'assistant' : 'user', content: `m${i}` } });
-  const tail = T.transpile(many, { keepLast: 4 });
-  ok('keepLast keeps the recent messages, starting on a user turn', tail.messages.length <= 4 && tail.messages[0].role === 'user');
-} catch (e) { ok('arc-transpile works', false, e.message); }
-
-// ---- arc-handoff (locate transcript + dry-run, no codex needed) ------------------
-section('arc-handoff (transcript locate + dry-run)');
-try {
-  const H = require(path.join(SRC, 'arc-handoff.js'));
-  // a fixture transcript under the sandbox HOME's projects dir
-  const conv = 'ffff0000-1111-2222-3333-444455556666';
-  const projDir = path.join(CLAUDE, 'projects', 'C--proj-x');
-  fs.mkdirSync(projDir, { recursive: true });
-  const repo = path.join(TMP, 'ho-repo');
-  const line = (t, c) => JSON.stringify({ type: t, cwd: repo, message: { role: t, content: c } });
-  fs.writeFileSync(path.join(projDir, `${conv}.jsonl`),
-    [line('user', 'the codename is Osprey.'), line('assistant', [{ type: 'text', text: 'Noted: Osprey.' }])].join('\n') + '\n');
-
-  ok('findTranscript locates the conversation by id', H.findTranscript(conv) === path.join(projDir, `${conv}.jsonl`));
-  ok('findTranscript returns null for an unknown id', H.findTranscript('no-such-id') === null);
-
-  const dry = H.handoff('nosession', { convId: conv, dryRun: true });
-  ok('dry-run transpiles without invoking codex', dry.ok === true && dry.dryRun === true && /2 message\(s\)/.test(dry.message));
-  ok('dry-run recovers the repo cwd from the transcript', /ho-repo/.test(dry.message));
-  const direct = H.handoff('', { transcript: path.join(projDir, `${conv}.jsonl`), dryRun: true });
-  ok('hook-style direct transcript handoff does not depend on cl state', direct.ok === true && /ho-repo/.test(direct.message));
-  const miss = H.handoff('nosession', { convId: 'no-such-id', dryRun: true });
-  ok('a missing transcript is reported, not crashed', miss.ok === false && /couldn't find the transcript/.test(miss.message));
-  const seeds = path.join(TMP, 'codex-seeds');
-  fs.mkdirSync(seeds, { recursive: true });
-  const seedA = path.join(seeds, 'rollout-a.jsonl');
-  const seedB = path.join(seeds, 'rollout-b.jsonl');
-  fs.writeFileSync(seedA, 'CL_HANDOFF_SEED unique-a\n');
-  fs.writeFileSync(seedB, 'CL_HANDOFF_SEED unique-b\n');
-  ok('handoff seed discovery matches the unique marker, not another concurrent seed',
-    H.findSeedRollout('CL_HANDOFF_SEED unique-a', seeds) === seedA);
-} catch (e) { ok('arc-handoff works', false, e.message); }
-
-// ---- orchestration registry + Codex runtime account isolation ----------------
-section('runtime orchestration (logical sessions + Codex accounts)');
-try {
-  const O = require(path.join(SRC, 'arc-orchestrator.js'));
-  const A = require(path.join(SRC, 'arc-codex-account.js'));
-  const CR = require(path.join(SRC, 'arc-runtime-codex.js'));
-
-  const first = O.ensureSession({ runtime: 'claude', nativeSessionId: 'claude-native-1', account: 'work', cwd: TMP });
-  const same = O.ensureSession({ runtime: 'claude', nativeSessionId: 'claude-native-1', account: 'work', cwd: TMP });
-  ok('native session lookup reuses one logical session', first.id === same.id && O.listSessions().length === 1);
-  const handed = O.bindRuntime(first.id, 'codex', { nativeSessionId: 'codex-native-1', account: 'default', cwd: TMP }, { reason: 'handoff' });
-  ok('a handoff keeps logical identity and records both runtime bindings',
-    handed.id === first.id && handed.activeRuntime === 'codex' && handed.bindings.claude && handed.bindings.codex);
-  ok('runtime lineage records the transition once', handed.lineage.length === 1 && handed.lineage[0].from === 'claude');
-  O.bindRuntime(first.id, 'codex', { model: 'test-model' });
-  ok('refreshing the active binding does not invent another handoff', O.readSession(first.id).lineage.length === 1);
-  const brokenSession = O.sessionPath('broken-session');
-  fs.mkdirSync(path.dirname(brokenSession), { recursive: true });
-  fs.writeFileSync(brokenSession, '{broken');
-  let sessionRefused = false;
-  try { O.ensureSession({ id: 'broken-session', runtime: 'codex', cwd: TMP }); } catch { sessionRefused = true; }
-  ok('a malformed logical session is refused and not overwritten',
-    sessionRefused && fs.readFileSync(brokenSession, 'utf8') === '{broken');
-  fs.unlinkSync(brokenSession);
-
-  writeJSON(A.REGISTRY_PATH, { version: 1, futureRuntime: { keep: true } });
-  const fallback = A.findAccount();
-  ok('Codex has an implicit default account mapped to the native home', fallback.id === 'default' && /\.codex$/.test(fallback.home));
-  const work = A.addAccount('codex-work');
-  ok('Codex account metadata uses an isolated CODEX_HOME', work.id === 'codex-work' && work.home !== fallback.home);
-  ok('Codex account writes preserve unknown future registry sections',
-    JSON.parse(fs.readFileSync(A.REGISTRY_PATH, 'utf8')).futureRuntime.keep === true);
-  const registryGood = fs.readFileSync(A.REGISTRY_PATH, 'utf8');
-  fs.writeFileSync(A.REGISTRY_PATH, '{broken');
-  let registryRefused = false;
-  try { A.accounts(); } catch { registryRefused = true; }
-  ok('a malformed account registry is refused and not overwritten',
-    registryRefused && fs.readFileSync(A.REGISTRY_PATH, 'utf8') === '{broken');
-  fs.writeFileSync(A.REGISTRY_PATH, registryGood);
-  const env = A.buildEnv(work, 'wrapper-1', first.id);
-  ok('Codex child env carries runtime, account, wrapper, and logical identities',
-    env.CODEX_HOME === work.home && env.ARC_SESSION === 'wrapper-1' && env.ARC_LOGICAL_SESSION === first.id
-    && env.ARC_RUNTIME === 'codex' && env.ARC_RUNTIME_ACCOUNT === 'codex-work');
-
-  // Codex reads lifecycle hooks from `[hooks]` in config.toml (TOML array-of-tables),
-  // NOT a JSON hooks.json — verified empirically against the real codex binary + a live
-  // turn. ensureHooks appends a managed block, preserving the user's config, idempotently,
-  // and clears any dead hooks.json a prior (wrong) version left behind.
-  fs.writeFileSync(path.join(work.home, 'config.toml'), 'model = "gpt-x"\n[windows]\nsandbox = "elevated"\n');
-  writeJSON(path.join(work.home, 'hooks.json'), { hooks: { SessionStart: [{ hooks: [{ command: 'node "z/arc-codex-hook.js"' }] }] } }); // dead artifact
-  CR.ensureHooks(work); CR.ensureHooks(work);
-  const cfg = fs.readFileSync(path.join(work.home, 'config.toml'), 'utf8');
-  ok('Codex hook install preserves the user config.toml', /sandbox = "elevated"/.test(cfg) && /model = "gpt-x"/.test(cfg));
-  ok('Codex hook install writes [hooks] for both lifecycle events',
-    /\[\[hooks\.SessionStart\.hooks\]\]/.test(cfg) && /\[\[hooks\.UserPromptSubmit\.hooks\]\]/.test(cfg)
-    && /type = "command"/.test(cfg) && /arc-codex-hook\.js/.test(cfg));
-  ok('Codex hook install is idempotent', (cfg.match(/arc managed hooks \(do not edit/g) || []).length === 1);
-  ok('Codex hook install clears the dead hooks.json a prior version wrote', !fs.existsSync(path.join(work.home, 'hooks.json')));
-  ok('Codex command adapter uses the Windows cmd shim', process.platform !== 'win32' || /cmd\.exe$/i.test(CR.commandSpec([]).bin));
-  ok('Codex launch bypasses hook trust (cl vets its own hook source)',
-    CR.commandSpec(['exec'], { bypassHookTrust: true }).args.includes('--dangerously-bypass-hook-trust')
-    && !CR.commandSpec(['exec']).args.includes('--dangerously-bypass-hook-trust'));
-  const yoloSpec = CR.commandSpec(['resume', 'x'], { bypassHookTrust: true, yolo: true }).args;
-  ok('Codex --yolo is a global flag placed before the subcommand',
-    yoloSpec.includes('--yolo') && yoloSpec.indexOf('--yolo') < yoloSpec.indexOf('resume')
-    && !CR.commandSpec(['resume', 'x'], { bypassHookTrust: true }).args.includes('--yolo'));
-
-  // ensureStatusLine — seed codex's native [tui] status_line, non-clobbering.
-  const slHome = (name) => { const h = path.join(TMP, 'sl-' + name); fs.mkdirSync(h, { recursive: true }); return h; };
-  const slRead = (h) => fs.readFileSync(path.join(h, 'config.toml'), 'utf8');
-  const h1 = slHome('fresh'); CR.ensureStatusLine({ id: 'x', home: h1 });
-  ok('status line: fresh config gets [tui] status_line + colors',
-    /\[tui\]/.test(slRead(h1)) && /status_line = \["model-with-reasoning"/.test(slRead(h1)) && /status_line_use_colors = true/.test(slRead(h1)));
-  const h2 = slHome('mine'); fs.writeFileSync(path.join(h2, 'config.toml'), 'model="x"\n[tui]\nstatus_line = ["weekly-limit"]\n');
-  CR.ensureStatusLine({ id: 'x', home: h2 });
-  ok('status line: a user-set status_line is left untouched', slRead(h2).includes('["weekly-limit"]') && !slRead(h2).includes('model-with-reasoning'));
-  const h3 = slHome('tui'); fs.writeFileSync(path.join(h3, 'config.toml'), 'model="x"\n[tui]\nstatus_line_use_colors = true\n[tui.model_availability_nux]\n"gpt-5.5" = 4\n\n# >>> arc managed hooks >>>\n[[hooks.SessionStart]]\n');
-  CR.ensureStatusLine({ id: 'x', home: h3 });
-  const s3 = slRead(h3);
-  ok('status line: inserts under existing [tui], no DUPLICATE use_colors key, preserves rest',
-    /status_line = \[/.test(s3) && (s3.match(/status_line_use_colors/g) || []).length === 1
-    && /model_availability_nux/.test(s3) && /arc managed hooks/.test(s3));
-  ok('status line is idempotent (2nd call no-op)', (CR.ensureStatusLine({ id: 'x', home: h1 }), (slRead(h1).match(/status_line = \[/g) || []).length === 1));
-
-  const codexHook = path.join(SRC, 'arc-codex-hook.js');
-  const hookEnv = {
-    ...process.env,
-    ARC_SESSION: 'codex-wrapper-1',
-    ARC_LOGICAL_SESSION: first.id,
-    ARC_RUNTIME_ACCOUNT: 'codex-work',
-  };
-  const start = spawnSync(process.execPath, [codexHook], {
-    env: hookEnv,
-    input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'codex-native-2', cwd: TMP, model: 'test-model' }),
-    encoding: 'utf8',
-  });
-  ok('Codex SessionStart hook is silent and succeeds', start.status === 0 && !(start.stdout || '').trim());
-  ok('Codex SessionStart binds the native id into the logical session',
-    O.readSession(first.id).bindings.codex.nativeSessionId === 'codex-native-2');
-  const codexHelp = spawnSync(process.execPath, [codexHook], {
-    env: hookEnv,
-    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'codex-native-2', cwd: TMP, prompt: 'arc:help' }),
-    encoding: 'utf8',
-  });
-  let codexHelpOut = {}; try { codexHelpOut = JSON.parse(codexHelp.stdout || '{}'); } catch {}
-  ok('Codex UserPromptSubmit hook blocks arc:help before the model',
-    codexHelpOut.decision === 'block' && /arc — Codex commands/.test(codexHelpOut.reason || '')
-    && !/(arc|cl):switch/.test(codexHelpOut.reason || ''));
-} catch (e) { ok('runtime orchestration works', false, e.message); }
-
-section('arc-runner Codex launch adapter');
-try {
-  const fakeBin = path.join(TMP, 'fake-codex-bin');
-  const fakeJs = path.join(fakeBin, 'fake-codex.js');
-  const capture = path.join(fakeBin, 'capture.json');
-  const launchHome = path.join(TMP, 'launch-cl-home');
-  const nativeHome = path.join(TMP, 'launch-codex-home');
-  fs.mkdirSync(fakeBin, { recursive: true });
-  fs.writeFileSync(fakeJs,
-    `require('fs').writeFileSync(process.env.FAKE_CODEX_CAPTURE, JSON.stringify({args:process.argv.slice(2),env:{CODEX_HOME:process.env.CODEX_HOME,ARC_SESSION:process.env.ARC_SESSION,ARC_LOGICAL_SESSION:process.env.ARC_LOGICAL_SESSION,ARC_RUNTIME:process.env.ARC_RUNTIME,ARC_RUNTIME_ACCOUNT:process.env.ARC_RUNTIME_ACCOUNT}}));`);
-  fs.writeFileSync(path.join(fakeBin, 'codex.cmd'), `@echo off\r\n"${process.execPath}" "${fakeJs}" %*\r\n`);
-  const launched = spawnSync(process.execPath, [path.join(SRC, 'arc-runner.js'), 'codex', '--account', 'default', '--help'], {
-    cwd: TMP,
-    env: {
-      ...process.env,
-      PATH: `${fakeBin};${process.env.PATH || ''}`,
-      ARC_HOME: launchHome,
-      CODEX_HOME: nativeHome,
-      FAKE_CODEX_CAPTURE: capture,
-    },
-    encoding: 'utf8',
-    timeout: 15000,
-  });
-  ok('cl codex launches and returns the child exit code', launched.status === 0, launched.stderr);
-  const got = JSON.parse(fs.readFileSync(capture, 'utf8'));
-  ok('arc codex forwards native arguments after the global flags (--dangerously-bypass-hook-trust + --yolo)',
-    got.args.includes('--dangerously-bypass-hook-trust') && got.args.includes('--yolo')
-    && got.args[got.args.length - 1] === '--help');
-  ok('cl codex supplies isolated account and orchestration environment',
-    got.env.CODEX_HOME === nativeHome && got.env.ARC_RUNTIME === 'codex' && got.env.ARC_RUNTIME_ACCOUNT === 'default'
-    && got.env.ARC_SESSION && got.env.ARC_LOGICAL_SESSION);
-  const launchSessions = fs.readdirSync(path.join(launchHome, 'sessions')).map((f) => JSON.parse(fs.readFileSync(path.join(launchHome, 'sessions', f), 'utf8')));
-  ok('cl codex persists a logical session and marks the exited binding',
-    launchSessions.length === 1 && launchSessions[0].bindings.codex.state === 'exited');
-  const installedCfg = fs.readFileSync(path.join(nativeHome, 'config.toml'), 'utf8');
-  ok('cl codex installs lifecycle hooks into the selected CODEX_HOME config.toml',
-    /\[\[hooks\.SessionStart\.hooks\]\]/.test(installedCfg) && /\[\[hooks\.UserPromptSubmit\.hooks\]\]/.test(installedCfg));
-} catch (e) { ok('arc-runner Codex launch works', false, e.message); }
-
-section('arc-runner supervised Claude -> Codex handoff loop');
-try {
-  const loopRoot = path.join(TMP, 'handoff-loop');
-  const loopUser = path.join(loopRoot, 'user');
-  const loopBin = path.join(loopRoot, 'bin');
-  const loopClHome = path.join(loopRoot, 'cl-home');
-  const loopCodexHome = path.join(loopRoot, 'codex-home');
-  const fakeClaude = path.join(loopRoot, 'fake-claude.js');
-  const fakeCodex = path.join(loopRoot, 'fake-codex.js');
-  const codexCalls = path.join(loopRoot, 'codex-calls.jsonl');
-  fs.mkdirSync(loopBin, { recursive: true });
-
-  fs.writeFileSync(fakeClaude, [
-    "const fs=require('fs'),path=require('path');",
-    "const root=process.env.FAKE_LOOP_ROOT;",
-    "const transcript=path.join(root,'source.jsonl');",
-    "const cwd=root;",
-    "fs.writeFileSync(transcript,[JSON.stringify({type:'permission-mode',permissionMode:'auto',cwd}),JSON.stringify({type:'user',cwd,message:{role:'user',content:'continue this work'}}),JSON.stringify({type:'assistant',cwd,message:{role:'assistant',content:[{type:'text',text:'ready to continue'}]}})].join('\\n')+'\\n');",
-    "const cache=path.join(process.env.USERPROFILE,'.claude','cache');fs.mkdirSync(cache,{recursive:true});",
-    "const trigger=path.join(cache,'arc-handoff-'+(process.env.ARC_SESSION||process.env.ARC_SESSION)+'.trigger');",
-    "fs.writeFileSync(trigger,JSON.stringify({source:'claude',target:'codex',account:null,keepLast:0,transcriptPath:transcript,cwd,nativeSessionId:'claude-loop-native',logicalSessionId:process.env.ARC_LOGICAL_SESSION,at:Date.now()}));",
-    "setInterval(()=>{},1000);",
-  ].join('\n'));
-  fs.writeFileSync(fakeCodex, [
-    "const fs=require('fs'),path=require('path');",
-    "const args=process.argv.slice(2);fs.appendFileSync(process.env.FAKE_CODEX_CALLS,JSON.stringify({args,logical:process.env.ARC_LOGICAL_SESSION||null})+'\\n');",
-    "if(args[0]==='exec'){",
-    " const id='11111111-2222-4333-8444-555555555555',dir=path.join(process.env.CODEX_HOME,'sessions');fs.mkdirSync(dir,{recursive:true});",
-    " const marker=args.join(' '),turn='turn-loop';",
-    " const rows=[{type:'session_meta',payload:{session_id:id,internal_chat_message_metadata_passthrough:{turn_id:turn}}},{type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:marker}],internal_chat_message_metadata_passthrough:{turn_id:turn}}}];",
-    " fs.writeFileSync(path.join(dir,'rollout-loop.jsonl'),rows.map(JSON.stringify).join('\\n')+'\\n');",
-    "}",
-  ].join('\n'));
-  fs.writeFileSync(path.join(loopBin, 'codex.cmd'), `@echo off\r\n"${process.execPath}" "${fakeCodex}" %*\r\n`);
-  writeJSON(path.join(loopUser, '.claude', 'arc-config.json'), {
-    version: 1,
-    defaultAccount: 'sub',
-    switchOrder: ['sub'],
-    claudeBin: process.execPath,
-    accounts: [{ id: 'sub', label: 'SUB', type: 'oauth' }],
-    features: { autoBest: false },
-  });
-
-  const loop = spawnSync(process.execPath, [path.join(SRC, 'arc-runner.js'), fakeClaude], {
-    cwd: loopRoot,
-    env: {
-      ...process.env,
-      HOME: loopUser,
-      USERPROFILE: loopUser,
-      PATH: `${loopBin};${process.env.PATH || ''}`,
-      ARC_HOME: loopClHome,
-      CODEX_HOME: loopCodexHome,
-      FAKE_LOOP_ROOT: loopRoot,
-      FAKE_CODEX_CALLS: codexCalls,
-    },
-    encoding: 'utf8',
-    timeout: 30000,
-  });
-  ok('supervisor completes the runtime replacement in one process', loop.status === 0, loop.stderr);
-  const calls = fs.readFileSync(codexCalls, 'utf8').split('\n').filter(Boolean).map(JSON.parse);
-  // The seed is a throwaway `codex exec` spawned directly (no trust flag — the untrusted
-  // hook is harmlessly skipped, keeping the seed rollout clean). The resume goes through
-  // the launch adapter, which prepends --dangerously-bypass-hook-trust (so the fridge hook
-  // fires) and --yolo (arc-launched Codex runs hands-off, no approval prompts).
-  const resumeArgs = calls[1].args;
-  const resumeIdx = resumeArgs.indexOf('resume');
-  ok('handoff seeds Codex and then resumes the minted native session',
-    calls.length === 2 && calls[0].args[0] === 'exec'
-    && resumeIdx >= 0 && resumeArgs[resumeIdx + 1] === '11111111-2222-4333-8444-555555555555');
-  ok('handoff carries the hook-trust bypass so the fridge hook fires on resume',
-    resumeArgs.includes('--dangerously-bypass-hook-trust'));
-  ok('arc-launched Codex always runs --yolo (before the subcommand)',
-    resumeArgs.includes('--yolo') && resumeArgs.indexOf('--yolo') < resumeIdx);
-  const loopSessions = fs.readdirSync(path.join(loopClHome, 'sessions'))
-    .map((f) => JSON.parse(fs.readFileSync(path.join(loopClHome, 'sessions', f), 'utf8')));
-  const loopSession = loopSessions[0];
-  ok('the loop retains one logical identity with both native bindings',
-    loopSessions.length === 1 && loopSession.bindings.claude && loopSession.bindings.codex);
-  ok('the loop records Claude -> Codex lineage and final Codex exit state',
-    loopSession.lineage.length === 1 && loopSession.lineage[0].from === 'claude'
-    && loopSession.lineage[0].to === 'codex' && loopSession.bindings.codex.state === 'exited');
-} catch (e) { ok('supervised handoff loop works', false, e.message); }
-
 // ---- arc-profile: adoptIntoShared (migrate a real dir into the shared one) -------
 // Regression: `tasks` joined SHARED_DIRS. The old code did rmSync(recursive) on the
 // profile's REAL dir before junctioning — which would have DELETED every profile's
@@ -1309,9 +1010,6 @@ try {
   ok('arc-help exports a render function', typeof renderHelp === 'function');
   const sheet = renderHelp();
   ok('cheat sheet lists arc:help and arc:switch', /arc:help/.test(sheet) && /arc:switch/.test(sheet));
-  const codexSheet = renderHelp('codex');
-  ok('Codex help lists only implemented sentinels and names pending directions',
-    /arc:notes/.test(codexSheet) && !/(arc|cl):switch/.test(codexSheet) && /not implemented yet/.test(codexSheet));
 
   // End-to-end: the hook must BLOCK arc:help / arc:cl (case-insensitive) and return
   // the sheet as the reason — zero model tokens, exactly like arc:peek.
@@ -1325,29 +1023,6 @@ try {
   // A non-sentinel prompt must pass straight through (no block, empty stdout).
   const pass = spawnSync(process.execPath, [hook], { input: JSON.stringify({ prompt: 'hello world' }), encoding: 'utf8' });
   ok('non-sentinel prompt passes through (no block)', (pass.stdout || '').trim() === '');
-
-  const handoffTranscript = path.join(TMP, 'hook-handoff.jsonl');
-  fs.writeFileSync(handoffTranscript, '{}\n');
-  const handoffSession = 'hook-handoff-session';
-  const handoff = spawnSync(process.execPath, [hook], {
-    env: { ...process.env, ARC_SESSION: handoffSession, ARC_LOGICAL_SESSION: 'logical-hook-1' },
-    input: JSON.stringify({
-      prompt: 'arc:handoff codex --account default --keep-last 20',
-      transcript_path: handoffTranscript,
-      session_id: 'claude-native-hook',
-      cwd: TMP,
-    }),
-    encoding: 'utf8',
-  });
-  let handoffOut = {}; try { handoffOut = JSON.parse(handoff.stdout || '{}'); } catch {}
-  const handoffTrigger = path.join(CLAUDE, 'cache', `arc-handoff-${handoffSession}.trigger`);
-  const handoffPayload = JSON.parse(fs.readFileSync(handoffTrigger, 'utf8'));
-  ok('arc:handoff is blocked and queued for the supervisor',
-    handoffOut.decision === 'block' && handoffPayload.target === 'codex');
-  ok('handoff trigger carries transcript, account, cap, and logical identity',
-    handoffPayload.transcriptPath === handoffTranscript && handoffPayload.account === 'default'
-    && handoffPayload.keepLast === 20 && handoffPayload.logicalSessionId === 'logical-hook-1');
-  fs.unlinkSync(handoffTrigger);
 } catch (e) { ok('arc:help hook works', false, e.message); }
 
 // ---- arc-room (the "fridge": per-room append-only sticky-note ledger) ---------
@@ -1715,9 +1390,8 @@ try {
 
   const r = B.install(bdir, opts);
   const claudeSkill = path.join(opts.claudeDir, 'skills', 'demo');
-  const codexSkill = path.join(opts.agentsDir, 'skills', 'demo');
-  ok('install deploys the skill to BOTH claude + codex homes',
-    fs.existsSync(path.join(claudeSkill, 'SKILL.md')) && fs.existsSync(path.join(claudeSkill, 'helper.js')) && fs.existsSync(path.join(codexSkill, 'SKILL.md')));
+  ok('install deploys the skill (with its supporting files) to the claude skills home',
+    fs.existsSync(path.join(claudeSkill, 'SKILL.md')) && fs.existsSync(path.join(claudeSkill, 'helper.js')));
   ok('install excludes the manifest from the deployed skill', !fs.existsSync(path.join(claudeSkill, 'arc-bundle.json')));
   const settings = JSON.parse(fs.readFileSync(path.join(opts.claudeDir, 'settings.json'), 'utf8'));
   ok('install merged the bundle hook into settings.json (with {scripts} resolved)',
@@ -1733,8 +1407,8 @@ try {
   // remove — inverse of install
   const rm = B.remove('demo', opts);
   const s3 = JSON.parse(fs.readFileSync(path.join(opts.claudeDir, 'settings.json'), 'utf8'));
-  ok('remove deletes both skill homes + pulls the hook back out + clears the lockfile',
-    rm.removed && !fs.existsSync(claudeSkill) && !fs.existsSync(codexSkill)
+  ok('remove deletes the skill home + pulls the hook back out + clears the lockfile',
+    rm.removed && !fs.existsSync(claudeSkill)
     && !JSON.stringify(s3.hooks || {}).includes('demo.js') && !B.list(opts).demo);
 
   // junction-safety: a dev install of a skill can be a symlink/junction to a checkout.

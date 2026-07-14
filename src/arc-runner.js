@@ -34,7 +34,6 @@ const { spawn, spawnSync } = require('child_process');
 const C = require('./arc-config');
 const core = require('./arc-switch-core'); // shared launch-account decision + peek
 const { pickConvId } = require('./arc-conv'); // pure convId reconciliation (testable)
-const O = require('./arc-orchestrator');
 
 const CACHE_DIR = C.CACHE_DIR;
 const TRIGGER_POLL_MS = 1_000;    // how often to check for a slash-command trigger
@@ -66,8 +65,6 @@ const SESSION_ID = (process.env.ARC_RESPAWNED === '1' && process.env.ARC_SESSION
 // Per-session state file. With multiple arc terminals open, a single global state
 // file would let them stomp each other's account — so key it by SESSION_ID.
 const STATE_PATH = path.join(CACHE_DIR, `arc-state-${SESSION_ID}.json`);
-let logicalSessionId = process.env.ARC_LOGICAL_SESSION || null;
-let runtimeName = 'claude';
 
 // ---- state ----------------------------------------------------------------
 
@@ -80,12 +77,11 @@ function readState() {
       switchCount: s.switchCount || 0,
       convId: s.convId || null,
       pinnedEffort: s.pinnedEffort || null,
-      logicalSessionId: s.logicalSessionId || null,
       runtime: s.runtime || 'claude',
       nativeSessionId: s.nativeSessionId || null,
     };
   }
-  catch { return { account: cfg.defaultAccount, switchCount: 0, convId: null, pinnedEffort: null, logicalSessionId: null, runtime: 'claude', nativeSessionId: null }; }
+  catch { return { account: cfg.defaultAccount, switchCount: 0, convId: null, pinnedEffort: null }; }
 }
 
 function writeState(s) {
@@ -94,8 +90,6 @@ function writeState(s) {
     // Stamp the live pid + cwd for out-of-band tooling (pid liveness checks).
     const full = {
       ...s,
-      logicalSessionId: logicalSessionId || s.logicalSessionId || null,
-      runtime: s.runtime || runtimeName,
       pid: process.pid,
       cwd: process.cwd(),
     };
@@ -265,7 +259,6 @@ function buildEnv(accountId) {
   const acc = C.findAccount(cfg, accountId);
   const env = C.accountEnv(acc, process.env);
   env.ARC_SESSION = SESSION_ID;
-  env.ARC_LOGICAL_SESSION = logicalSessionId || '';
   env.ARC_RUNTIME = 'claude';
   env.ARC_RUNTIME_ACCOUNT = accountId;
   // Point Claude Code at THIS account's isolated config dir (its own credentials +
@@ -438,12 +431,9 @@ const deleteTrigger    = path.join(CACHE_DIR, `arc-delete-${SESSION_ID}.trigger`
 // { oldId, newId }. arc-runner kills claude (releases the open profile dir), moves
 // the profile dir + updates config, then relaunches this conversation on the new name.
 const renameTrigger    = path.join(CACHE_DIR, `arc-rename-${SESSION_ID}.trigger`);
-// Dropped by arc:handoff after the hook has captured the authoritative transcript.
-// The runner owns the TTY and performs the runtime replacement transaction.
-const handoffTrigger   = path.join(CACHE_DIR, `arc-handoff-${SESSION_ID}.trigger`);
 
 function clearTriggers() {
-  for (const t of [switchTrigger, restartTrigger, pickTrigger, addAcctTrigger, deleteTrigger, renameTrigger, handoffTrigger]) {
+  for (const t of [switchTrigger, restartTrigger, pickTrigger, addAcctTrigger, deleteTrigger, renameTrigger]) {
     try { fs.unlinkSync(t); } catch {}
   }
 }
@@ -758,11 +748,6 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
         try { payload = JSON.parse(fs.readFileSync(renameTrigger, 'utf8')); } catch {}
         clearTriggers(); killChild(child); finish('rename', undefined, payload || {});
       }
-      else if (fs.existsSync(handoffTrigger)) {
-        let payload = null;
-        try { payload = JSON.parse(fs.readFileSync(handoffTrigger, 'utf8')); } catch {}
-        clearTriggers(); killChild(child); finish('handoff', undefined, payload || {});
-      }
       else if (fs.existsSync(switchTrigger)) {
         // The trigger may carry a target account id (from `arc:switch <id>`).
         let target = null;
@@ -1032,108 +1017,8 @@ function cmdSetKey(argv) {
 
 // ---- main loop ------------------------------------------------------------
 
-function codexResumeId(args) {
-  if (args[0] !== 'resume') return null;
-  const candidate = args[1];
-  return candidate && !candidate.startsWith('-') ? candidate : null;
-}
-
-async function runCodexCommand(args, opts = {}) {
-  const A = require('./arc-codex-account');
-  const R = require('./arc-runtime-codex');
-  runtimeName = 'codex';
-  // Codex has no per-turn permission modes; an arc-launched Codex session runs with
-  // --yolo (no approval prompts, no sandbox) by default — arc manages it as trusted
-  // automation, the same rationale as --dangerously-bypass-hook-trust.
-  const yolo = true;
-
-  if (args[0] === 'accounts') {
-    for (const account of A.accounts()) {
-      const status = R.loginStatus(account);
-      process.stdout.write(`${account.id}\t${status.ok ? status.message || 'logged in' : 'not logged in'}\t${account.home}\n`);
-    }
-    return;
-  }
-  if (args[0] === 'add-account') {
-    const id = args[1];
-    if (!id) throw new Error('usage: arc codex add-account <id> [--home <dir>]');
-    const hi = args.indexOf('--home');
-    const account = A.addAccount(id, { home: hi >= 0 ? args[hi + 1] : null });
-    process.stdout.write(`[arc] Codex account "${id}" uses ${account.home}; starting native login...\n`);
-    const result = R.login(account);
-    if (result.status !== 0) throw new Error(`Codex login for "${id}" did not complete`);
-    process.stdout.write(`[arc] Codex account "${id}" is ready.\n`);
-    return;
-  }
-  if (args[0] === 'login') {
-    const account = A.findAccount(args[1]);
-    if (!account) throw new Error(`unknown Codex account "${args[1]}"`);
-    const result = R.login(account);
-    if (result.status !== 0) process.exitCode = result.status || 1;
-    return;
-  }
-  if (args[0] === 'remove-account') {
-    const id = args[1];
-    if (!id) throw new Error('usage: arc codex remove-account <id>');
-    const removed = A.removeAccount(id);
-    process.stdout.write(removed
-      ? `[arc] removed Codex account alias "${id}"; its CODEX_HOME was left intact.\n`
-      : `[arc] no Codex account alias "${id}".\n`);
-    return;
-  }
-
-  let accountId = null;
-  const passArgs = [];
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--account' && args[i + 1]) { accountId = args[++i]; continue; }
-    passArgs.push(args[i]);
-  }
-  const account = A.findAccount(accountId);
-  if (!account) throw new Error(`unknown Codex account "${accountId}" (configured: ${A.accounts().map((a) => a.id).join(', ')})`);
-
-  const state = readState();
-  const nativeSessionId = codexResumeId(passArgs);
-  const logical = O.ensureSession({
-    id: logicalSessionId || state.logicalSessionId,
-    runtime: 'codex',
-    nativeSessionId,
-    account: account.id,
-    cwd: process.cwd(),
-    pid: process.pid,
-    state: 'active',
-  });
-  logicalSessionId = logical.id;
-  writeState({ runtime: 'codex', account: account.id, nativeSessionId, logicalSessionId });
-  try { require('./arc-fridge').refreshRole(SESSION_ID, process.pid, process.cwd()); } catch {}
-
-  process.stdout.write(`\x1b[2m[arc] starting Codex on ${account.label} · arc session ${logical.id.slice(0, 8)}...\x1b[0m\n`);
-  if (yolo) process.stdout.write(`\x1b[2m[arc] launching Codex with --yolo (no approval prompts)\x1b[0m\n`);
-  const { child } = R.launch({
-    args: passArgs,
-    account: account.id,
-    sessionId: SESSION_ID,
-    logicalSessionId,
-    cwd: process.cwd(),
-    yolo,
-  });
-  const exitCode = await new Promise((resolve) => {
-    child.on('exit', (code, signal) => {
-      logLine(`codex exited code=${code} signal=${signal || '-'} account=${account.id}`);
-      resolve(code ?? 0);
-    });
-    child.on('error', (e) => { logLine(`codex spawn error: ${e.message} account=${account.id}`); resolve(1); });
-  });
-  O.markInactive(logicalSessionId, 'codex', exitCode === 0 ? 'exited' : 'failed');
-  deleteState();
-  process.exitCode = exitCode;
-}
-
 async function main() {
   const userArgs = process.argv.slice(2);
-
-  // `arc` remains the established Claude launcher. `arc codex` opts into the
-  // second runtime without changing any existing Claude command or flag.
-  if (userArgs[0] === 'codex') return runCodexCommand(userArgs.slice(1));
   if (userArgs[0] === 'bundle') {
     // arc bundle list | install <dir> | remove <name>  — first-party add-ons.
     const B = require('./arc-bundle');
@@ -1152,16 +1037,6 @@ async function main() {
     }
     return;
   }
-  if (userArgs[0] === 'sessions') {
-    const sessions = O.listSessions();
-    if (!sessions.length) { process.stdout.write('[arc] no orchestrated sessions yet.\n'); return; }
-    for (const s of sessions) {
-      const b = s.bindings && s.bindings[s.activeRuntime];
-      process.stdout.write(`${s.id}\t${s.activeRuntime}\t${(b && b.account) || 'default'}\t${(b && b.nativeSessionId) || '-'}\t${s.cwd}\n`);
-    }
-    return;
-  }
-
   // Subcommands (never claude flags): setup / capture / doctor.
   if (userArgs[0] === 'setup') {
     const r = spawnSync(process.execPath, [path.join(__dirname, 'arc-setup.js')], { stdio: 'inherit' });
@@ -1249,8 +1124,6 @@ async function main() {
     require('./arc-watch').run(userArgs[1], process.cwd());
     return; // the interval keeps the process alive
   }
-  // (handoff is a HUMAN action → the zero-token `arc:handoff` sentinel, handled in
-  // arc-switch-hook, not a `arc handoff` CLI subcommand.)
 
   let respawning = process.env.ARC_RESPAWNED === '1';
   if (!respawning) { sweepStaleStates(); migrateProfilesOnce(); } // only the original launch; not re-execs
@@ -1277,7 +1150,6 @@ async function main() {
   }
 
   const state = readState();
-  logicalSessionId = logicalSessionId || state.logicalSessionId;
   let account = state.account;
   let switchCount = state.switchCount;
   // Fresh `arc` launch (not a switch/restart respawn): if the cached usage is stale,
@@ -1385,19 +1257,6 @@ async function main() {
       if (!(forceDup ? null : liveOwnerOf(convId))) claimConv(convId);
     }
   }
-  // Create orchestration state only after duplicate/refusal checks and any
-  // pre-launch id reconciliation. A rejected launch must not leave an "active"
-  // logical session that never owned a runtime.
-  const logical = O.ensureSession({
-    id: logicalSessionId,
-    runtime: 'claude',
-    nativeSessionId: convId || explicitId,
-    account,
-    cwd: process.cwd(),
-    pid: process.pid,
-    state: 'active',
-  });
-  logicalSessionId = logical.id;
   logLine(`launch account=${account} conv=${guardConv || '(picker/new)'} cwd=${process.cwd()}${forceDup ? ' [FORCED DUP]' : ''}`);
 
   for (;;) {
@@ -1485,46 +1344,6 @@ async function main() {
     // Once the statusline has revealed the real id we track, the managed path owns
     // it (--resume), so a switch/restart re-opens THIS chat instead of the picker.
     if (actual && convId === actual) userManagesConv = false;
-    O.bindRuntime(logicalSessionId, 'claude', {
-      nativeSessionId: convId,
-      account,
-      cwd: process.cwd(),
-      transcriptPath: convId ? findTranscript(convId) : null,
-      pid: process.pid,
-      state: 'active',
-    });
-
-    if (reason === 'handoff') {
-      const A = require('./arc-codex-account');
-      const target = A.findAccount(payload && payload.account);
-      if (!target) {
-        process.stderr.write(`\x1b[31m[arc] handoff failed — unknown Codex account "${payload && payload.account}". Returning to Claude.\x1b[0m\n`);
-        await new Promise(r => setTimeout(r, 400));
-        continue;
-      }
-      const handoff = require('./arc-handoff').handoff(SESSION_ID, {
-        transcript: payload && payload.transcriptPath,
-        cwd: (payload && payload.cwd) || process.cwd(),
-        keepLast: (payload && payload.keepLast) || 0,
-        codexHome: target.home,
-      });
-      if (!handoff.ok) {
-        process.stderr.write(`\x1b[31m[arc] ${handoff.message} Returning to Claude.\x1b[0m\n`);
-        await new Promise(r => setTimeout(r, 400));
-        continue;
-      }
-      O.markInactive(logicalSessionId, 'claude', 'handed-off');
-      O.bindRuntime(logicalSessionId, 'codex', {
-        nativeSessionId: handoff.sessionId,
-        account: target.id,
-        cwd: handoff.cwd,
-        state: 'active',
-      }, { reason: 'handoff' });
-      writeState({ runtime: 'codex', account: target.id, nativeSessionId: handoff.sessionId, logicalSessionId });
-      process.stdout.write(`\x1b[36m[arc] handoff ready — continuing as Codex on ${target.label}.\x1b[0m\n`);
-      return runCodexCommand(['resume', handoff.sessionId, '--account', target.id]);
-    }
-
     if (reason === 'restart') {
       // Re-exec the whole wrapper so freshly-edited on-disk code loads too. State
       // (incl. convId) persists and ARC_SESSION is inherited, so the child re-opens
@@ -1645,7 +1464,6 @@ async function main() {
 
     // Normal exit — the user quit claude. Clean up this session's bookkeeping
     // (state + session-id bridge; the conversation itself is preserved by claude).
-    O.markInactive(logicalSessionId, 'claude', exitCode === 0 ? 'exited' : 'failed');
     deleteState();
     try { fs.unlinkSync(path.join(CACHE_DIR, `arc-active-${SESSION_ID}.json`)); } catch {}
     process.exit(exitCode ?? 0);

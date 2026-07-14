@@ -6,40 +6,7 @@
 
 const C = require('./arc-config');
 
-function renderCodexHelp() {
-  return `arc — Codex commands
-===================
-Inside this Codex session (caught by a hook before the model runs):
-  arc:help                this cheat sheet — ZERO tokens
-  arc:role <name>         claim a role in this repo's shared fridge
-  arc:role                show your role and active roommates
-  arc:note <role> <text>  leave a note · arc:note all <text> broadcasts
-  arc:notes               read your unread notes now — ZERO tokens
-  arc:notes all           show the whole fridge without marking it read
-
-In a terminal:
-  arc codex [args]                    launch Codex (native args pass through)
-  arc codex --account <id> [args]     launch with an isolated CODEX_HOME
-  arc codex accounts                  show aliases, native login status, and homes
-  arc codex add-account <id>          create an isolated home and run codex login
-  arc codex login [id]                refresh a native Codex login
-  arc codex remove-account <id>       remove only the alias; its home stays intact
-  arc sessions                        list logical sessions and native bindings
-
-Delegate a task to the OTHER model (runs headless, you keep working):
-  arc:delegate claude <task>   fire it on Claude — result lands on the fridge
-  arc:delegate codex <task>    fire it on Codex  — result lands on the fridge
-  (terminal/agent form: arc delegate <claude|codex> <task>)
-
-Runtime handoff:
-  Claude → Codex is available from an arc-managed Claude prompt with
-  arc:handoff codex [--account <id>] [--keep-last N].
-  Codex → Claude is not implemented yet.
-`;
-}
-
-function renderHelp(runtime = process.env.ARC_RUNTIME || 'claude') {
-  if (String(runtime).toLowerCase() === 'codex') return renderCodexHelp();
+function renderHelp() {
   let accounts = [];
   try { accounts = C.loadConfig().accounts.map((a) => a.id); } catch {}
   const example = accounts[1] || accounts[0] || 'pool';
@@ -122,14 +89,7 @@ Why the arc: forms?
           exhausted account). That's why everything here is an arc: sentinel — there
           are no arc slash commands anymore.
 
-Take this conversation into Codex (same terminal, same logical arc session):
-  arc:handoff codex               transpile THIS Claude conversation, then continue
-                                  it in Codex using Codex's native resume path
-  arc:handoff codex --account <id> choose an isolated Codex account / CODEX_HOME
-  arc:handoff codex --keep-last N cap a huge session to its last N messages
-
-Delegate a task to the OTHER model — it runs HEADLESS, you keep working. Unlike
-handoff (which REPLACES this session), a delegate runs beside you and reports back:
+Delegate a task to the OTHER model — it runs HEADLESS and you keep working:
   arc:delegate codex <task>       fire it on Codex; result lands on the fridge
   arc:delegate claude <task>      fire it on Claude; result lands on the fridge
                                   The result is handed to this session AUTOMATICALLY at the
@@ -142,10 +102,6 @@ In your terminal (not inside a session):
   arc add-account <id>    guided browser login to add a subscription (own profile)
   arc capture <id>        adopt the current active login into <id>'s profile
   arc trash [restore <id>|empty]   manage the deleted-conversation trash
-  arc codex [args]        launch Codex; native Codex arguments pass through
-  arc codex accounts      show Codex aliases, login status, and isolated homes
-  arc codex add-account <id> [--home <dir>]   add an alias + run native login
-  arc sessions            list logical arc sessions and their runtime bindings
   arc doctor              health check    ·    arc setup    reconfigure
 
 Fridge from a terminal (also how an AGENT posts — it can RUN these, though it can't

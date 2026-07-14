@@ -12,7 +12,7 @@
 //     "manifest": 1, "name": "inquiry", "version": "1.0.0",
 //     "requires": { "arc": ">=2.1", "node": ">=22", "host": ["claude"] },
 //     "provides": {
-//       "skills":     [{ "path": ".", "targets": ["claude", "codex"] }],  // -> ~/.claude/skills, ~/.agents/skills
+//       "skills":     [{ "path": "." }],                    // -> ~/.claude/skills
 //       "scripts":    [{ "src": "scripts", "dest": "scripts" }],           // -> ~/.claude/scripts
 //       "hooks":      [{ "event": "UserPromptSubmit", "command": "node \"{scripts}/x.js\"" }],
 //       "mcp":        [{ "name": "x", "dir": "mcp" }],                      // -> ~/.claude/scripts/x-mcp
@@ -43,7 +43,7 @@ function defaults(opts = {}) {
     agentsDir: opts.agentsDir || path.join(home, '.agents'),
     arcHome: opts.arcHome || path.resolve(process.env.ARC_HOME || path.join(home, '.arc')),
     scriptsDir: opts.scriptsDir || path.join(claudeDir, 'scripts'),
-    host: opts.host || { arc: arcVersion(), node: process.versions.node, claude: true, codex: !!opts.hasCodex },
+    host: opts.host || { arc: arcVersion(), node: process.versions.node, claude: true },
     dryRun: !!opts.dryRun,
     registerMcp: opts.registerMcp !== false,
   };
@@ -80,7 +80,7 @@ function validate(manifest, host = defaults().host) {
   if (req.node && !satisfies(host.node, req.node)) errors.push(`requires node ${req.node} (have ${host.node})`);
   if (req.arc && !satisfies(host.arc, req.arc)) errors.push(`requires arc ${req.arc} (have ${host.arc})`);
   if (Array.isArray(req.host)) {
-    const activeHosts = ['claude', host.codex ? 'codex' : null].filter(Boolean);
+    const activeHosts = ['claude'];
     if (!req.host.some((h) => activeHosts.includes(h))) warnings.push(`bundle targets ${req.host.join('/')}; this host is ${activeHosts.join('/')}`);
   }
   return { ok: errors.length === 0, errors, warnings };
@@ -143,7 +143,6 @@ function install(bundleDir, options = {}) {
     const srcDir = path.resolve(bundleDir, s.path || '.');
     const targets = s.targets || ['claude'];
     if (targets.includes('claude')) { const d = path.join(o.claudeDir, 'skills', name); if (!o.dryRun) copyDir(srcDir, d); deployed.skills.push(d); }
-    if (targets.includes('codex')) { const d = path.join(o.agentsDir, 'skills', name); if (!o.dryRun) copyDir(srcDir, d); deployed.skills.push(d); }
   }
   // scripts → ~/.claude/scripts
   for (const sc of provides.scripts || []) {

@@ -12,7 +12,6 @@
 //   arc:switch            → cycle to the next account
 //   arc:switch <id>       → switch to a named account
 //   arc:restart           → reload the wrapper + relaunch, same account
-//   arc:handoff [codex]   → continue this conversation in Codex
 //   arc:help  (arc:arc)     → print the command cheat sheet (zero tokens)
 //   arc:role <name>       → claim a role in this room (the "fridge" — see arc-room.js)
 //   arc:note <to> <text>  → leave a sticky note for a roommate ("all" = broadcast)
@@ -39,7 +38,7 @@ const core = require('./arc-switch-core');
 // backtrack; being explicit costs nothing and documents the intent).
 // `arc:` is the current prefix; `arc:` is kept as a deprecated alias through the
 // migration so running sessions and muscle memory don't break.
-const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|handoff|delegate|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|arc)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|delegate|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|arc)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -146,18 +145,9 @@ function run(raw) {
     const r = core.requestRestart(session);
     return clBlock(r.message);
   }
-  if (action === 'handoff') {
-    const r = core.requestHandoff(session, arg || '', {
-      transcriptPath: hook.transcript_path || null,
-      cwd: hook.cwd || null,
-      nativeSessionId: hook.session_id || null,
-      logicalSessionId: process.env.ARC_LOGICAL_SESSION || null,
-    });
-    return clBlock(r.message);
-  }
   if (action === 'delegate') {
     // Fire a HEADLESS run on the chosen runtime; the result comes back as a fridge note.
-    // Unlike arc:handoff (which REPLACES this session), the delegate runs alongside you.
+    // The delegate runs ALONGSIDE you — you keep the session and keep working.
     const m = (arg || '').match(/^(claude|codex)\s+([\s\S]+)$/i);
     if (!m) {
       return clBlock('usage: arc:delegate <claude|codex> <task>\n'

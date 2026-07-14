@@ -5,7 +5,7 @@ description: You may be sharing this repo with ANOTHER arc session — a "roomma
 
 # Share with your roommate
 
-Two `cl` sessions in one repo are **roommates**: independent Claude Code or Codex
+Two `arc` sessions in one repo are **roommates**: independent Claude Code
 sessions that can't see each other's context. The **fridge** is how they leave each
 other notes — and you, the agent, put a note there by **running a terminal command**
 (do not submit `arc:note` as a prompt; the runtime hook consumes that form before it

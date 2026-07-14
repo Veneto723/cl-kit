@@ -36,48 +36,6 @@ function currentAccount(C, cfg, session) {
   return cfg.defaultAccount;
 }
 
-// Queue a runtime handoff for the owning arc-runner. The hook must stay fast and
-// must not replace a TTY child itself; it records a validated request, blocks the
-// sentinel prompt, and lets the supervisor perform the transactional work.
-function requestHandoff(session, argStr, context = {}) {
-  if (!session) return { ok: false, message: 'NOT running under the arc wrapper (launch with `arc`).' };
-  const tokens = String(argStr || '').trim().split(/\s+/).filter(Boolean);
-  const target = tokens[0] && !tokens[0].startsWith('-') ? tokens.shift().toLowerCase() : 'codex';
-  if (target !== 'codex') return { ok: false, message: `handoff target "${target}" is not supported yet (available: codex).` };
-  if (!context.transcriptPath) return { ok: false, message: 'the current Claude transcript is not available yet; send one ordinary prompt, then retry.' };
-
-  let account = null, keepLast = 0;
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] === '--account' && tokens[i + 1]) { account = tokens[++i]; continue; }
-    if (tokens[i] === '--keep-last' && tokens[i + 1]) {
-      const value = tokens[++i];
-      if (!/^[1-9]\d*$/.test(value)) return { ok: false, message: '--keep-last must be a positive integer.' };
-      keepLast = parseInt(value, 10);
-      continue;
-    }
-    return { ok: false, message: `unknown handoff option "${tokens[i]}" — use: arc:handoff codex [--account <id>] [--keep-last N]` };
-  }
-  let tmp = null;
-  try {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-    const file = path.join(CACHE_DIR, `arc-handoff-${session}.trigger`);
-    tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({
-      source: 'claude', target, account, keepLast,
-      transcriptPath: context.transcriptPath,
-      cwd: context.cwd || process.cwd(),
-      nativeSessionId: context.nativeSessionId || null,
-      logicalSessionId: context.logicalSessionId || null,
-      at: Date.now(),
-    }));
-    try { fs.renameSync(tmp, file); }
-    catch { try { fs.unlinkSync(file); } catch {} fs.renameSync(tmp, file); }
-    return { ok: true, message: `HANDING OFF to Codex${account ? ` account "${account}"` : ''} — preparing the target session...` };
-  } catch (e) {
-    if (tmp) { try { fs.unlinkSync(tmp); } catch {} }
-    return { ok: false, message: `handoff signal FAILED — ${e.message}` };
-  }
-}
 
 // Count LIVE arc sessions currently pinned to `accountId` (an arc-state file says so
 // AND its pid is alive). Removing an account doesn't kill sessions using it — they
@@ -1003,4 +961,4 @@ function requestTrash(session, argStr) {
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 
-module.exports = { requestSwitch, requestRestart, requestHandoff, requestPicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };
+module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };
