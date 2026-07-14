@@ -163,7 +163,7 @@ function toolAccountAdd(args) {
     migratedLegacyConfig: migrated,
     backup,
     note: (args.type === 'oauth'
-      ? `If this is a separate claude.ai subscription, capture its login: the guided way is to run \`cl add-account ${acc.id}\` in a terminal (drives the browser login + auto-captures) — that's easier than adding it here first. Or \`arc capture ${acc.id}\` while already logged in as it. `
+      ? `If this is a separate claude.ai subscription, capture its login: the guided way is to run \`arc add-account ${acc.id}\` in a terminal (drives the browser login + auto-captures) — that's easier than adding it here first. Or \`arc capture ${acc.id}\` while already logged in as it. `
       : '') + LIVE_NOTE,
   };
 }

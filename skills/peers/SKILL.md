@@ -56,8 +56,12 @@ plain words, that a teammate could act on without reading your diff.
 
 ```sh
 arc note all "P-014: /login now returns 202, not 200 — update the client"
-arc note backend "schema: added `retries` (int, default 0) to task_log"
+arc note backend 'schema: added retries (int, default 0) to task_log'
 ```
+
+(Quote bodies with **single quotes** when they carry code-ish text: in double quotes, a
+backtick is command substitution in sh and an escape in PowerShell — the word silently
+vanishes from the posted note.)
 
 `arc note all` broadcasts (simplest — you don't need to know their role name). Target a role
 only when it's for one of them. Your own notes never come back to you.
@@ -116,7 +120,7 @@ plus the path. The note is a pointer, not the document.
 arm `arc await <your-role>` before you go idle, and that wake hands you the answer. So ask, then
 get on with something else — the reply will find you.
 
-**Answer one the same way:** `arc note <them> --reply-to #<seq> "DONE — <findings + file:line>"`.
+**Answer one the same way:** `arc note <them> --reply-to <seq> "DONE — <findings + file:line>"`.
 Say `DONE`, `BLOCKED`, or `REVISE` up front so they know the outcome before reading the detail.
 
 ## The note kinds (optional — use them when they apply)
@@ -129,10 +133,12 @@ A plain note is `info` and needs no flags. Reach for a kind when the note is one
 arc note research --kind request "can the client tolerate a 202 here?"
 
 # ANSWER one. --reply-to threads it (and implies kind: result).
-arc note android --reply-to #8 "DONE — breaks on client <3.2; 3.2+ handles 202"
+# NB: the flag takes the BARE number. Writing `--reply-to #8` in a shell comments out
+# everything from the `#` — the thread link AND your answer silently vanish.
+arc note android --reply-to 8 "DONE — breaks on client <3.2; 3.2+ handles 202"
 
 # RETRACT something you said. --supersedes implies kind: correction and is auto-HIGH.
-arc note android --supersedes #13 "CORRECTION — I was wrong: they CAN coexist, because…"
+arc note android --supersedes 13 "CORRECTION — I was wrong: they CAN coexist, because…"
 
 # BLOCK them (auto-HIGH):
 arc note all --kind blocker "staging DB is down — don't trust integration tests"
@@ -145,7 +151,7 @@ or delete a note, because a peer may already have acted on it. So when you get s
 **wrong**, you don't rewrite history: you append a correction that *names* the note it retracts.
 Arc then marks the old note **⚠ RETRACTED** wherever anyone reads it. Without that link, a
 peer can act on a claim you have already publicly withdrawn. If you say *"I was wrong about
-#13"*, **always** pass `--supersedes #13`.
+#13"*, **always** pass `--supersedes 13` (bare number — a `#` starts a shell comment).
 
 ---
 
@@ -187,7 +193,7 @@ this one step can't be done on your behalf. That's the entire reason you're bein
 2. **Do the work** — if it's a `request`, that's your job now. If you're a `research` peer, stay
    **READ-ONLY on code**: you investigate and report; the coding peer owns the code. That split
    is the point.
-3. **Answer** — `arc note <them> --reply-to #<seq> "DONE — <findings + file:line>"`. Lead with
+3. **Answer** — `arc note <them> --reply-to <seq> "DONE — <findings + file:line>"`. Lead with
    `DONE` / `BLOCKED` / `REVISE` so they get the outcome before the detail.
 4. **Stop normally.** arc re-arms your listener on the way out. The loop is self-sustaining —
    there's nothing to remember.

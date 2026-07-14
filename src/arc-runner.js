@@ -38,9 +38,18 @@ const { pickConvId } = require('./arc-conv'); // pure convId reconciliation (tes
 const CACHE_DIR = C.CACHE_DIR;
 const TRIGGER_POLL_MS = 1_000;    // how often to check for a slash-command trigger
 
+// `arc setup` and `arc doctor` exist to FIX a broken config, so they must run WITHOUT one.
+// Everyone else genuinely needs accounts, and for them the hard exit is right. Found by the
+// first live board audit (research peer, note #2): a config that PARSES but normalizes to zero
+// valid accounts — {"accounts":[]} — used to kill EVERY subcommand right here at module load,
+// including the exact two commands every error message says to run. The doctor died of the
+// disease it treats.
+let cfgError = null;
 let cfg = (() => {
   try { return C.loadConfig(); }
   catch (e) {
+    const cmd = String(process.argv[2] || '').toLowerCase();
+    if (cmd === 'setup' || cmd === 'doctor') { cfgError = e; return null; }
     process.stderr.write(`[arc] ${e.message}\n[arc] run \`arc setup\` to create ~/.claude/arc-config.json\n`);
     process.exit(1);
   }
@@ -1094,6 +1103,15 @@ function cmdAddAccount(argv) {
 
 function cmdDoctor() {
   const lines = [];
+  // A BROKEN config is a diagnosis, not a crash — diagnosing config is doctor's whole job.
+  if (!cfg) {
+    lines.push(`arc doctor — config: ${C.CONFIG_PATH}`);
+    lines.push(`  config: ✗ BROKEN — ${cfgError ? cfgError.message : 'unreadable'}`);
+    lines.push('  fix: run `arc setup` (rebuilds it), or repair the file by hand and re-run `arc doctor`');
+    lines.push(`claude bin: ${CLAUDE_BIN} ${fs.existsSync(CLAUDE_BIN) || CLAUDE_BIN === 'claude' ? '✓' : '✗ MISSING'}`);
+    process.stdout.write(lines.join('\n') + '\n');
+    process.exit(1);
+  }
   lines.push(`arc doctor — config: ${C.CONFIG_PATH}${cfg._legacy ? ' (LEGACY fallback — run `arc setup`)' : ''}`);
   lines.push(`claude bin: ${CLAUDE_BIN} ${fs.existsSync(CLAUDE_BIN) || CLAUDE_BIN === 'claude' ? '✓' : '✗ MISSING'}`);
   lines.push(`default account: ${cfg.defaultAccount}   switch order: ${cfg.switchOrder.join(' → ')}`);

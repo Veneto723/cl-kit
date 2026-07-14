@@ -136,7 +136,7 @@ To update later: `git pull`, re-run the installer, and `arc:restart` any live se
 | `arc:notes all` | the whole board, nothing marked read | **0** |
 | `arc:anchors` | which doc claims about the code have gone **stale** | **0** |
 | `arc:anchors reseal` | after fixing the docs, make the current code the baseline | **0** |
-| `arc:help` (`arc:cl`) | print this cheat sheet | **0** |
+| `arc:help` (`arc:arc`) | print this cheat sheet | **0** |
 
 
 The `arc:` forms are plain messages caught by a hook **before** the model runs —
@@ -196,7 +196,7 @@ changed files:
 ```
 
 Ticking the task *is* the handoff, and it arrives with evidence. Set the policy with
-`features.doneGate` in `~/.claude/arc-config.json` (or `CL_DONE_GATE`):
+`features.doneGate` in `~/.claude/arc-config.json` (or `ARC_DONE_GATE`):
 
 | mode | behaviour |
 |---|---|
@@ -220,7 +220,7 @@ printf '#!/bin/sh\nnode "$HOME/.claude/scripts/arc-postcommit.js" >/dev/null 2>&
   > .git/hooks/post-commit && chmod +x .git/hooks/post-commit
 ```
 
-It attributes the commit to the board role of whoever ran `git commit` (`CL_SESSION` →
+It attributes the commit to the board role of whoever ran `git commit` (`ARC_SESSION` →
 role), broadcasts a note with the sha + changed files, and is a **no-op** for any commit
 made outside a arc session (so manual commits don't spam). It runs after the commit, so
 it can never block or fail it. Remove the hook file to disable.
@@ -315,7 +315,7 @@ Everything lives in `~/.claude/arc-config.json` (created by `arc setup`):
 
 **Account types:**
 - **`oauth`** — a claude.ai subscription. Each account keeps its login in its **own
-  private profile** (`~/.claude/cl-profiles/<id>/`, pointed at via `CLAUDE_CONFIG_DIR`),
+  private profile** (`~/.claude/arc-profiles/<id>/`, pointed at via `CLAUDE_CONFIG_DIR`),
   so two subscriptions **never share one `.credentials.json`** — concurrent sessions
   on different accounts can't hijack each other's login. Conversations, skills, and
   commands are junctioned back to `~/.claude`, so switching account keeps your chat.
@@ -370,12 +370,12 @@ those sessions drop to the default on their next switch/restart.
 
 **Deleting a conversation & the trash — `arc:delete` / `arc:trash`:** `arc:delete`
 (double-confirmed) never hard-deletes — it MOVES the current conversation to
-`~/.claude/backups/cl-deleted-<ts>/` and starts a fresh session. `arc:trash` lists
+`~/.claude/backups/arc-deleted-<ts>/` and starts a fresh session. `arc:trash` lists
 what's in the trash (id, size, deletion time, project); `arc:trash restore <id>`
 (or the `arc:restore <id>` shorthand) moves one back so `arc --resume <id>` works
 again from its project folder; `arc:trash empty` (double-confirmed, red warning)
 **permanently** purges the trash — the only hard-delete in the kit, and it only
-ever touches `cl-deleted-*` folders (config and account backups are never trash).
+ever touches `arc-deleted-*` folders (config and account backups are never trash).
 All of it also works from the terminal: `arc trash [restore <id>|empty]`.
 
 **Auto-select the best account at launch (`features.autoBest`, default on):**
@@ -438,7 +438,7 @@ and never echoes secrets. Changes are `arc:switch`-able immediately, no restart.
 - **Per-conversation safety.** Each terminal owns one UUID-pinned conversation, so
   parallel sessions never cross-contaminate. A lock file **refuses to open one
   conversation in two live processes** (a confirmed crash cause). Every launch and
-  exit is logged to `~/.claude/cache/cl-runner.log`.
+  exit is logged to `~/.claude/cache/arc-runner.log`.
 - **Effort/ultracode preservation.** `ultracode` reports as `xhigh` everywhere and
   is rejected by the `--effort` flag, so arc detects it from the transcript and
   re-applies it via the documented `{"ultracode": true}` settings key on switch.
@@ -452,7 +452,7 @@ ships a discrete **export / import** so you can carry chats between PCs (no
 realtime sync daemon, no concurrency risk):
 
 ```
-arc:export                 # archive the CURRENT conversation → ~/cl-export-<ts>.tgz
+arc:export                 # archive the CURRENT conversation → ~/arc-export-<ts>.tgz
 arc:export all             # every session in THIS project folder
 arc:export global          # every session on this machine (everything)
 arc:export <project|id>    # one project's sessions, or one conversation   ·   --since <days>
@@ -465,7 +465,7 @@ arc:import <archive> E:    # re-root every project in the bundle under E:\ so it
 Export bundles each session's transcript **plus** its sidecar (subagents, tool
 results) and a manifest. Import is **safe**: it's *newer-wins* (compares the last
 transcript entry's timestamp), backs up any local copy it overwrites (to
-`~/.claude/backups/cl-import-<ts>/`), and **never touches a conversation that's
+`~/.claude/backups/arc-import-<ts>/`), and **never touches a conversation that's
 open in a live arc session**. Also available as terminal `arc export` / `arc import`.
 
 **Resume caveat:** `claude --resume <id>` is scoped to the cwd's project dir, so
@@ -506,15 +506,16 @@ numbers are meaningless on such an account.
 ## Setting up a second machine
 
 The repo has all the *code* but deliberately **not** your accounts or secrets
-(`arc-config.json` and `cl-credentials/` are never committed). Two options:
+(`arc-config.json` and the per-account profiles are never committed). Two options:
 
 - **Fresh:** run the installer, then `arc setup` (+ `arc add-account` per
   subscription). For an `api` account, provide its key via `apiKeyEnv`/inline
   since machine-specific `apiKeyFrom` files won't be present.
-- **Mirror:** run the installer, then copy `~/.claude/arc-config.json` and the
-  `~/.claude/cl-credentials/` folder from the old machine, and `arc doctor` to
-  confirm. If an account uses `apiKeyFrom: { file }`, copy that file too or switch
-  it to `apiKeyEnv`.
+- **Mirror:** run the installer, then copy `~/.claude/arc-config.json` and each
+  account's profile folder (`~/.claude/arc-profiles/<id>/` — the login lives in its
+  `.credentials.json`) from the old machine, and `arc doctor` to confirm. An `api`
+  account's DPAPI-encrypted key does NOT survive the move (DPAPI is machine-bound):
+  re-run `arc set-key <id>` on the new machine, or copy the `apiKeyFrom` file.
 
 ---
 
@@ -529,7 +530,7 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
   (The removed `/switch` slash command couldn't: its bash needed a safety
   classifier that runs on the same dead account — the deadlock these forms fix.)
 - **No toast appeared** — toasts only fire for turns ≥ 30s (tune with
-  `CL_NOTIFY_MIN_MS`, `0` = every turn). Check `~/.claude/cache/cl-notify.log` for
+  `ARC_NOTIFY_MIN_MS`, `0` = every turn). Check `~/.claude/cache/arc-notify.log` for
   the decision (`toast` / `skip` / `wait` / `fail`).
 - **"REFUSING TO LAUNCH — conversation already open"** — that conversation is live
   in another arc window. Use that window, start a fresh `arc`, or override with
@@ -556,7 +557,7 @@ install.ps1     Windows 11 installer (idempotent)
   the directory junctions behind per-account credential isolation all lean on Windows.
   (It was tri-platform once; that support was untested weight and got removed.) Keys
   are a DPAPI `apiKeyEnc` blob by default, or `apiKeyEnv` / `apiKeyFrom`.
-- Claude wrapper caches live under `~/.claude/cache/cl-*`; stale files are swept
+- Claude wrapper caches live under `~/.claude/cache/arc-*`; stale files are swept
   automatically (state daily, effort memories after 7 days, conversation locks by
   process liveness). Runtime-neutral aliases and logical sessions live under
   `~/.arc`.

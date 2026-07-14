@@ -987,6 +987,71 @@ try {
     !/Bash tool/.test(hookSrc) && /run_in_background/.test(hookSrc));
 } catch (e) { ok('bin shims', false, e.message); }
 
+// ---- audit regressions (board note #2: what the research peer found) ---------------
+// The first live board request was an audit for more 127-class bugs — commands arc TEACHES
+// that do not RUN. It came back with three (docs/audit/shipping-surface-2026-07-14.md); each
+// is pinned here so it cannot regrow. All are SHIPPING-SURFACE assertions: they test the
+// string a human or agent is told to type, not the module underneath.
+section('audit regressions (taught commands must run)');
+try {
+  // A3 — THE CATCH-22. A config that PARSES but normalizes to zero valid accounts used to
+  // kill EVERY subcommand at module load — including `arc setup` and `arc doctor`, the exact
+  // two commands every error message says to run. The doctor died of the disease it treats.
+  const sick = fs.mkdtempSync(path.join(os.tmpdir(), 'sick-home-'));
+  fs.mkdirSync(path.join(sick, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(sick, '.claude', 'arc-config.json'), '{"accounts":[]}');
+  const sickEnv = { ...process.env, HOME: sick, USERPROFILE: sick };
+
+  const doc = spawnSync(process.execPath, [path.join(SRC, 'arc-runner.js'), 'doctor'],
+    { encoding: 'utf8', env: sickEnv, timeout: 30000 });
+  ok('`arc doctor` RUNS on a broken config and DIAGNOSES it (it used to die of it)',
+    /BROKEN/.test(doc.stdout || '') && /arc setup/.test(doc.stdout || ''), (doc.stdout || doc.stderr || '').slice(0, 200));
+  ok('...and still exits 1 — broken config is a failed checkup, not a healthy one',
+    doc.status === 1);
+
+  // The carve-out is for the two REPAIR commands only: anything else still hard-exits, since
+  // it genuinely cannot work without accounts.
+  const peek = spawnSync(process.execPath, [path.join(SRC, 'arc-runner.js'), 'peek'],
+    { encoding: 'utf8', env: sickEnv, timeout: 30000 });
+  ok('other subcommands still refuse loudly on a broken config (they really need accounts)',
+    peek.status === 1 && /arc setup/.test(peek.stderr || '') && !/BROKEN/.test(peek.stdout || ''));
+  fs.rmSync(sick, { recursive: true, force: true });
+
+  // A1 — the MCP guidance taught the PRE-RENAME binary (`cl add-account`): exit 127 on any
+  // fresh install. Nothing named `cl` may be taught anywhere in the MCP server.
+  const mcpSrc = fs.readFileSync(path.join(ROOT, 'mcp', 'server.js'), 'utf8');
+  ok('mcp/server.js teaches `arc add-account`, not the dead `cl` binary',
+    !/`cl /.test(mcpSrc) && /`arc add-account /.test(mcpSrc));
+
+  // B1 — `--reply-to #8` in a SHELL comments out everything from the `#`: the thread link and
+  // the answer text silently vanish, and a garbage note posts "successfully". The parser takes
+  // the bare number, so every terminal-context example must teach the bare number. (The one
+  // allowed mention is the warning ABOUT the trap.)
+  const notesSrc = fs.readFileSync(path.join(SRC, 'arc-notes.js'), 'utf8');
+  const skillSrc = fs.readFileSync(path.join(ROOT, 'skills', 'peers', 'SKILL.md'), 'utf8');
+  const cmdWithHash = /arc[: ]note [^\n]*--(?:reply-to|supersedes)[= ]#\d/;
+  ok('NOTE_USAGE examples use bare note numbers (a `#` would be eaten by the shell)',
+    !cmdWithHash.test(notesSrc));
+  ok('the peers skill examples use bare note numbers too',
+    !cmdWithHash.test(skillSrc.replace(/^# NB:.*$/m, '')));
+  ok('...and the parser still ACCEPTS the # form (tolerance stays even though docs stopped teaching it)',
+    /#\?\(\\d\+\)/.test(notesSrc));
+
+  // C1 — injection() speaks ONLY to the agent, and an agent cannot type sentinels: the hook
+  // eats `arc:notes` from a human, and in the agent's shell it is not a command at all. The
+  // one runnable form for its audience is the space form.
+  const injStart = notesSrc.indexOf('function injection(');
+  const injBody = notesSrc.slice(injStart, notesSrc.indexOf('\nfunction ', injStart + 1));
+  ok('the board injection tells the AGENT `arc notes`, never the untypeable `arc:notes`',
+    injBody.length > 0 && !/arc:notes/.test(injBody) && /arc notes/.test(injBody));
+
+  // D — the README documented cl-era names the code no longer uses: env vars that do nothing
+  // when set, log/backup paths that never exist, and a credentials folder NO code ever creates.
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  ok('README documents no dead cl-era names (env vars, cache paths, cl-credentials/)',
+    !/CL_[A-Z_]+/.test(readme) && !/cl-(credentials|profiles|deleted|runner|export|import|notify)/.test(readme));
+} catch (e) { ok('audit regressions', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- arc-await (the ONLY thing that can reach an idle session) -------------------
 // arc runs claude on a real TTY and holds no handle into it; Claude Code has no timer hook.
 // So exactly one thing pulls back an idle session: a background command IT started, whose
