@@ -111,6 +111,11 @@ Delegate a task to the OTHER model — it runs HEADLESS and you keep working:
                                   (a REVISE lands at HIGH priority: a gate, not just a note)
   arc:delegate <rt> --model <id> <task>   target a specific model (e.g. --model claude-fable-5
                                   to consult Fable, or a cheap model to review)
+  arc:delegate claude --account <id> <task>   run it on ANOTHER account (deliberate offload).
+                                  By DEFAULT a claude delegate runs on THIS session's account —
+                                  your quota never jumps behind your back.
+  (for in-session work on the SAME model + quota, prefer Claude's own subagent/Task tool;
+   arc:delegate is for CROSSING a boundary — another runtime, another quota, another session)
                                   The result/verdict is handed to this session AUTOMATICALLY at
                                   the end of a turn — you never have to go and ask for it. (Claim
                                   a role with arc:role to have it addressed to you by name.)

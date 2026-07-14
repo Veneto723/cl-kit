@@ -72,13 +72,19 @@ function runCodex(cwd, task, opts = {}) {
   return { ok: r.status === 0, out: String(r.stdout || '').trim(), err: String(r.stderr || '').trim(), status: r.status };
 }
 
-// opts: { advisor?, model? }. advisor → --permission-mode plan (read-only) + the verdict
-// contract as an appended system prompt. task → --permission-mode acceptEdits so it can
+// opts: { advisor?, model?, account? }. advisor → --permission-mode plan (read-only) + the
+// verdict contract as an appended system prompt. task → --permission-mode acceptEdits so it can
 // actually do the work (parity with codex --yolo, but no free-form bash).
+//
+// QUOTA FOLLOWS THE CALLER. A claude delegate runs on the SAME account the calling session is
+// on — not the config default. Delegating to your own agent must not silently jump accounts and
+// bill a quota you didn't choose. `--account <id>` overrides it, which is how you deliberately
+// offload to a different pool. (opts.account is passed as an ARGUMENT, never inherited via env:
+// cleanEnv strips ARC_RUNTIME_ACCOUNT so a delegate can't pick up the caller's identity by accident.)
 function runClaude(cwd, task, opts = {}) {
   const C = require('./arc-config');
   const cfg = C.loadConfig();
-  const acc = C.findAccount(cfg, cfg.defaultAccount) || cfg.accounts[0];
+  const acc = C.findAccount(cfg, opts.account || cfg.defaultAccount) || cfg.accounts[0];
   const env = C.accountEnv(acc, cleanEnv());
   const args = ['-p'];
   if (opts.model) args.push('--model', opts.model);
@@ -96,15 +102,16 @@ function parseDelegateSpec(argStr) {
   if (!m) return null;
   const runtime = m[1].toLowerCase();
   let rest = m[2];
-  let advisor = false, model = null, mm;
+  let advisor = false, model = null, account = null, mm;
   for (;;) {
     if ((mm = rest.match(/^(?:--advisor|-a)\b\s*/i))) { advisor = true; rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^--model[=\s]+(\S+)\s*/i))) { model = mm[1]; rest = rest.slice(mm[0].length); continue; }
+    if ((mm = rest.match(/^--account[=\s]+(\S+)\s*/i))) { account = mm[1]; rest = rest.slice(mm[0].length); continue; }
     break;
   }
   const task = rest.trim().replace(/^["']|["']$/g, '');
   if (!task) return null;
-  return { runtime, advisor, model, task };
+  return { runtime, advisor, model, account, task };
 }
 
 // ---- in-flight markers -------------------------------------------------------------
@@ -156,30 +163,34 @@ function markArmed(pending) {
   }
 }
 
-// Fire a delegate in the BACKGROUND. Used by the arc:delegate sentinel (both runtimes'
-// hooks) and by `arc delegate` — a hook/CLI must return immediately, so we detach.
-// `session` is the REQUESTER's arc session: it is passed as an ARGUMENT (never in the
-// env — see cleanEnv) purely so the marker can name who to wake. opts: { advisor?, model? }.
-function spawnDelegate(runtime, cwd, toRole, task, session, opts = {}) {
-  const mode = opts.advisor ? 'advisor' : 'task';
-  const model = opts.model || '-';
-  const child = spawn(process.execPath, [__filename, runtime, cwd, toRole || '-', session || '-', mode, model, task], { detached: true, stdio: 'ignore' });
+// Fire a delegate in the BACKGROUND. Used by the arc:delegate sentinel and by `arc delegate`
+// — a hook/CLI must return immediately, so we detach. The caller's identity (session, role,
+// ACCOUNT) travels as an ARGUMENT, never in the env: cleanEnv strips ARC_* so a delegate can
+// never inherit the requester's fridge cursor or account by accident.
+//   opts: { toRole?, session?, advisor?, model?, account? }
+// Encoded as ONE json argv slot rather than a row of positional flags — the positional form
+// had grown to seven slots, which is exactly how an off-by-one lands in the wrong field.
+function spawnDelegate(runtime, cwd, task, opts = {}) {
+  const child = spawn(process.execPath, [__filename, runtime, cwd, JSON.stringify(opts || {}), task], { detached: true, stdio: 'ignore' });
   child.unref();
   return true;
 }
 
 // `runners` is injectable so the note-posting path is testable without a real model call.
-// argv:  <runtime> <cwd> <toRole|-> <session|-> <task|advisor> <model|-> <task…>
+// argv:  <runtime> <cwd> <optsJSON> <task…>
 function run(argv, runners) {
   const RUN = runners || { codex: runCodex, claude: runClaude };
-  const [runtime, cwd, toRoleRaw, sessionRaw, modeRaw, modelRaw, ...rest] = argv;
+  const [runtime, cwd, optsRaw, ...rest] = argv;
+  let o = {};
+  try { o = JSON.parse(optsRaw || '{}') || {}; } catch {}
   const task = rest.join(' ').trim();
-  const toRole = toRoleRaw && toRoleRaw !== '-' ? toRoleRaw : null;
-  const session = sessionRaw && sessionRaw !== '-' ? sessionRaw : null;
-  const advisor = String(modeRaw) === 'advisor';
-  const model = modelRaw && modelRaw !== '-' ? modelRaw : null;
+  const toRole = o.toRole || null;
+  const session = o.session || null;
+  const advisor = !!o.advisor;
+  const model = o.model || null;
+  const account = o.account || null;
   if (!/^(claude|codex)$/.test(String(runtime)) || !cwd || !task) {
-    process.stderr.write('usage: arc-delegate.js <claude|codex> <cwd> <toRole|-> <session|-> <task|advisor> <model|-> <task…>\n');
+    process.stderr.write('usage: arc-delegate.js <claude|codex> <cwd> <optsJSON> <task…>\n');
     return 2;
   }
 
@@ -190,7 +201,7 @@ function run(argv, runners) {
   const id = `${runtime}-${started}-${process.pid}`;
   writeMarker(room, { id, session, role: toRole, runtime, task, started, advisor });
   let res;
-  try { res = RUN[runtime](cwd, task, { advisor, model }); }
+  try { res = RUN[runtime](cwd, task, { advisor, model, account }); }
   catch (e) { res = { ok: false, out: '', err: String(e && e.message), status: -1 }; }
   const secs = Math.round((Date.now() - started) / 1000);
   const verdict = advisor && res.ok ? parseVerdict(res.out) : null;
@@ -203,7 +214,9 @@ function run(argv, runners) {
 
   const clip = (s) => (s.length > MAX_BODY ? s.slice(0, MAX_BODY) + '…' : s);
   const from = `${kind}:${runtime}`;                              // never collides with a real role
-  const label = `${from}${model ? ' ' + model : ''}`;
+  // Name the QUOTA it actually ran on, so a delegate can never quietly bill an account you
+  // didn't expect — the thing that was wrong before the caller's account started being inherited.
+  const label = `${from}${model ? ' ' + model : ''}${account && runtime === 'claude' ? ` @${account}` : ''}`;
   let body, priority;
   if (!res.ok) {
     body = `[${label}] FAILED "${task}" — exit ${res.status} after ${secs}s\n${clip(res.err || res.out) || '(no output)'}\n(full: ${full})`;

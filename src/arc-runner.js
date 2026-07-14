@@ -1258,17 +1258,20 @@ async function main() {
     const D = require('./arc-delegate');
     const spec = D.parseDelegateSpec(userArgs.slice(1).join(' '));
     if (!spec) {
-      process.stderr.write('usage: arc delegate <claude|codex> [--advisor] [--model <id>] <task>\n'
+      process.stderr.write('usage: arc delegate <claude|codex> [--advisor] [--model <id>] [--account <id>] <task>\n'
         + '  do it:      arc delegate codex "find why the import test is flaky"\n'
-        + '  review it:  arc delegate claude --advisor --model claude-fable-5 "review my plan: …"\n');
+        + '  review it:  arc delegate claude --advisor --model claude-fable-5 "review my plan: …"\n'
+        + '  (a claude delegate runs on THIS session\'s account by default; --account offloads it elsewhere)\n');
       process.exit(1);
     }
     const room = require('./arc-room').resolveRoom(process.cwd());
     const session = process.env.ARC_SESSION || '';
     const myRole = require('./arc-fridge').getRole(session, room);
-    D.spawnDelegate(spec.runtime, room.root, myRole, spec.task, session, { advisor: spec.advisor, model: spec.model });
+    const account = spec.account || process.env.ARC_RUNTIME_ACCOUNT || null;   // quota follows the caller
+    D.spawnDelegate(spec.runtime, room.root, spec.task, { toRole: myRole, session, advisor: spec.advisor, model: spec.model, account });
+    const on = (spec.runtime === 'claude' && account) ? ` on "${account}"` : '';
     const what = spec.advisor ? `asked ${spec.runtime} to REVIEW` : `delegated to ${spec.runtime}`;
-    process.stdout.write(`[arc] ${what}${spec.model ? ` (${spec.model})` : ''} (background) — the ${spec.advisor ? 'verdict' : 'result'} will land on the fridge`
+    process.stdout.write(`[arc] ${what}${spec.model ? ` (${spec.model})` : ''}${on} (background) — the ${spec.advisor ? 'verdict' : 'result'} will land on the fridge`
       + (myRole ? ` for "${myRole}"` : ' as a broadcast') + `. Read it with \`arc notes\`.\n`);
     return;
   }

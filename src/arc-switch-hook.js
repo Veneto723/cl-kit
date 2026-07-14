@@ -166,8 +166,12 @@ function run(raw) {
     }
     const room = require('./arc-room').resolveRoom(typeof hook.cwd === 'string' ? hook.cwd : process.cwd());
     const myRole = require('./arc-fridge').getRole(session, room);
-    D.spawnDelegate(spec.runtime, room.root, myRole, spec.task, session, { advisor: spec.advisor, model: spec.model });
-    const what = spec.advisor ? `asked ${spec.runtime}${spec.model ? ` (${spec.model})` : ''} to REVIEW` : `delegated to ${spec.runtime}${spec.model ? ` (${spec.model})` : ''}`;
+    // QUOTA FOLLOWS THE CALLER: a claude delegate inherits THIS session's account unless
+    // --account says otherwise. Delegating to your own agent must not jump quotas silently.
+    const account = spec.account || process.env.ARC_RUNTIME_ACCOUNT || null;
+    D.spawnDelegate(spec.runtime, room.root, spec.task, { toRole: myRole, session, advisor: spec.advisor, model: spec.model, account });
+    const on = (spec.runtime === 'claude' && account) ? ` on "${account}"` : '';
+    const what = spec.advisor ? `asked ${spec.runtime}${spec.model ? ` (${spec.model})` : ''}${on} to REVIEW` : `delegated to ${spec.runtime}${spec.model ? ` (${spec.model})` : ''}${on}`;
     return clBlock(`✓ ${what} — "${spec.task.slice(0, 56)}${spec.task.length > 56 ? '…' : ''}"\n`
       + `  running in the BACKGROUND; you keep working. ${spec.advisor ? 'The verdict' : 'The result'} lands on the fridge`
       + (myRole ? ` for "${myRole}"` : ' as a broadcast (claim a role with arc:role to have it addressed to you)') + '.\n'
