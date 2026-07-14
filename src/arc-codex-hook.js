@@ -35,7 +35,7 @@ function run(raw) {
   if (hook.hook_event_name !== 'UserPromptSubmit') return;
 
   const prompt = typeof hook.prompt === 'string' ? hook.prompt : '';
-  const command = prompt.match(/^\s*[/!]?\s*arc:(role|note|notes|help|arc)\b\s*(.*)$/i);
+  const command = prompt.match(/^\s*[/!]?\s*arc:(role|note|notes|delegate|help|arc)\b\s*(.*)$/i);
   if (command) {
     const action = command[1].toLowerCase();
     const arg = (command[2] || '').trim();
@@ -43,6 +43,17 @@ function run(raw) {
     const F = require('./arc-fridge');
     const session = (process.env.ARC_SESSION || '').trim();
     const cwd = hook.cwd || process.cwd();
+    if (action === 'delegate') {
+      // Delegate FROM codex too — e.g. hand a task back to Claude while you stay here.
+      const m = arg.match(/^(claude|codex)\s+([\s\S]+)$/i);
+      if (!m) return block('[arc] usage: arc:delegate <claude|codex> <task>   (runs headless in the background; result lands on the fridge)');
+      const room = require('./arc-room').resolveRoom(cwd);
+      const myRole = F.getRole(session, room);
+      const task = m[2].trim().replace(/^["']|["']$/g, '');
+      require('./arc-delegate').spawnDelegate(m[1].toLowerCase(), room.root, myRole, task);
+      return block(`[arc] ✓ delegated to ${m[1].toLowerCase()} (background) — the result lands on the fridge`
+        + (myRole ? ` for "${myRole}"` : ' as a broadcast') + '. Read it with arc:notes.');
+    }
     const r = action === 'role' ? F.requestRole(session, arg, cwd)
       : action === 'note' ? F.requestNote(session, arg, cwd)
         : F.requestNotes(session, arg, cwd);

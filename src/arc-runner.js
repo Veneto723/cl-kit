@@ -1204,6 +1204,22 @@ async function main() {
   // never TYPE it; but it can RUN `arc note ...` via its Bash tool, which lands here in a
   // fresh process (no session restart needed). Reuses the same arc-fridge functions the
   // sentinels do. Output mirrors the CLI form (`arc note`, not `arc:note`).
+  // `arc delegate <claude|codex> <task>` — the terminal/AGENT form of arc:delegate. Fires
+  // a HEADLESS run on the chosen runtime in the background; the result lands on the fridge.
+  if (userArgs[0] === 'delegate') {
+    const runtime = String(userArgs[1] || '').toLowerCase();
+    const task = userArgs.slice(2).join(' ').trim();
+    if (!/^(claude|codex)$/.test(runtime) || !task) {
+      process.stderr.write('usage: arc delegate <claude|codex> <task>\n  e.g.  arc delegate codex "find why the import test is flaky"\n');
+      process.exit(1);
+    }
+    const room = require('./arc-room').resolveRoom(process.cwd());
+    const myRole = require('./arc-fridge').getRole(process.env.ARC_SESSION || '', room);
+    require('./arc-delegate').spawnDelegate(runtime, room.root, myRole, task);
+    process.stdout.write(`[arc] delegated to ${runtime} (background) — the result will land on the fridge`
+      + (myRole ? ` for "${myRole}"` : ' as a broadcast') + `. Read it with \`arc notes\`.\n`);
+    return;
+  }
   if (userArgs[0] === 'role' || userArgs[0] === 'note' || userArgs[0] === 'notes') {
     const fridge = require('./arc-fridge');
     const session = process.env.ARC_SESSION || '';

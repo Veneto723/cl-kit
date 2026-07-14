@@ -26,10 +26,15 @@ In a terminal:
   arc codex remove-account <id>       remove only the alias; its home stays intact
   arc sessions                        list logical sessions and native bindings
 
+Delegate a task to the OTHER model (runs headless, you keep working):
+  arc:delegate claude <task>   fire it on Claude — result lands on the fridge
+  arc:delegate codex <task>    fire it on Codex  — result lands on the fridge
+  (terminal/agent form: arc delegate <claude|codex> <task>)
+
 Runtime handoff:
   Claude → Codex is available from an arc-managed Claude prompt with
   arc:handoff codex [--account <id>] [--keep-last N].
-  Codex → Claude and arc:delegate are not implemented yet.
+  Codex → Claude is not implemented yet.
 `;
 }
 
@@ -122,6 +127,13 @@ Take this conversation into Codex (same terminal, same logical arc session):
                                   it in Codex using Codex's native resume path
   arc:handoff codex --account <id> choose an isolated Codex account / CODEX_HOME
   arc:handoff codex --keep-last N cap a huge session to its last N messages
+
+Delegate a task to the OTHER model — it runs HEADLESS, you keep working. Unlike
+handoff (which REPLACES this session), a delegate runs beside you and reports back:
+  arc:delegate codex <task>       fire it on Codex; result lands on the fridge
+  arc:delegate claude <task>      fire it on Claude; result lands on the fridge
+                                  (claim a role first — arc:role — to have the result
+                                   addressed to you; arc watch <role> wakes you on it)
 
 In your terminal (not inside a session):
   arc                     launch

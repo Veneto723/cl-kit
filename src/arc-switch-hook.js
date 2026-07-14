@@ -39,7 +39,7 @@ const core = require('./arc-switch-core');
 // backtrack; being explicit costs nothing and documents the intent).
 // `arc:` is the current prefix; `arc:` is kept as a deprecated alias through the
 // migration so running sessions and muscle memory don't break.
-const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|handoff|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|arc)\b\s*(.*)$/i;
+const TRIGGER_RX = /^\s*[/!]?\s*arc:(switch|restart|handoff|delegate|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|anchors|help|arc)\b\s*(.*)$/i;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -154,6 +154,25 @@ function run(raw) {
       logicalSessionId: process.env.ARC_LOGICAL_SESSION || null,
     });
     return clBlock(r.message);
+  }
+  if (action === 'delegate') {
+    // Fire a HEADLESS run on the chosen runtime; the result comes back as a fridge note.
+    // Unlike arc:handoff (which REPLACES this session), the delegate runs alongside you.
+    const m = (arg || '').match(/^(claude|codex)\s+([\s\S]+)$/i);
+    if (!m) {
+      return clBlock('usage: arc:delegate <claude|codex> <task>\n'
+        + '  e.g.  arc:delegate codex "find why the import test is flaky"\n'
+        + '  It runs in the BACKGROUND and posts the result to the fridge — you keep working.');
+    }
+    const runtime = m[1].toLowerCase();
+    const task = m[2].trim().replace(/^["']|["']$/g, '');
+    const room = require('./arc-room').resolveRoom(typeof hook.cwd === 'string' ? hook.cwd : process.cwd());
+    const myRole = require('./arc-fridge').getRole(session, room);
+    require('./arc-delegate').spawnDelegate(runtime, room.root, myRole, task);
+    return clBlock(`✓ delegated to ${runtime} — "${task.slice(0, 60)}${task.length > 60 ? '…' : ''}"\n`
+      + `  running in the BACKGROUND; you keep working. The result lands on the fridge`
+      + (myRole ? ` for "${myRole}"` : ' as a broadcast (claim a role with arc:role to have it addressed to you)') + '.\n'
+      + `  read it with arc:notes — or wake on it:  arc watch ${myRole || '<role>'}`);
   }
   if (action === 'add-account' || action === 'add') {
     const r = core.requestAddAccount(session, arg || '');

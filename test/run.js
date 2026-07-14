@@ -1524,6 +1524,54 @@ try {
     (catchUp.message.match(/#\s*\d+/g) || []).length === expected && expected > 40 && R2.unreadFor(room2, 'coding').count === 0);
 } catch (e) { ok('arc-fridge works', false, e.message); }
 
+// ---- arc-delegate (fire a headless task on a chosen runtime -> fridge) --------
+section('arc-delegate (headless task -> fridge note)');
+try {
+  const D = require(path.join(SRC, 'arc-delegate.js'));
+  const RM = require(path.join(SRC, 'arc-room.js'));
+
+  // THE safety property: a delegate must NOT inherit the requester's fridge identity,
+  // or its own hook would inject their unread notes and ADVANCE THEIR CURSOR.
+  const before = { ...process.env };
+  process.env.ARC_SESSION = 'victim-1'; process.env.ARC_LOGICAL_SESSION = 'lg-1'; process.env.ARC_RUNTIME = 'claude';
+  const ce = D.cleanEnv();
+  ok('delegate env STRIPS ARC_SESSION/ARC_LOGICAL_SESSION (cannot steal the requester\'s notes)',
+    !ce.ARC_SESSION && !ce.ARC_LOGICAL_SESSION && !ce.ARC_RUNTIME && ce.PATH === process.env.PATH);
+  process.env = before;
+
+  const droom = fs.mkdtempSync(path.join(os.tmpdir(), 'deleg-'));
+  spawnSync('git', ['init', '-q'], { cwd: droom });
+
+  // success path: posts a note addressed to the requester, from delegate:<runtime>
+  const code = D.run(['codex', droom, 'code', 'find', 'the', 'flake'],
+    { codex: () => ({ ok: true, out: 'ANSWER: it is a tar --force-local bug', err: '', status: 0 }) });
+  const room = RM.resolveRoom(droom);
+  let notes = RM.allNotes(room);
+  ok('delegate posts the RESULT to the fridge, addressed to the requesting role',
+    code === 0 && notes.length === 1 && notes[0].from === 'delegate:codex' && notes[0].to === 'code'
+    && /ANSWER: it is a tar/.test(notes[0].body) && /find the flake/.test(notes[0].body));
+  ok('delegate writes the FULL output beside the room state and points the note at it',
+    /full: .*delegate-codex-.*\.md/.test(notes[0].body)
+    && fs.readdirSync(room.planDir).some((f) => /^delegate-codex-.*\.md$/.test(f)));
+
+  // failure path: HIGH priority so it can't be missed
+  D.run(['claude', droom, 'code', 'do', 'x'], { claude: () => ({ ok: false, out: '', err: 'boom', status: 3 }) });
+  notes = RM.allNotes(room);
+  const fail = notes[notes.length - 1];
+  ok('a FAILED delegate still reports back, at HIGH priority',
+    fail.from === 'delegate:claude' && fail.priority === 'high' && /FAILED/.test(fail.body) && /boom/.test(fail.body));
+
+  // no role -> broadcast (to: null) so it is still delivered to the room
+  D.run(['codex', droom, '-', 'anon', 'task'], { codex: () => ({ ok: true, out: 'ok', err: '', status: 0 }) });
+  ok('with no role, the result is BROADCAST rather than dropped', RM.allNotes(room).slice(-1)[0].to === null);
+
+  ok('delegate refuses an unknown runtime / empty task', D.run(['gpt', droom, '-', 'x'], {}) === 2 && D.run(['codex', droom, '-'], {}) === 2);
+  ok('arc:delegate is a live sentinel (matcher accepts it)',
+    /^\s*[/!]?\s*arc:(switch|restart|handoff|delegate)\b/i.test('arc:delegate codex find the bug'));
+
+  fs.rmSync(droom, { recursive: true, force: true });
+} catch (e) { ok('arc-delegate works', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- arc-bundle (first-party bundle installer) -------------------------------
 section('arc-bundle (manifest + installer)');
 try {
