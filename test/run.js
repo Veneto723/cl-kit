@@ -570,7 +570,10 @@ try {
   });
   ok(`install.ps1 wires every hook arc-wire-settings does (${events.length})`, missing.length === 0, `missing: ${missing.join(', ')}`);
   ok('installer publishes the roommate skill at the shared agent path',
-    ps.includes("'.agents\\skills'") && ps.includes("'skills\\share-with-roommate\\*'"));
+    ps.includes("'.agents\\skills'") && ps.includes("'skills\\roommates\\*'"));
+  // the merged skill superseded two others — a stale copy would keep teaching the old split
+  ok('installer sweeps the superseded skills it replaced',
+    ps.includes("'share-with-roommate', 'fridge-responder'") && /Remove-Item -Recurse -Force \$p/.test(ps));
   // idempotent: a second run must not duplicate hooks
   spawnSync(process.execPath, [wire, scriptsDir], { encoding: 'utf8' });
   const s2 = JSON.parse(fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8'));

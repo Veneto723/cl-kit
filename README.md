@@ -98,7 +98,7 @@ The installer is re-runnable and idempotent: it deploys scripts + commands into
 server, generates toast icons, registers the `arc-focus:` click-to-focus protocol, and
 **merges** hooks + statusline into `settings.json` (backing it up first — never
 removing your existing entries). It also publishes the runtime-neutral
-`share-with-roommate` skill to `~/.agents/skills`; other bundled skills remain
+`roommates` skill to `~/.agents/skills`; other bundled skills remain
 Claude-only.
 
 **Gateway keys:** by default `arc set-key` / the add-account wizard store the key as a
@@ -169,11 +169,13 @@ anything is waiting — counted from the files, so it can't be forgotten or wron
 
 **The agents can post too.** An agent can't *type* `arc:note` (the hook eats it before
 the model), but it can **run** the CLI form via its Bash tool — `arc note all "<line>"`,
-`arc note <role> "<line>"`, `arc role`, `arc notes`. The bundled `share-with-roommate`
-skill makes the agent aware it has a roommate and cues *when* to broadcast (a shared
-API/schema change, a decision, a blocker) — and, importantly, when NOT to (routine
-steps). So the two sessions leave each other high-signal notes on their own judgment,
-the way agent-team teammates message each other.
+`arc note <role> "<line>"`, `arc role`, `arc notes`. The bundled `roommates` skill teaches
+the whole protocol: that it *has* a roommate, *when* a note is worth leaving (a shared
+API/schema change, a decision, a blocker) — and, importantly, when NOT to (routine steps);
+the note **kinds** (`request` / `result` / `correction` / `blocker`); and, if the session's
+job is answering others, how to watch the fridge so a delegation wakes it. So the sessions
+leave each other high-signal notes on their own judgment, the way agent-team teammates
+message each other. How much they may do *unprompted* is governed by `arc:mode`.
 
 Notes are never consumed. Reading one only advances *your* cursor; every other roommate
 still sees it. The board lives in `.plan/`, which ignores itself, so it never enters the

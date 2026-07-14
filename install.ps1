@@ -78,10 +78,18 @@ Write-Host "  Claude skills -> $skills"
 # The roommate protocol is runtime-neutral and uses arc's terminal commands, so
 # publish it at the cross-agent discovery path as well.
 $agentSkills = Join-Path $env:USERPROFILE '.agents\skills'
-$roommateSkill = Join-Path $agentSkills 'share-with-roommate'
+$roommateSkill = Join-Path $agentSkills 'roommates'
 New-Item -ItemType Directory -Force $roommateSkill | Out-Null
-Copy-Item (Join-Path $kit 'skills\share-with-roommate\*') $roommateSkill -Recurse -Force
+Copy-Item (Join-Path $kit 'skills\roommates\*') $roommateSkill -Recurse -Force
 Write-Host "  shared skill -> $roommateSkill"
+# `roommates` replaced share-with-roommate + fridge-responder (one protocol, one skill).
+# Sweep the superseded pair so a stale copy can't keep matching and teaching the old split.
+foreach ($stale in @('share-with-roommate', 'fridge-responder')) {
+  foreach ($root in @($agentSkills, (Join-Path $env:USERPROFILE '.claude\skills'))) {
+    $p = Join-Path $root $stale
+    if (Test-Path $p) { Remove-Item -Recurse -Force $p; Write-Host "  removed superseded skill -> $p" -ForegroundColor DarkGray }
+  }
+}
 
 # 3c. bundles — first-party add-ons under bundles/<name>/arc-bundle.json, deployed by
 #     the data-driven bundle installer (arc-bundle.js) instead of being hardcoded here.

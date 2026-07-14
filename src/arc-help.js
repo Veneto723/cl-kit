@@ -149,8 +149,8 @@ TYPE the arc: form, which the hook eats before the model):
   arc watch [role]        (long-running) print a line per incoming delegation, so a
                          BACKGROUND task / Monitor can WAKE an idle delegate session
   arc claudex [stop]      show (or stop) the auto-managed GPT-in-Claude translator sidecars
-  (skills: share-with-roommate = WHEN to broadcast · fridge-responder = how a
-   research session stays responsive to delegations)
+  (skill: roommates = the whole protocol — WHEN a note is worth leaving, the note kinds,
+   and how a delegate session watches the fridge to stay responsive)
 
 Configured accounts: ${accounts.join(', ') || '(none — run `arc setup`)'}
 `;
