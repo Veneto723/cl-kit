@@ -22,10 +22,11 @@ Switch account (keeps your conversation, preserves model/effort/mode):
 Add / manage accounts:
   arc:add-account                   open the WIZARD — it asks WHICH PROVIDER first:
                                      Claude (Anthropic)  → Subscription, or Gateway/pool
-                                     Codex / GPT         → a GPT model INSIDE Claude Code, via an
-                                                           Anthropic-compatible proxy. Same session,
-                                                           same fridge — only the model + quota change,
-                                                           and /model swaps it mid-conversation.
+                                     Codex / GPT         → run a GPT model INSIDE Claude Code. You give
+                                                           a gateway that serves GPT on the OpenAI API;
+                                                           arc runs a LOCAL translator for you (auto-
+                                                           started on switch) so Claude Code's own
+                                                           harness drives the GPT model. arc:switch to it.
   arc:add-account <id>              add a SUBSCRIPTION via guided browser login (in-session);
                                    the login is saved to the account's OWN private profile
                                    (~/.claude/arc-profiles/<id>) — accounts never share a login
@@ -123,6 +124,7 @@ TYPE the arc: form, which the hook eats before the model):
                          result (arc arms this for you when a delegate is still out)
   arc watch [role]        (long-running) print a line per incoming delegation, so a
                          BACKGROUND task / Monitor can WAKE an idle delegate session
+  arc claudex [stop]      show (or stop) the auto-managed GPT-in-Claude translator sidecars
   (skills: share-with-roommate = WHEN to broadcast · fridge-responder = how a
    research session stays responsive to delegations)
 

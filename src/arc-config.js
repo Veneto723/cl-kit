@@ -213,20 +213,39 @@ function accountEnv(acc, base) {
   delete env[ENV_KEYS_VAR];
 
   if (acc.type === 'api') {
-    const key = resolveApiKey(acc); // throws if unresolvable
-    env.ANTHROPIC_BASE_URL = acc.baseUrl;
-    env.ANTHROPIC_API_KEY = key;
-    env.ANTHROPIC_AUTH_TOKEN = key;
-    if (acc.headers && Object.keys(acc.headers).length) {
-      env.ANTHROPIC_CUSTOM_HEADERS = Object.entries(acc.headers).map(([k, v]) => `${k}: ${v}`).join('\n');
+    if (acc.proxy && acc.proxy.port) {
+      // claudex account: Claude Code talks to the LOCAL translator, not the gateway. The
+      // gateway key is used by the translator (spawned separately, see arc-claudex.js) and
+      // must NOT reach Claude Code — so we set a dummy auth token here. baseUrl stays the
+      // GATEWAY on the account (the translator's upstream); it is NOT what Claude Code sees.
+      env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${acc.proxy.port}`;
+      env.ANTHROPIC_AUTH_TOKEN = 'claudex';
+      env.ANTHROPIC_API_KEY = 'claudex';
+      // Map Claude Code's model tiers to GPT models so its /model picker switches among them
+      // IN-SESSION (opus→best, sonnet→balanced, haiku→fast); the translator passes each gpt-*
+      // id straight through to the gateway. With no map, pin the single model outright.
+      const map = acc.modelMap || {};
+      if (Object.keys(map).length) {
+        for (const [alias, model] of Object.entries(map)) env[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`] = model;
+      } else if (acc.model) {
+        env.ANTHROPIC_MODEL = acc.model;
+      }
+    } else {
+      const key = resolveApiKey(acc); // throws if unresolvable
+      env.ANTHROPIC_BASE_URL = acc.baseUrl;
+      env.ANTHROPIC_API_KEY = key;
+      env.ANTHROPIC_AUTH_TOKEN = key;
+      if (acc.headers && Object.keys(acc.headers).length) {
+        env.ANTHROPIC_CUSTOM_HEADERS = Object.entries(acc.headers).map(([k, v]) => `${k}: ${v}`).join('\n');
+      }
+      for (const [alias, model] of Object.entries(acc.modelMap || {})) {
+        env[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`] = model;
+      }
+      // `model` pins the PRIMARY model outright (ANTHROPIC_MODEL). Only a proxy serving a
+      // FOREIGN model needs this — a Claude gateway maps families instead (modelMap) and
+      // leaves /model free to pick among them. Set only when the account asks for it.
+      if (acc.model) env.ANTHROPIC_MODEL = acc.model;
     }
-    for (const [alias, model] of Object.entries(acc.modelMap || {})) {
-      env[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`] = model;
-    }
-    // `model` pins the PRIMARY model outright (ANTHROPIC_MODEL). Only a proxy serving a
-    // FOREIGN model needs this — a Claude gateway maps families instead (modelMap) and
-    // leaves /model free to pick among them. Set only when the account asks for it.
-    if (acc.model) env.ANTHROPIC_MODEL = acc.model;
   }
 
   // Applies to ANY account type — an oauth account can want a harness tweak too.

@@ -524,12 +524,49 @@ function addApiAccount(tokens, id) {
   });
 }
 
+// Next free local port for a claudex translator: 8790, or one past the highest already in
+// use, so two codex accounts never collide on 127.0.0.1.
+function nextClaudexPort(cfg) {
+  const base = 8790;
+  const used = ((cfg && cfg.accounts) || []).map((a) => a.proxy && a.proxy.port).filter(Boolean);
+  return used.length ? Math.max(base - 1, ...used) + 1 : base;
+}
+
+// List the GPT/OpenAI model ids a gateway serves. Uses the OpenAI style (Bearer, NO
+// anthropic-version) so a dual Claude+GPT gateway returns its GPT side here. Returns [] on any
+// trouble — the wizard then just asks the user to type model ids.
+function probeGatewayGptModels(baseUrl, key) {
+  let out;
+  try {
+    out = execFileSync('curl.exe', ['-sS', '-m', '20', '-H', `Authorization: Bearer ${key}`,
+      `${baseUrl.replace(/\/+$/, '')}/v1/models`], { encoding: 'utf8', windowsHide: true, timeout: 25000 });
+  } catch { return []; }
+  let j; try { j = JSON.parse(out); } catch { return []; }
+  const arr = Array.isArray(j.data) ? j.data : (Array.isArray(j) ? j : []);
+  return arr.map((m) => m.id || m.name).filter((id) => id && /^(gpt|o[0-9]|codex)/i.test(id));
+}
+
+// Does this gateway serve `model` on the ANTHROPIC endpoint Claude Code uses? If yes, arc can
+// point Claude Code straight at it (DIRECT mode, no local translator). If it 4xx/errs, the
+// gateway is OpenAI-only for GPT and arc must run the local translator. Best-effort; on any
+// doubt we return false (translator), which always works.
+function gatewayTranslatesMessages(baseUrl, key, model) {
+  try {
+    const body = JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] });
+    const out = execFileSync('curl.exe', ['-sS', '-m', '25', '-o', '/dev/null', '-w', '%{http_code}',
+      '-H', `x-api-key: ${key}`, '-H', 'anthropic-version: 2023-06-01', '-H', 'content-type: application/json',
+      '-d', body, `${baseUrl.replace(/\/+$/, '')}/v1/messages`],
+      { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    return /^2\d\d$/.test(String(out).trim());
+  } catch { return false; }
+}
+
 // Verify + register an api account from STRUCTURED params (also used by the add
 // wizard). Customization: `headers` (merged over the default x-title), `modelOverrides`
 // (alias→model, wins over auto-detected), `noVerify` (skip the /v1/models probe for
 // gateways that don't expose it / use non-standard model names). DPAPI-encrypts the
 // key, writes the account (backup + validate, restore on failure). Never throws.
-function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color, makeDefault, headers, modelOverrides, envMap, model, noVerify }) {
+function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color, makeDefault, headers, modelOverrides, envMap, model, proxyPort, noVerify }) {
   const C = require('./arc-config');
   keySrc = keySrc || 'clipboard';
   headers = headers || {}; modelOverrides = modelOverrides || {}; envMap = envMap || {};
@@ -556,6 +593,15 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
   const emptyEnv = Object.entries(envMap).find(([, v]) => v === '');
   if (emptyEnv) return { ok: false, message: `--env "${emptyEnv[0]}" needs a non-empty value.` };
   if (!key) return { ok: false, message: `no key found in ${keySrc}${keyErr ? ` (${keyErr})` : ''} — copy the key to the clipboard, or pass --file <path> / --key <sk-…>.` };
+
+  // Claudex auto-detect: if the caller wants a translator (proxyPort) but the gateway ALREADY
+  // serves this GPT model on the Anthropic /v1/messages endpoint, skip the local process and
+  // run DIRECT (drop proxyPort). Otherwise keep the translator. Either way it works.
+  let claudexMode = null;
+  if (proxyPort && model) {
+    if (gatewayTranslatesMessages(baseUrl, key, model)) { proxyPort = null; claudexMode = 'direct'; }
+    else claudexMode = 'translator';
+  }
 
   // Build the modelMap: auto-detect from /v1/models (default), or trust overrides
   // when --no-verify. Overrides always win. Unmapped families → Claude Code defaults.
@@ -586,6 +632,9 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
   if (Object.keys(modelMap).length) acct.modelMap = modelMap;
   if (Object.keys(envMap).length) acct.env = envMap;
   if (model) acct.model = model;   // ANTHROPIC_MODEL — a proxy serving a FOREIGN model must pin it
+  // proxyPort marks a CLAUDEX account: baseUrl is the GATEWAY (the translator's upstream), and
+  // arc runs a LOCAL translator on this port that Claude Code actually talks to (see arc-claudex).
+  if (proxyPort) acct.proxy = { port: proxyPort };
   if (color) acct.color = color;
 
   const bak = C.CONFIG_PATH + '.bak-' + Date.now();
@@ -602,10 +651,15 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
   catch (e) { fs.copyFileSync(bak, C.CONFIG_PATH); return { ok: false, message: `validation failed — restored backup. ${e.message}` }; }
 
   const extraHdr = Object.keys(headers).length ? ` · headers: ${Object.keys(mergedHeaders).join(', ')}` : '';
+  const modeNote = claudexMode === 'direct'
+    ? `\n  claudex: DIRECT — the gateway serves ${model} on /v1/messages, so no local translator is needed`
+    : claudexMode === 'translator'
+      ? `\n  claudex: local translator on 127.0.0.1:${acct.proxy.port} (auto-started on switch) → ${model} at ${acct.baseUrl}`
+      : '';
   return {
     ok: true,
     message: `✓ added gateway account "${id}" (${acct.label}) → ${acct.baseUrl}\n` +
-      `  key ${key.slice(0, 7)}…${key.slice(-4)} ${stored.note} (from ${keySrc}) · ${detail}${extraHdr}` +
+      `  key ${key.slice(0, 7)}…${key.slice(-4)} ${stored.note} (from ${keySrc}) · ${detail}${extraHdr}${modeNote}` +
       `${makeDefault ? '\n  set as the default account' : ''}\n  use it: arc:switch ${id}`,
   };
 }
@@ -982,4 +1036,4 @@ function requestTrash(session, argStr) {
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, CACHE_DIR };
+module.exports = { requestSwitch, requestRestart, requestPicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, nextClaudexPort, gatewayTranslatesMessages, probeGatewayGptModels, CACHE_DIR };

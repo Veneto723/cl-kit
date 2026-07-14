@@ -488,17 +488,23 @@ you never have to go and fetch it (see *The fridge*). Requires the `codex` CLI o
 Nothing is installed or configured on the Codex side: `codex exec` is a documented headless
 surface, task in, answer out.
 
-**As an account — the model changes, the conversation does not.**
+**As an account — a GPT model in Claude Code's own harness ("claudex").**
 
-Point Claude Code at an Anthropic-compatible proxy that serves a GPT model, and the *harness*
-never changes: same session, same fridge, same hooks, same scrollback — only the model and the
-quota. `arc:add-account` asks which provider you want; pick **Codex / GPT** and it will ask
-for the proxy URL, the model id, and the key. Because such a proxy serves no Claude models,
-arc skips its gateway probe and pins the model ids instead (`ANTHROPIC_MODEL` + the family
-map), and the account can carry an `env` map for any harness accommodation it needs.
+Give arc a gateway that serves a GPT model on the OpenAI API (`/v1/chat/completions`), and arc
+runs Claude Code's harness on it: same session, same fridge, same hooks, same tools — only the
+model and the quota change. `arc:add-account` asks which provider first; pick **Codex / GPT**,
+give the gateway URL and key, and arc **discovers the GPT models the gateway serves** and maps
+them onto Claude Code's tiers, so `/model opus|sonnet|haiku` switches between them in-session
+(e.g. Sol / Terra / Luna). `arc:switch <id>` moves you onto the account.
 
-Then `arc:switch <id>` — or just `/model` mid-conversation — moves you onto it. That is what
-replaced the old `arc:handoff`: the conversation never has to move at all.
+How it works: Claude Code speaks only the Anthropic Messages API; a GPT gateway speaks OpenAI.
+So arc **auto-spawns a tiny local translator** (`arc-claudex-proxy`, 127.0.0.1 only) that
+converts between them, and points the account at it — you run and babysit nothing. If instead
+your gateway already serves GPT on `/v1/messages` (some do), arc detects that at add-account
+time and skips the translator, pointing Claude Code straight at the gateway. Manage the
+sidecars with `arc claudex` / `arc claudex stop`. The gateway key is DPAPI-encrypted and only
+ever reaches the translator (never Claude Code); the usage statusline reads Anthropic's
+endpoint, so it's meaningless on such an account.
 
 **You must already have such a proxy.** arc points Claude Code at one; it does not install or
 run one. And note that routing subscription credentials through a third-party proxy may breach

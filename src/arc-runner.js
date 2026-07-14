@@ -254,6 +254,23 @@ function migrateProfilesOnce() {
   } catch {}
 }
 
+// Ensure a claudex account's translator sidecar is up before we launch Claude Code into it.
+// Async (it health-checks/spawns/waits), so it's called from the async launch path, NOT from
+// the synchronous buildEnv — accountEnv only WRITES the localhost URL; this makes it live.
+async function ensureClaudexProxy(accountId) {
+  const acc = C.findAccount(cfg, accountId);
+  const CX = require('./arc-claudex');
+  if (!CX.isClaudex(acc)) return;
+  CX.sweepOrphans();
+  try {
+    const r = await CX.ensureProxy(acc, C.resolveApiKey);
+    logLine(`claudex translator ${r.reused ? 'reused' : 'started'} on 127.0.0.1:${r.port} (pid ${r.pid || '?'}) -> ${acc.baseUrl} model=${acc.model}`);
+  } catch (e) {
+    process.stderr.write(`\x1b[31m[arc] claudex translator failed to start: ${e.message}\x1b[0m\n`);
+    throw e;
+  }
+}
+
 // Env for the claude child under `accountId`; throws if an api key is missing.
 function buildEnv(accountId) {
   const acc = C.findAccount(cfg, accountId);
@@ -517,13 +534,21 @@ function pickAccount(currentId) {
     const cols = (out.columns || 80);
     out.write('\x1b[?1049l\x1b[?25l');       // leave claude's alt screen, hide cursor
 
+    // Name shown ONCE (id, plus "(label)" only when the label differs — usually it doesn't),
+    // and a KIND tag that actually says what you're switching to: GPT vs Claude, and how.
+    const nameOf = (a) => (a.label && a.label !== a.id) ? `${a.id} (${a.label})` : a.id;
+    const kindOf = (a) => a.proxy ? `GPT · ${a.model || (a.modelMap && a.modelMap.opus) || '?'}`
+      : a.type === 'oauth' ? 'Claude · sub'
+        : 'Claude · gateway';
+    const nameW = Math.min(22, Math.max(...accounts.map((a) => nameOf(a).length)));
+
     function render() {
       out.write('\x1b[2J\x1b[H');            // clear screen, home
       out.write('\r\n  \x1b[1;36mSwitch arc account\x1b[0m   \x1b[2m↑/↓ move · 1-9 jump · Enter confirm · Esc keep current\x1b[0m\r\n\r\n');
       accounts.forEach((a, i) => {
         const cur = a.id === currentId ? '  \x1b[2m← current\x1b[0m' : '';
-        const use = accountUsage(a);
-        const body = ` ${String(i + 1)}. ${a.id}  ·  ${a.label} [${a.type}] `;
+        const use = a.proxy ? '' : accountUsage(a);   // usage is meaningless for a GPT account
+        const body = ` ${String(i + 1)}. ${nameOf(a).padEnd(nameW)}  ${kindOf(a)} `;
         const useDim = use ? `  \x1b[2m${use}\x1b[0m` : '';
         out.write(i === sel
           ? `  \x1b[7m${body}\x1b[0m${useDim}${cur}\r\n`   // reverse-video selection
@@ -694,49 +719,60 @@ async function runAddWizard() {
 }
 
 // A "Codex account" in arc is NOT a second runtime (arc stopped peer-hosting the Codex TUI).
-// It is a GPT model served to Claude Code's harness through an Anthropic-compatible proxy:
-// same session, same fridge, same hooks — only the model and the quota change, and you can
-// swap to it mid-conversation with /model. Two things make it different from a normal
-// gateway, and both are why this needs its own path:
-//   • The proxy serves NO Claude models, so arc's /v1/models probe would REJECT it. We add it
-//     unverified and PIN the model ids instead.
-//   • A foreign model in this harness may need accommodations (tool search, tool concurrency),
-//     which is what the account's `env` map is for.
+// It is a GPT model driven inside Claude Code's OWN harness — same session, same fridge, same
+// hooks — only the model and the quota change. You supply a GATEWAY that serves a GPT model on
+// the OpenAI API (/v1/chat/completions); arc runs a LOCAL translator (arc-claudex-proxy) that
+// turns Claude Code's Anthropic /v1/messages into that, and points this account at the
+// translator. The user runs NOTHING — arc auto-spawns and manages the translator on switch.
 async function runCodexAccountWizard(id, out, cancel) {
-  out.write('\x1b[1mCodex / GPT account\x1b[0m — a GPT model inside Claude Code, via an Anthropic-compatible proxy.\n');
-  out.write('\x1b[2mYou need such a proxy already running (it fronts your Codex/OpenAI credentials and speaks\n');
-  out.write('/v1/messages). arc only points Claude Code at it — it does not install or run one for you.\x1b[0m\n');
-  out.write('\x1b[33mNote: routing subscription credentials through a third-party proxy may breach the provider\'s\n');
-  out.write('terms of service. That is your call to make, not arc\'s.\x1b[0m\n\n');
+  out.write('\x1b[1mCodex / GPT account\x1b[0m — run a GPT model inside Claude Code.\n');
+  out.write('\x1b[2mYou supply a GATEWAY that serves a GPT model on the OpenAI API (/v1/chat/completions).\n');
+  out.write('arc runs a small LOCAL translator for you (auto-started on switch) — you run nothing.\x1b[0m\n');
+  out.write('\x1b[33mNote: whoever operates that gateway bears its provider-ToS exposure. Use a gateway you trust.\x1b[0m\n\n');
 
   let url;
   while (true) {
-    url = await promptLine('Proxy URL (http(s)://… , the Anthropic-compatible endpoint): ');
+    url = await promptLine('Gateway URL (https://… , serves GPT on /v1/chat/completions): ');
     if (url === null) return cancel();
     if (/^https?:\/\/.+/i.test(url.trim())) { url = url.trim(); break; }
     out.write('  \x1b[31m✗ enter a full http(s):// URL\x1b[0m\n');
   }
 
-  let model;
-  while (true) {
-    model = await promptLine('Model id the proxy serves (e.g. gpt-5.6-sol): ');
-    if (model === null) return cancel();
-    if (model.trim()) { model = model.trim(); break; }
-    out.write('  \x1b[31m✗ a model id is required — the proxy serves no Claude models, so arc cannot detect one\x1b[0m\n');
-  }
+  // The key comes FIRST so we can discover which GPT models the gateway serves.
+  out.write('\r\n  \x1b[1mCopy the gateway API key to the clipboard now\x1b[0m \x1b[2m(never shown or typed; stored DPAPI-encrypted)\x1b[0m\n');
+  const go = await promptLine('  press Enter to read the key (or Esc to cancel): ');
+  if (go === null) return cancel();
+  const { key, src, error } = core.readAddKey([]); // clipboard
+  if (!key) { out.write(`\x1b[31m  no key on the clipboard${error ? ` (${error})` : ''} — cancelled\x1b[0m\n`); return; }
 
-  // Pin EVERY family to it. Claude Code always asks for a family (opus/sonnet/haiku/fable) —
-  // an unpinned family would fall back to a real Claude model id the proxy cannot serve, so
-  // picking it in /model would just error. One model behind all four keeps every choice valid.
-  const modelOverrides = { opus: model, sonnet: model, haiku: model, fable: model };
+  out.write('\x1b[2m  discovering the GPT models this gateway serves…\x1b[0m\n');
+  const found = core.probeGatewayGptModels(url, key);
+  if (found.length) out.write(`  available: \x1b[36m${found.slice(0, 12).join(', ')}\x1b[0m\n`);
+  else out.write('  \x1b[33m(could not list models — type the ids you want by hand)\x1b[0m\n');
 
-  // Harness accommodations. Free-form on purpose: which knobs a given proxy+model needs is an
-  // empirical fact about THAT setup, and arc should not pretend to know it. Claude Code already
-  // disables MCP tool search by itself once ANTHROPIC_BASE_URL points at a non-first-party host,
-  // so the realistic knob here is turning it back ON for a proxy that does forward tool_reference.
+  // Map the gateway's GPT models onto Claude Code's three tiers, so /model switches among them
+  // IN-SESSION. Smart defaults from the known GPT-5.6 lineup; the user can override each.
+  const pick = (re, fb) => found.find((m) => re.test(m)) || fb;
+  const d = {
+    opus: pick(/sol|opus|-pro\b/i, found[0] || 'gpt-5.6-sol'),
+    sonnet: pick(/terra|balanced|5\.5\b/i, found[1] || 'gpt-5.6-terra'),
+    haiku: pick(/luna|mini|nano|fast|spark|flash/i, found[found.length - 1] || 'gpt-5.6-luna'),
+  };
+  out.write('\r\n\x1b[2m  Map GPT models to Claude Code tiers (/model switches between them in-session).\n');
+  out.write('  Press Enter to accept each default; set them all the same for a single model.\x1b[0m\n');
+  const askModel = async (label, def) => { const a = await promptLine(`  ${label}  [${def}]: `); return a === null ? null : (a.trim() || def); };
+  const opus = await askModel('Best     → /model opus  ', d.opus); if (opus === null) return cancel();
+  const sonnet = await askModel('Balanced → /model sonnet', d.sonnet); if (sonnet === null) return cancel();
+  const haiku = await askModel('Fast     → /model haiku ', d.haiku); if (haiku === null) return cancel();
+  const modelOverrides = { opus, sonnet, haiku };
+  const model = opus; // the default/primary + the translator's fallback
+
+  const proxyPort = core.nextClaudexPort(reloadCfg());   // per-account local port, auto-picked
+
+  // Harness accommodations — free-form; which knobs a given gateway+model needs is empirical.
   const envMap = {};
-  out.write('\r\n\x1b[2m  Claude Code already disables MCP tool search on a non-Anthropic host, so usually: none.\n');
-  out.write('  If your proxy DOES forward tool_reference blocks, set ENABLE_TOOL_SEARCH=true.\x1b[0m\n');
+  out.write('\r\n\x1b[2m  Optional harness env tweaks. Claude Code already disables MCP tool search on a\n');
+  out.write('  non-Anthropic host; set ENABLE_TOOL_SEARCH=true only if your gateway forwards tool_reference.\x1b[0m\n');
   const envLine = await promptLine('Harness env tweaks, if any (KEY=VALUE, comma-separated; blank to skip): ');
   if (envLine === null) return cancel();
   for (const pair of String(envLine).split(',').map((s) => s.trim()).filter(Boolean)) {
@@ -747,20 +783,15 @@ async function runCodexAccountWizard(id, out, cancel) {
     envMap[k] = pair.slice(eq + 1).trim();
   }
 
-  out.write('\r\n  \x1b[1mCopy the proxy\'s API key/token to the clipboard now\x1b[0m \x1b[2m(never shown or typed; stored DPAPI-encrypted)\x1b[0m\n');
-  const go = await promptLine('  press Enter to read the key (or Esc to cancel): ');
-  if (go === null) return cancel();
-
-  const { key, src, error } = core.readAddKey([]); // clipboard
-  out.write('\x1b[2m  adding (models pinned, gateway probe skipped — the proxy serves no Claude models)…\x1b[0m\n');
+  out.write('\x1b[2m  adding (gateway probe skipped — it serves GPT, not Claude models)…\x1b[0m\n');
   const r = core.addApiAccountResolved({
     id, baseUrl: url, key, keySrc: src, keyErr: error, label: id,
-    modelOverrides, envMap, model, noVerify: true,
+    modelOverrides, envMap, model, proxyPort, noVerify: true,
   });
   out.write((r.ok ? '\x1b[32m' : '\x1b[31m') + r.message + '\x1b[0m\r\n');
   if (r.ok) {
-    out.write(`\x1b[2m  switch to it any time with  arc:switch ${id}  — or mid-conversation with  /model\x1b[0m\n`);
-    out.write('\x1b[2m  heads-up: arc\'s usage readout reads Anthropic\'s usage endpoint, so it is meaningless on this account.\x1b[0m\n');
+    out.write(`\x1b[2m  switch to it with  arc:switch ${id}  — arc auto-starts the translator on 127.0.0.1:${proxyPort}\x1b[0m\n`);
+    out.write(`\x1b[2m  in a session, /model opus|sonnet|haiku → ${opus} | ${sonnet} | ${haiku}\x1b[0m\n`);
   }
 }
 
@@ -1186,6 +1217,25 @@ async function main() {
       + (myRole ? ` for "${myRole}"` : ' as a broadcast') + `. Read it with \`arc notes\`.\n`);
     return;
   }
+  // `arc claudex [status|stop]` — inspect / stop the auto-managed translator sidecars.
+  if (userArgs[0] === 'claudex') {
+    const CX = require('./arc-claudex');
+    const sub = userArgs[1] || 'status';
+    if (sub === 'stop') {
+      const which = userArgs[2];
+      const list = CX.listProxies();
+      if (!list.length) { process.stdout.write('[arc] no claudex translators running.\n'); return; }
+      let n = 0;
+      for (const p of list) { if (!which || String(p.port) === String(which) || p.account === which) { CX.stopProxy(p.port); n++; } }
+      process.stdout.write(`[arc] stopped ${n} claudex translator(s).\n`);
+      return;
+    }
+    CX.sweepOrphans();
+    const list = CX.listProxies();
+    if (!list.length) { process.stdout.write('[arc] no claudex translators running.\n'); return; }
+    for (const p of list) process.stdout.write(`  127.0.0.1:${p.port}\t${p.alive ? 'up  ' : 'dead'}\tpid ${p.pid}\t${p.account}\t${p.model}\t-> ${p.upstream}\n`);
+    return;
+  }
   // `arc await [role]` — block until a note lands, then EXIT. Meant to be run by an agent
   // as a BACKGROUND task before it goes idle: in Claude Code a background command's EXIT
   // re-invokes the agent, so this exit is what hands an idle session its delegate result
@@ -1392,6 +1442,10 @@ async function main() {
     // Credentials are isolated per account via CLAUDE_CONFIG_DIR (set in buildEnv →
     // P.ensureProfile); there is no shared login to swap.
     process.stdout.write(`\x1b[2m[arc] starting on ${accountLabel(account)}...\x1b[0m\n`);
+
+    // Claudex: bring the translator sidecar up (reuse/spawn+wait) before Claude Code launches
+    // into 127.0.0.1:<port>. A no-op for every other account type.
+    await ensureClaudexProxy(account);
 
     // Watch for conversation adoption only on a picker resume (no id known
     // pre-launch), and only until the first effort-restoring relaunch.

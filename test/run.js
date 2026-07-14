@@ -16,6 +16,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 const { spawnSync } = require('child_process');
 
 // ---- throwaway HOME (must be set BEFORE requiring any src module, since
@@ -1238,6 +1239,81 @@ try {
   ok('arc:notes catches a returning roommate up in one uncapped call',
     (catchUp.message.match(/#\s*\d+/g) || []).length === expected && expected > 40 && R2.unreadFor(room2, 'coding').count === 0);
 } catch (e) { ok('arc-fridge works', false, e.message); }
+
+// ---- claudex (run a GPT model inside Claude Code via a translator) -----------
+section('claudex (Anthropic<->OpenAI translator + sidecar lifecycle)');
+try {
+  const P = require(path.join(SRC, 'arc-claudex-proxy.js'));
+
+  // asText: EVERY content must coerce to a STRING (this is the fix for the gateway's
+  // "Invalid type for 'input': expected a string, but got an object" 400).
+  ok('asText coerces string/array/object/null all to strings',
+    P.asText('x') === 'x'
+    && P.asText([{ type: 'text', text: 'a' }, { type: 'image' }]) === 'a\n[image omitted]'
+    && typeof P.asText({ foo: 1 }) === 'string'
+    && P.asText(null) === '');
+
+  // toOpenAI: Anthropic Messages -> OpenAI chat/completions shape.
+  const oreq = P.toOpenAI({
+    model: 'gpt-5.6-sol', system: 'be terse', stream: true, max_tokens: 100,
+    tools: [{ name: 'run', description: 'd', input_schema: { type: 'object', properties: {} } }],
+    tool_choice: { type: 'any' },
+    messages: [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }, { type: 'tool_use', id: 't1', name: 'run', input: { a: 1 } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'done' }] }] },
+    ],
+  }, 'gpt-5.6-sol');
+  ok('toOpenAI: system -> system message, tools mapped, tool_choice any -> required',
+    oreq.messages[0].role === 'system' && oreq.tools[0].type === 'function' && oreq.tools[0].function.name === 'run' && oreq.tool_choice === 'required');
+  ok('toOpenAI: assistant tool_use -> tool_calls with JSON-string arguments',
+    oreq.messages[2].role === 'assistant' && oreq.messages[2].tool_calls[0].function.arguments === '{"a":1}');
+  ok('toOpenAI: tool_result -> a role:tool message with STRING content (the 400 fix)',
+    oreq.messages[3].role === 'tool' && oreq.messages[3].tool_call_id === 't1' && oreq.messages[3].content === 'done');
+  ok('toOpenAI: every message content is a string (never an object)',
+    oreq.messages.every((m) => m.content === undefined || typeof m.content === 'string'));
+  ok('toOpenAI: a non-gpt model name falls back to the pinned model',
+    P.toOpenAI({ model: 'claude-sonnet-4', messages: [] }, 'gpt-5.6-sol').model === 'gpt-5.6-sol');
+
+  // account env routing: a claudex account points Claude Code at the LOCAL translator and
+  // must NEVER leak the real gateway key into Claude Code's env.
+  const Ccfg = require(path.join(SRC, 'arc-config.js'));
+  const cxAcc = { id: 'gpt', type: 'api', baseUrl: 'https://gw.example.com', apiKeyEnv: 'CLKIT_TEST_KEY', model: 'gpt-5.6-sol', proxy: { port: 8791 } };
+  const cxEnv = Ccfg.accountEnv(cxAcc, {});
+  ok('claudex account: ANTHROPIC_BASE_URL points at the LOCAL translator, not the gateway',
+    cxEnv.ANTHROPIC_BASE_URL === 'http://127.0.0.1:8791' && cxEnv.ANTHROPIC_MODEL === 'gpt-5.6-sol');
+  ok('claudex account: the real gateway key is NOT leaked into Claude Code\'s env',
+    cxEnv.ANTHROPIC_API_KEY === 'claudex' && cxEnv.ANTHROPIC_AUTH_TOKEN === 'claudex' && cxEnv.ANTHROPIC_API_KEY !== 'sk-test-123');
+
+  // MULTI-MODEL: a modelMap maps tiers to GPT models so /model switches among them; when a map
+  // is present, ANTHROPIC_MODEL is NOT pinned (else the picker is stuck on one).
+  const multiAcc = { id: 'gpt2', type: 'api', baseUrl: 'https://gw.example.com', apiKeyEnv: 'CLKIT_TEST_KEY', proxy: { port: 8792 }, model: 'gpt-5.6-sol', modelMap: { opus: 'gpt-5.6-sol', sonnet: 'gpt-5.6-terra', haiku: 'gpt-5.6-luna' } };
+  const multiEnv = Ccfg.accountEnv(multiAcc, {});
+  ok('claudex multi-model: tiers map to GPT models (/model opus|sonnet|haiku switches in-session)',
+    multiEnv.ANTHROPIC_DEFAULT_OPUS_MODEL === 'gpt-5.6-sol' && multiEnv.ANTHROPIC_DEFAULT_SONNET_MODEL === 'gpt-5.6-terra' && multiEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'gpt-5.6-luna');
+  ok('claudex multi-model: ANTHROPIC_MODEL is NOT pinned when a tier map is present',
+    multiEnv.ANTHROPIC_MODEL === undefined && multiEnv.ANTHROPIC_BASE_URL === 'http://127.0.0.1:8792');
+  // probeGatewayGptModels filters a /v1/models list down to GPT/OpenAI ids (not covered live).
+  ok('probeGatewayGptModels is exported for gateway model discovery',
+    typeof require(path.join(SRC, 'arc-switch-core.js')).probeGatewayGptModels === 'function');
+
+  // sidecar lifecycle helpers (sync). The async ensureProxy spawn/reuse tests run in the
+  // subprocess below (they need await).
+  const CX = require(path.join(SRC, 'arc-claudex.js'));
+  ok('isClaudex detects the proxy block; portFor/localBaseUrl derive the local endpoint',
+    CX.isClaudex(cxAcc) && CX.portFor(cxAcc) === 8791 && CX.localBaseUrl(cxAcc) === 'http://127.0.0.1:8791' && !CX.isClaudex({ type: 'api', baseUrl: 'x' }));
+  // nextClaudexPort avoids collisions.
+  const core2 = require(path.join(SRC, 'arc-switch-core.js'));
+  ok('nextClaudexPort: 8790 when free, else one past the highest in use',
+    core2.nextClaudexPort({ accounts: [] }) === 8790 && core2.nextClaudexPort({ accounts: [{ proxy: { port: 8790 } }, { proxy: { port: 8792 } }] }) === 8793);
+
+  // the streaming + sidecar-lifecycle tests need top-level await, which this synchronous
+  // CommonJS harness can't host — run them in a subprocess and fold results back in.
+  const casync = spawnSync(process.execPath, [path.join(__dirname, 'claudex-async.js')], { encoding: 'utf8' });
+  const lines = (casync.stdout || '').split('\n').map((l) => l.match(/^(ok|notok)\t(.+)$/)).filter(Boolean);
+  if (!lines.length) ok('claudex async subprocess produced results', false, `status=${casync.status} stderr=${(casync.stderr || '').slice(0, 300)}`);
+  for (const m of lines) ok(m[2], m[1] === 'ok');
+} catch (e) { ok('claudex works', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- arc-delegate (fire a headless task on a chosen runtime -> fridge) --------
 section('arc-delegate (headless task -> fridge note)');
