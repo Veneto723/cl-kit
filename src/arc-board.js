@@ -206,10 +206,17 @@ function supersededMap(board, all) {
 
 // A `request` with no `result`/`correction` replying to it: asked, and never answered. This is
 // the thing that used to scroll silently away.
+//
+// A RETRACTED REQUEST IS NOT OWED. `--supersedes` is how a sender says "never mind", and the board
+// already tells every reader not to act on the note it retracts — so billing the recipient for an
+// answer to it creates a debt that CANNOT be paid: the only way to clear it would be to reply to a
+// note nobody is allowed to act on. Found by using it: a request I retracted the moment I realised
+// it was unanswerable (I had told the peer not to reply) kept showing as owed anyway.
 function openRequests(board, role) {
   const all = allNotes(board);
   const answered = new Set(all.filter((n) => n.replyTo).map((n) => n.replyTo));
-  return all.filter((n) => n.kind === 'request' && !answered.has(n.seq)
+  const retracted = supersededMap(board, all);
+  return all.filter((n) => n.kind === 'request' && !answered.has(n.seq) && !retracted.has(n.seq)
     && (!role || n.from === role || n.to === role || n.to == null));
 }
 

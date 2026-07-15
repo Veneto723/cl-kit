@@ -2973,6 +2973,14 @@ try {
     R2.supersededMap(sboard).get(2).seq === 3 && !R2.supersededMap(sboard).has(1));
   ok('openRequests finds a request with NO reply, and ignores an answered one',
     (() => { const o = R2.openRequests(sboard).map((n) => n.seq); return o.includes(4) && !o.includes(1); })());
+  // A RETRACTED request is not owed. Found by using the board, not by reading it: a request I
+  // withdrew the instant I saw it was unanswerable (the packet told the peer NOT to reply) went on
+  // being billed as open. Retracting is the sender saying "never mind", and the board already warns
+  // readers not to act on the retracted note — so an open debt against it can never be paid, because
+  // paying it means replying to a note nobody may act on.
+  R2.appendNote(sboard, { from: 'android', to: 'research', kind: 'correction', supersedes: 4, body: 'never mind' });
+  ok('...and a RETRACTED request is no longer owed (a debt that could never be paid)',
+    !R2.openRequests(sboard).map((n) => n.seq).includes(4));
   ok('repliesTo threads the answers under a request', R2.repliesTo(sboard, 1).length === 1);
   ok('KINDS/KIND_RANK rank a blocker + correction ABOVE routine info',
     R2.KIND_RANK.blocker < R2.KIND_RANK.info && R2.KIND_RANK.correction < R2.KIND_RANK.info && R2.KINDS.includes('decision'));
