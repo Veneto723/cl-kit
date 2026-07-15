@@ -166,8 +166,21 @@ function rosterLines(board, meRole) {
   return others.map((r) => {
     const what = r.summary ? ` — ${r.summary}`
       : r.declared ? '' : ` — (no duty declared: ${r.path})`;
-    const hint = (!r.live && r.declared) ? `   ← empty chair: arc delegate ${r.role}` : '';
-    return `    ${r.live ? '●' : '○'} ${r.role.padEnd(w)}  ${r.live ? 'live  ' : 'closed'}${what}${hint}`;
+    // `closed` hides the fact that decides what to do next: a role that HAS worked here keeps its
+    // own conversation and can return AS ITSELF, which is a different (and better) offer than
+    // staffing a stranger from your context. Same reason as the empty-chair warning below.
+    let revivable = false;
+    if (!r.live) {
+      try {
+        const v = R.vacantClaimForRole(board, r.role);
+        revivable = !!(v && require('./arc-invite').hasTranscript(v.convId));
+      } catch { /* a hint must never break the roster */ }
+    }
+    const state = r.live ? 'live  ' : revivable ? 'closed' : 'closed';
+    const hint = r.live ? ''
+      : revivable ? `   ← was here; REVIVE as itself: arc delegate ${r.role} "<packet>"`
+        : r.declared ? `   ← empty chair: arc delegate ${r.role} "<packet>"` : '';
+    return `    ${r.live ? '●' : revivable ? '◑' : '○'} ${r.role.padEnd(w)}  ${state}${what}${hint}`;
   }).join('\n');
 }
 
@@ -261,7 +274,9 @@ function requestRole(session, arg, cwd) {
 }
 
 // ---- arc:note -----------------------------------------------------------------
-function requestNote(session, arg, cwd) {
+// `opts.hasTranscript` is injectable so a test can exercise the REVIVABLE branch without
+// fabricating a transcript in the user's real ~/.claude/projects.
+function requestNote(session, arg, cwd, opts) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const board = R.resolveBoard(resolveCwd(session, cwd));
   const me = getRole(session, board);
@@ -315,16 +330,35 @@ function requestNote(session, arg, cwd) {
   let chair = '';
   if (to && !R.liveRoles(board).some((l) => l.role === to)) {
     const duty = require('./arc-duty').readDuty(board, to);
+    // AN EMPTY CHAIR IS NOT ONE STATE. A role that has WORKED here keeps its own conversation in
+    // a vacant claim, so it can come back AS ITSELF — everything it learned, still there. That is
+    // a different offer from "staff a stranger", and the agent cannot see it: the roster only says
+    // `closed`. Caught live on whalephone: `frontend` had written the very README under review and
+    // was revivable (vacant claim + transcript on disk), but android read "NOBODY HOLDS" and
+    // offered the human a FRESH session or a hand-commit — never the one option that was right.
+    // arc HAS this fact. Not surfacing it made the agent reason to a dead end.
+    let revivable = false;
+    try {
+      const v = R.vacantClaimForRole(board, to);
+      const hasT = (opts && opts.hasTranscript) || require('./arc-invite').hasTranscript;
+      revivable = !!(v && hasT(v.convId));
+    } catch { /* never let a hint break a note */ }
     chair = `\n  ⚠ NOBODY HOLDS "${to}" right now — your note is waiting in an empty chair.\n`
-      + (duty
-        ? `    It IS a declared role here (owns: ${duty.summary || 'see ' + duty.path}).\n`
-          + `    Put someone in it:  arc delegate ${to} "<packet>"   ← staffs the chair AND delivers the work.\n`
-        : `    And this repo does not declare a "${to}" role at all — check \`arc role\` for who is\n`
-          + `    actually here. If ${to} really is a job on this board:  arc delegate ${to} "<packet>"\n`
-          + `    — it will staff the chair and have it declare its duty.\n`)
+      + (revivable
+        ? `    BUT "${to}" HAS WORKED HERE BEFORE and can come back AS ITSELF — its own conversation\n`
+          + `    is still on disk, so it returns with everything it learned${duty ? ` (owns: ${duty.summary || 'see ' + duty.path})` : ''}.\n`
+          + `    Bring it back:  arc delegate ${to} "<packet>"   ← REVIVES it, then delivers the work.\n`
+          + `    Prefer this over doing it yourself: it already has the context you would be rebuilding.\n`
+        : duty
+          ? `    It IS a declared role here (owns: ${duty.summary || 'see ' + duty.path}), but no session\n`
+            + `    has held it on this machine, so there is no conversation to bring back.\n`
+            + `    Put someone in it:  arc delegate ${to} "<packet>"   ← staffs the chair from YOUR context.\n`
+          : `    And this repo does not declare a "${to}" role at all — check \`arc role\` for who is\n`
+            + `    actually here. If ${to} really is a job on this board:  arc delegate ${to} "<packet>"\n`
+            + `    — it will staff the chair and have it declare its duty.\n`)
       + (note.kind === 'request'
-        ? `    THIS IS A REQUEST: it will NEVER be answered until someone claims "${to}". Do not go\n`
-          + `    idle waiting on it — either invite one now, or do the work yourself/with a subagent.`
+        ? `    THIS IS A REQUEST: nobody will answer until someone is in that chair. Do not go idle\n`
+          + `    waiting on it — ${revivable ? `revive ${to} now (one command)` : 'staff it now'}, or do the work yourself/with a subagent.`
         : `    It keeps: whoever claims "${to}" next reads it in full.`);
   }
   return { ok: true, message:

@@ -1594,7 +1594,13 @@ try {
     /IS a declared role/.test(req.message) && /investigation and docs/.test(req.message)
     && /arc delegate research/.test(req.message));
   ok('...and a REQUEST is called out as never-answerable — do not go idle on it',
-    /NEVER be answered/.test(req.message) && /Do not go\n {4}idle/.test(req.message));
+    /nobody will answer until someone is in that chair/.test(req.message)
+    && /Do not go idle/.test(req.message));
+  // AN EMPTY CHAIR IS NOT ONE STATE. This role has NO prior conversation here, so the honest
+  // offer is "staffed from YOUR context" — never "revived", which would promise a memory that
+  // does not exist. The revivable case is asserted in the staffing section.
+  ok('...and a never-held role is offered as STAFFED, not falsely promised as revivable',
+    /no session\n\s+has held it/.test(req.message) && !/REVIVE/.test(req.message));
 
   const info = F8.requestNote(AS, 'ghost "heads up"', drepo);
   ok('an UNDECLARED, unheld role says the repo has no such job at all',
@@ -2559,6 +2565,32 @@ try {
     && R.vacantClaimForRole(rTop, 'impostor').convId === 'i-conv');
   ok('...while a genuinely live role is NOT offered up for revival',
     R.vacantClaimForRole(rTop, 'genuine') === null);
+
+  // THE FACT THAT DECIDES THE NEXT MOVE, and it was invisible. A role that HAS worked here keeps
+  // its own conversation, so it can return AS ITSELF — a different and better offer than staffing
+  // a stranger. The roster only ever said `closed`. Caught live on whalephone: `frontend` had
+  // written the very README under review and WAS revivable (vacant claim + transcript), but the
+  // android peer read "NOBODY HOLDS" and offered the human a fresh session or a hand-commit —
+  // never the one option that was right. arc had the fact and did not say it.
+  const N9 = require(path.join(SRC, 'arc-notes.js'));
+  const S9 = 'revive-hint-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${S9}.json`),
+    JSON.stringify({ pid: process.pid, cwd: rTop.root, convId: 'mine-9' }));
+  N9.requestRole(S9, 'asker', rTop.root);
+  fs.mkdirSync(path.join(rTop.root, '.arc', 'roles'), { recursive: true });
+  fs.writeFileSync(path.join(rTop.root, '.arc', 'roles', 'ghostrole.md'), 'owns: the web surface\n');
+  // a vacant claim whose conversation IS still on disk => revivable
+  R.claimRole(rTop, 'ghostrole', 999999, 'gone-sess', 'ghost-conv-live');
+  const rev = N9.requestNote(S9, 'ghostrole "please review this"', rTop.root,
+    { hasTranscript: () => true });
+  ok('an empty chair whose conversation SURVIVES is offered as REVIVABLE, not as a stranger',
+    /HAS WORKED HERE BEFORE/.test(rev.message) && /come back AS ITSELF/.test(rev.message)
+    && /REVIVES it/.test(rev.message));
+  ok('...and it says to prefer that over rebuilding the context yourself',
+    /already has the context you would be rebuilding/.test(rev.message));
+  for (const f of [`arc-state-${S9}.json`, `arc-role-${S9}.json`]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', f)); } catch {} }
+  R.releaseRole(rTop, 'ghostrole', 999999);
+  try { fs.unlinkSync(path.join(rTop.root, '.arc', 'roles', 'ghostrole.md')); } catch {}
 
   // THE TIMEZONE TRAP, as a regression guard. PowerShell's `.StartTime.Ticks` encodes the LOCAL
   // wall clock; read as epoch it lands TZ-offset hours in the future (here: +8h), every genuine
