@@ -65,12 +65,23 @@ function hasWt() {
 // PowerShell resolves a bare `arc` to arc.ps1, which hands argv straight to node: no parsing, no
 // expansion. pwsh 7 preserves quotes too; Windows PowerShell 5.1 does not, but it is always
 // present — so prefer pwsh, fall back to powershell, and keep cmd only as the last resort.
-function launchShell(probe) {
-  const has = probe || ((exe) => { try { return spawnSync('where.exe', [exe], { timeout: 5000 }).status === 0; } catch { return false; } });
-  if (has('pwsh.exe')) return 'pwsh -NoLogo -NoProfile -Command';
-  if (has('powershell.exe')) return 'powershell -NoLogo -NoProfile -Command';
-  return 'cmd /c';   // last resort: mangles %VAR% and quotes, but a tab beats no tab
-}
+// TRIED AND REVERTED: `pwsh -NoLogo -NoProfile -Command arc … '<prompt>'`. It looks safer — pwsh
+// resolves `arc` to arc.ps1, which hands argv to node unparsed — but the quoting does not survive
+// the trip. The chain is powershell.exe -Command -> wt -> the shell, and the OUTER PowerShell
+// strips the quotes before wt ever sees them, so pwsh received the prompt as BARE WORDS and read
+// only the first: the tab opened and sent claude the single word "Take". (Seen in the tab; there
+// is no way to see it from here.) cmd /c keeps the prompt whole, which is the one thing the
+// launcher must not get wrong.
+//
+// AND cmd COSTS NOTHING HERE, which is the part worth being precise about. cmd's mangling
+// (%VAR% expansion, quote stripping) was a SECURITY bug because PEERS posted notes through
+// arc.cmd — a note naming an env var wrote its value to disk. That is fixed where it lives: the
+// peer's own `arc note` runs from its PowerShell tool, which resolves arc.ps1 now. The launcher
+// is a different surface: it carries only OUR birth prompt, which we author and which contains no
+// %VAR%, no quotes and no newlines. A shell that cannot corrupt what we hand it is not a risk.
+// The launcher shell is also not the SESSION's shell — it runs arc and exits; Claude Code's tools
+// bring their own. So this choice is about one thing: does the prompt arrive whole.
+function launchShell() { return 'cmd /c'; }
 
 // ---- the trust dialog --------------------------------------------------------------------
 // Claude Code asks "Do you trust the files in this folder?" the first time it opens a project,

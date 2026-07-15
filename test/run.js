@@ -2129,12 +2129,16 @@ try {
   // at newlines, stripping quotes and EXPANDING %VAR% (the secret-leak vector) — and its PATHEXT
   // cannot even see arc.ps1, so `cmd /c arc` reaches the mangler no matter what we ship. That put
   // the BIRTH PROMPT through the same corruption that was silently eating peers' notes.
-  ok('the tab runs arc through PowerShell, never cmd (cmd expands %VAR% and cannot see arc.ps1)',
-    /\b(pwsh|powershell) -NoLogo -NoProfile -Command arc\b/.test(psOf()) && !/cmd \/c arc/.test(psOf()));
-  ok('...preferring pwsh, falling back to powershell, with cmd only as a last resort',
-    I.launchShell(() => true).startsWith('pwsh')
-    && I.launchShell((e) => e === 'powershell.exe').startsWith('powershell')
-    && I.launchShell(() => false) === 'cmd /c');
+  // TRIED AND REVERTED: launching via `pwsh -Command arc … '<prompt>'`. The chain is
+  // powershell.exe -Command -> wt -> shell, and the OUTER PowerShell strips the quotes before wt
+  // sees them, so pwsh got the prompt as BARE WORDS and claude received the single word "Take".
+  // cmd /c keeps it whole, and costs nothing here: cmd's %VAR% expansion was a SECURITY bug
+  // because PEERS post notes through arc.cmd, and that is fixed where it lives (arc.ps1 on PATH,
+  // which is what the peer's own PowerShell tool resolves). The launcher carries only OUR birth
+  // prompt — authored here, no %VAR%, no quotes, no newlines. A shell that cannot corrupt what we
+  // hand it is not a risk. This asserts the ONE property the launcher must not get wrong.
+  ok('the launcher keeps the birth prompt WHOLE (pwsh -Command delivered only its first word)',
+    /cmd \/c arc\b/.test(psOf()) && /run  arc role frontend  then do what it tells you\.\"'$/.test(psOf()));
   // A REVIVE must not pass --permission-mode: arc-runner's preservedFlags restores the mode the
   // peer was last in, and passing it here too hands claude the flag twice.
   ok('a REVIVE does not duplicate --permission-mode (preservedFlags restores its own)',
