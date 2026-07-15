@@ -1176,7 +1176,7 @@ try {
 // LIVE STATE, which is the dangerous kind: get it wrong and two sessions write to different
 // folders and silently stop seeing each other (the wrong-board split, which has already cost one
 // drill). So the migration is read-fallback + one atomic rename, and these are its guards.
-section('.plan -> .peer migration (live state moves without a silent split)');
+section('board folder migration -> .arc/peer (live state moves without a silent split)');
 try {
   const RM8 = require(path.join(SRC, 'arc-board.js'));
 
@@ -1199,6 +1199,17 @@ try {
   // mkdtemp string never matches on Windows.
   ok('before any write, a legacy board is still READ in full (never a silently empty board)',
     b1.planDir === path.join(b1.root, '.plan') && RM8.allNotes(b1).length === 2);
+  ok('...and the fallback walks the WHOLE legacy chain, so a machine that skipped a hop is fine',
+    (() => { const two = fs.mkdtempSync(path.join(os.tmpdir(), 'mig4-'));
+      spawnSync('git', ['init', '-q'], { cwd: two });
+      fs.mkdirSync(path.join(two, '.peer'), { recursive: true });      // the intermediate name
+      fs.writeFileSync(path.join(two, '.peer', 'notes.jsonl'), JSON.stringify({ from: 'x', body: 'mid' }) + '\n');
+      const b = RM8.resolveBoard(two);
+      const found = b.planDir === path.join(b.root, '.peer') && RM8.allNotes(b).length === 1;
+      RM8.ensureBoard(b);                                              // ...and it migrates in ONE hop
+      const moved = b.planDir === path.join(b.root, '.arc', 'peer') && RM8.allNotes(b).length === 1;
+      fs.rmSync(two, { recursive: true, force: true });
+      return found && moved; })());
   ok('...and its claim is still seen, so nobody steals a role that is genuinely held',
     (RM8.roleClaim(b1, 'android') || {}).sessionId === 'mig-s');
   ok('...and its cursor still counts (unread is 1, not "all of it again")',
@@ -1206,10 +1217,10 @@ try {
 
   // THE MIGRATION: one atomic rename on the first write. Everything arrives; nothing is copied.
   RM8.ensureBoard(b1);
-  ok('the first write MIGRATES .plan -> .peer, atomically',
-    fs.existsSync(path.join(old, '.peer')) && !fs.existsSync(legacy));
+  ok('the first write MIGRATES the board into .arc/peer, atomically',
+    fs.existsSync(path.join(old, '.arc', 'peer')) && !fs.existsSync(legacy));
   ok('...and mutates the caller\'s board object (or it would write to the folder we just moved)',
-    b1.planDir === path.join(b1.root, '.peer'));
+    b1.planDir === path.join(b1.root, '.arc', 'peer'));
   ok('...carrying the whole ledger', RM8.allNotes(b1).length === 2);
   ok('...the cursor', RM8.unreadFor(b1, 'android').count === 1);
   ok('...and the live claim (a session does not lose its role to a rename)',
@@ -1217,30 +1228,36 @@ try {
 
   // And a freshly resolved board now finds the new name with no fallback.
   const b2 = RM8.resolveBoard(old);
-  ok('a fresh resolve now points at .peer (the fallback is one failed stat, then never again)',
-    b2.planDir === path.join(b2.root, '.peer') && RM8.allNotes(b2).length === 2);
+  ok('a fresh resolve now points at .arc/peer (then the fallback never fires again)',
+    b2.planDir === path.join(b2.root, '.arc', 'peer') && RM8.allNotes(b2).length === 2);
   ok('the self-ignore came along, so the board still never enters the project history',
-    /^\*$/m.test(fs.readFileSync(path.join(old, '.peer', '.gitignore'), 'utf8')));
+    /^\*$/m.test(fs.readFileSync(path.join(old, '.arc', 'peer', '.gitignore'), 'utf8')));
+  ok('...and it does NOT swallow its committed sibling .arc/roles/',
+    (() => { fs.mkdirSync(path.join(old, '.arc', 'roles'), { recursive: true });
+      fs.writeFileSync(path.join(old, '.arc', 'roles', 'code.md'), ['# code', '', 'owns: things', ''].join('\n'));
+      const r = spawnSync('git', ['check-ignore', '.arc/roles/code.md'], { cwd: old, encoding: 'utf8' });
+      return r.status !== 0; })());
 
   // A BRAND-NEW board must simply be .peer — no legacy anything.
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'mig2-'));
   spawnSync('git', ['init', '-q'], { cwd: fresh });
   const b3 = RM8.resolveBoard(fresh);
   RM8.ensureBoard(b3);
-  ok('a NEW board is born as .peer, with no .plan anywhere',
-    fs.existsSync(path.join(fresh, '.peer')) && !fs.existsSync(path.join(fresh, '.plan')));
+  ok('a NEW board is born at .arc/peer, with no legacy folder anywhere',
+    fs.existsSync(path.join(fresh, '.arc', 'peer'))
+    && !fs.existsSync(path.join(fresh, '.plan')) && !fs.existsSync(path.join(fresh, '.peer')));
 
   // NEVER clobber: if BOTH exist (a half-migrated repo, or someone made .peer by hand), the
   // rename must not fire — silently merging two ledgers would be far worse than leaving it.
   const both = fs.mkdtempSync(path.join(os.tmpdir(), 'mig3-'));
   spawnSync('git', ['init', '-q'], { cwd: both });
   fs.mkdirSync(path.join(both, '.plan'), { recursive: true });
-  fs.mkdirSync(path.join(both, '.peer'), { recursive: true });
-  fs.writeFileSync(path.join(both, '.peer', 'notes.jsonl'), '{"from":"x","body":"new"}\n');
+  fs.mkdirSync(path.join(both, '.arc', 'peer'), { recursive: true });
+  fs.writeFileSync(path.join(both, '.arc', 'peer', 'notes.jsonl'), '{"from":"x","body":"new"}\n');
   const b4 = RM8.resolveBoard(both);
   RM8.ensureBoard(b4);
-  ok('with BOTH folders present, .peer wins and .plan is left untouched (never merge two ledgers)',
-    b4.planDir === path.join(b4.root, '.peer') && fs.existsSync(path.join(both, '.plan'))
+  ok('with BOTH present, the CURRENT folder wins and the legacy is left alone (never merge two ledgers)',
+    b4.planDir === path.join(b4.root, '.arc', 'peer') && fs.existsSync(path.join(both, '.plan'))
     && RM8.allNotes(b4).length === 1);
 
   for (const d of [old, fresh, both]) fs.rmSync(d, { recursive: true, force: true });
@@ -2111,7 +2128,7 @@ try {
   // 2) the board self-ignores
   R.ensureBoard(rTop);
   const gi = fs.readFileSync(path.join(rTop.planDir, '.gitignore'), 'utf8');
-  ok('.peer/.gitignore ignores everything (incl. itself)', /^\*$/m.test(gi));
+  ok('the board .gitignore ignores everything (incl. itself)', /^\*$/m.test(gi));
 
   // 3) append + seq is the LINE NUMBER (race-free: two writers can't collide)
   R.appendNote(rTop, { from: 'research', to: 'coding', body: 'spec for P-014 changed' });

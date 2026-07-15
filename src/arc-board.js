@@ -32,24 +32,37 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// The board folder. It was `.plan` until 2026-07-15 — a name left from before the room->board
-// rename, and confusing enough that it had to be explained out loud ("there is no .board; .plan
-// IS the board"). `.peer` says what lives here: the peers' channel.
+// THE BOARD FOLDER: .arc/peer/
 //
-// Renaming it moves LIVE STATE, which is the dangerous kind, so it is done in exactly two moves:
-//   * READ falls back to the legacy name (below), so the ledger is never invisible for even one
-//     call between a deploy and the first write.
-//   * ensureBoard MIGRATES with a single atomic rename on the next write — the whole ledger,
-//     every cursor and claim, arrives intact and `.plan` ceases to exist.
-// After that the fallback is one failed stat, forever. No permanent shim, no data loss, no
-// window where two sessions write to different folders and silently stop seeing each other.
-const PLAN_DIR = '.peer';
-const LEGACY_PLAN_DIR = '.plan';
+// Everything arc puts in a repo now lives under ONE `.arc/`, and the split inside it is the
+// design, not an accident:
+//   .arc/roles/<role>.md   COMMITTED   what a role owns. A project fact — same on every machine,
+//                                      true whether or not anyone is in that chair.
+//   .arc/peer/             IGNORED     the board: notes, cursors, claims. Machine state — a
+//                                      claim is a PID, and a PID means nothing on your other PC.
+// `.arc/peer/.gitignore` is `*`, so the board self-ignores while `.arc/roles/` commits normally.
+// One folder, two lifetimes, each declaring its own.
+//
+// It was `.plan` until 2026-07-15 — a name left from before the room->board rename, confusing
+// enough that it had to be explained out loud ("there is no .board; .plan IS the board").
+//
+// Renaming it moves LIVE STATE, which is the dangerous kind, so:
+//   * READ falls back through LEGACY_DIRS, so the ledger is never invisible for even one call
+//     between a deploy and the first write. A board that reports "no notes" when it has 38 is a
+//     lie, and the silent kind.
+//   * ensureBoard MIGRATES on the next write with ONE atomic rename — the whole ledger, every
+//     cursor and claim, arrives intact; nothing is copied and it cannot half-finish.
+// After that the fallback is a couple of failed stats, forever. No permanent shim, no data loss,
+// no window where two sessions write to different folders and silently stop seeing each other.
+const PLAN_DIR = path.join('.arc', 'peer');
+// Newest first. A machine that skipped a hop (home still on `.plan`) migrates straight here.
+const LEGACY_DIRS = ['.peer', '.plan'];
 const NOTES = 'notes.jsonl';
 const GITIGNORE_BODY =
   '# The board: cross-session sticky notes. Coordination scratch, not a project\n' +
-  '# artifact — this ignores the whole .peer/ area (including this file), so the\n' +
-  "# project's own .gitignore never needs to know it exists.\n" +
+  '# artifact — this ignores the whole .arc/peer/ area (including this file), so\n' +
+  "# the project's own .gitignore never needs to know it exists. Its sibling\n" +
+  '# .arc/roles/ is NOT ignored: a role\'s duty is a project fact and commits.\n' +
   '*\n';
 
 // ---- board resolution ---------------------------------------------------------
@@ -77,14 +90,16 @@ function resolveBoard(cwd) {
   const root = canonical(repoRoot(cwd || process.cwd()));
   // basename of a drive root ("e:\") is "" — fall back to the path so a board is
   // never nameless. (Yes, people really do keep a git repo at a drive root.)
-  // READ FALLBACK to the legacy name: a board that has not been written to since the rename
-  // still lives in `.plan`, and pointing at an empty `.peer` would report "no notes" — a lie,
-  // and the worst kind (silent). Prefer the new name; use the old one only while it is the one
-  // that actually exists. ensureBoard migrates it on the next write, and then this never fires.
+  // READ FALLBACK: a board not written to since the rename still lives under an old name, and
+  // pointing at an empty `.arc/peer` would report "no notes" for a board that has 38 — a lie,
+  // and the worst kind (silent). Prefer the current name; use an old one only while it is the
+  // one that actually exists. ensureBoard migrates on the next write, then this never fires.
   let planDir = path.join(root, PLAN_DIR);
   if (!fs.existsSync(planDir)) {
-    const legacy = path.join(root, LEGACY_PLAN_DIR);
-    if (fs.existsSync(legacy)) planDir = legacy;
+    for (const legacy of LEGACY_DIRS) {
+      const p = path.join(root, legacy);
+      if (fs.existsSync(p)) { planDir = p; break; }
+    }
   }
   return { root, planDir, name: path.basename(root) || root };
 }
@@ -98,6 +113,9 @@ function resolveBoard(cwd) {
 function ensureBoard(board) {
   const target = path.join(board.root, PLAN_DIR);
   if (board.planDir !== target && !fs.existsSync(target)) {
+    // The target is NESTED now (.arc/peer), and rename() will not create the parent — without
+    // this the migration silently fails and the board just stays where it was.
+    try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
     try { fs.renameSync(board.planDir, target); board.planDir = target; }
     catch { /* someone raced us, or it is locked — keep using the legacy dir, still correct */ }
   }
