@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// cl-kit test suite — Windows 11. Pure Node built-ins, no dependencies, no
+// arc test suite — Windows 11. Pure Node built-ins, no dependencies, no
 // interactive `claude`, no GUI. Every test runs against a THROWAWAY HOME under the
 // temp dir (never the real ~/.claude); CI runs it on windows-latest. Section 7
 // exercises the real Windows key path (a DPAPI round-trip via powershell.exe).
@@ -21,7 +21,7 @@ const { spawnSync } = require('child_process');
 
 // ---- throwaway HOME (must be set BEFORE requiring any src module, since
 // arc-config computes CLAUDE_DIR = homedir()/.claude at load time) --------------
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'clkit-test-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-test-'));
 process.env.HOME = TMP;          // POSIX homedir()
 process.env.USERPROFILE = TMP;   // Windows homedir()
 process.env.CL_PEEK_NO_REFRESH = '1'; // hermetic: buildPeek must not spawn a network refresh in tests
@@ -44,7 +44,7 @@ function ok(name, cond, extra) {
 }
 function section(t) { console.log(`\n=== ${t} ===`); }
 
-console.log(`cl-kit tests · ${process.platform} · node ${process.version} · HOME=${TMP}`);
+console.log(`arc tests · ${process.platform} · node ${process.version} · HOME=${TMP}`);
 
 // ---- 1. syntax check every shipped .js --------------------------------------
 section('syntax (node --check, all platforms)');
@@ -356,7 +356,7 @@ try {
 
   // Claude Code names a project dir after the cwd, non-alphanumerics -> '-'
   ok('encodeProject: drive root', sync.encodeProject('E:\\') === 'E--');
-  ok('encodeProject: nested dir', sync.encodeProject('E:\\cl-kit') === 'E--cl-kit');
+  ok('encodeProject: nested dir', sync.encodeProject('E:\\arc') === 'E--arc');
   ok('encodeProject: deep path', sync.encodeProject('C:\\Users\\yanyu\\AppData\\Local\\Temp') === 'C--Users-yanyu-AppData-Local-Temp');
 
   const fake = [
@@ -508,7 +508,7 @@ try {
 } catch (e) { ok('gw-usage works', false, e.message); }
 
 // ---- 7. arc-platform + storeApiKey (Windows key path: DPAPI) -------------------
-// cl-kit is Windows 11 only, so this asserts the real DPAPI round-trip (via
+// arc is Windows 11 only, so this asserts the real DPAPI round-trip (via
 // powershell.exe). It also proves the PORTABLE key sources (apiKeyEnv / apiKeyFrom)
 // still resolve on Windows — only the POSIX OS-keychain source was dropped.
 section('arc-platform + storeApiKey (DPAPI + portable key sources)');
@@ -695,7 +695,7 @@ try {
   A.writeState(board, rep.next);
 
   // A doc EXAMPLE (`arc:anchor src/auth.ts#handleLogin` in a README) points at nothing
-  // and never has. It must never nag — cl-kit's own README contains exactly this.
+  // and never has. It must never nag — arc's own README contains exactly this.
   fs.writeFileSync(path.join(repo, 'docs', 'readme.md'),
     'Put one next to a claim: <!-- arc:anchor src/nowhere.ts#imaginary -->\n');
   g('add', '-A'); g('commit', '-qm', 'add a doc with an example anchor');
