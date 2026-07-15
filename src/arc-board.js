@@ -350,6 +350,15 @@ function claimRole(board, role, pid, sessionId, convId) {
 // The claim this CONVERSATION was working under, now vacant (its session died). That is the
 // role a resumed conversation should pick back up: a relaunch mints a NEW ARC_SESSION, so the
 // role would otherwise be silently lost and the session would stop receiving notes entirely.
+// A role that WAS held and is now empty — carrying the conversation of the session that held it.
+// This is what makes a closed peer revivable AS ITSELF: its transcript is still on disk, and this
+// is the only record of which one is its. Without it the only way to refill a chair is to fork
+// someone else's context, which hands the role's name to a session that has none of its memory.
+function vacantClaimForRole(board, role) {
+  const l = readClaimFile(board, role);
+  return (l && l.convId && !isAlive(l.pid)) ? l : null;
+}
+
 function vacantClaimForConv(board, convId) {
   if (!convId) return null;
   let files = [];
@@ -387,6 +396,6 @@ module.exports = {
   notesPath, appendNote, allNotes, noteCount, latestSeq,
   KINDS, KIND_RANK, DEFAULT_KIND, normalizeKind, supersededMap, openRequests, repliesTo,
   readCursor, writeCursor, unreadFor, markRead,
-  isAlive, roleClaim, claimRole, releaseRole, liveRoles,
+  isAlive, roleClaim, claimRole, releaseRole, liveRoles, vacantClaimForRole,
   atomicWriteJson, withLock, vacantClaimForConv,
 };

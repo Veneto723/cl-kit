@@ -1,32 +1,38 @@
 #!/usr/bin/env node
-// arc-invite: spawn a PEER session — a new tab in the CURRENT Windows Terminal window that
-// forks THIS conversation's context and joins the board under its own role.
+// arc-invite: STAFF a role — put a session in an empty chair on this board.
 //
-//   arc:invite frontend      (sentinel — zero tokens; the tab + its opening turn do the work)
-//   arc invite frontend      (agent CLI — heavier initiative: on the user's order, or ACTIVE)
+// Reached only through `arc delegate <role>` (arc-runner). There is no `arc:invite` sentinel and
+// no bare `arc invite`: a human's natural act is PROSE ("get research on this"), not a command,
+// and an agent should never have to know whether a chair is occupied before asking for work to be
+// done in it. One verb; arc decides live-vs-closed-vs-new. See requestDelegate below.
 //
-// WHY A FORK AND NOT A FRESH SESSION: the point of inviting is that the newcomer already
-// KNOWS the project — `--fork-session` copies the caller's conversation into a new session id,
-// so the invited peer starts with the full context and none of the re-reading. (A delegate
-// used to re-derive context every run; that tool died for it.)
+// TWO WAYS TO FILL A CHAIR, and picking right is the whole value:
+//   REVIVE  the role was held before and its own conversation still exists -> resume THAT, with
+//           no --fork-session. It comes back as ITSELF: everything it learned, still there, and
+//           it re-adopts its role automatically (a resumed conversation reclaims its vacant
+//           claim). This is the one that matters — accumulated context is the entire reason a
+//           peer beats a subagent, and forking the caller would hand the role's NAME to a
+//           session with none of its MEMORY.
+//   FORK    no history to return to -> --fork-session from the caller, so the newcomer at least
+//           starts knowing the project instead of re-reading it.
 //
-// WHY THE OPENING PROMPT IS A SENTINEL: the tab launches `arc --resume <conv> --fork-session
-// "arc:role <role>"`. That first prompt hits the UserPromptSubmit hook like any typed prompt:
-// the claim happens in-hook, and the fresh-claim PASS-THROUGH hands the fork one turn to run
-// `arc join <role>`. So the invited session claims + arms with machinery that already exists
-// and is already tested — invite adds a tab, not a mechanism.
+// WHY THE OPENING PROMPT IS A SENTINEL: the tab launches `arc … --resume <conv> "arc:role <role>"`.
+// That first prompt hits UserPromptSubmit like any typed prompt: the claim happens in-hook, and
+// the fresh-claim PASS-THROUGH hands the new session one turn to run `arc join <role>`. So it
+// claims and arms with machinery that already exists and is already tested — staffing adds a TAB,
+// not a mechanism.
 //
 // ACCOUNT PINNING IS LOAD-BEARING: conversations live in per-account profiles
-// (~/.claude/arc-profiles/<id>/projects). If the new tab auto-selected a DIFFERENT account,
-// the caller's transcript would not exist there and the fork would die with "No conversation
-// found". So the tab is pinned to the caller's account (ARC_RUNTIME_ACCOUNT).
+// (~/.claude/arc-profiles/<id>/projects). If the new tab auto-selected a DIFFERENT account, the
+// conversation would not exist there and the resume would die with "No conversation found". So the
+// tab is pinned to the caller's account (ARC_RUNTIME_ACCOUNT).
 //
-// AND THE TAB MUST NOT STOP AT "Do you trust this folder?" — an invited session has no human
-// to answer it, so it would sit at the dialog claimed-but-deaf forever. Found live: invite was
-// passing the CANONICAL board root (lowercased, "e:\arc") while the caller ran as "E:\arc", so
-// Claude Code saw a DIFFERENT project, inherited none of the caller's trust, and prompted. Two
-// fixes below: launch in the caller's OWN cwd string (no phantom project), and pre-trust that
-// exact path in the caller's own profile (see ensureTrusted).
+// AND THE TAB MUST NOT STOP AT "Do you trust this folder?" — a staffed session has no human to
+// answer it, so it would sit at the dialog claimed-but-deaf forever. Found live: it was passing
+// the CANONICAL board root (lowercased, "e:\arc") while the caller ran as "E:\arc", so Claude Code
+// saw a DIFFERENT project, inherited none of the caller's trust, and prompted. Two fixes below:
+// launch in the caller's OWN cwd string (no phantom project), and pre-trust that exact path in the
+// caller's own profile (see ensureTrusted).
 'use strict';
 
 const fs = require('fs');
@@ -109,34 +115,51 @@ function ensureTrusted(launchDir, opts) {
 // The '"arc:role <role>"' nesting is deliberate: PS strips '…' → wt/cmd sees "arc:role X" →
 // arc.cmd %* keeps the quotes → node receives ONE argv slot. Verified end-to-end.
 const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
-function buildLaunch(wt, account, conv, role, root) {
+// `fork:false` = REVIVE: we are resuming the role's OWN conversation, so it must NOT be forked —
+// it comes back as itself, with everything it learned. `fork:true` = a NEW peer born from the
+// caller's context, which is the only sensible thing when the role has no history to return to.
+function buildLaunch(wt, account, conv, role, root, fork) {
   const acct = account ? ` --account ${account}` : '';
+  const inner = `arc${acct} --resume ${conv}${fork ? ' --fork-session' : ''} '"arc:role ${role}"'`;
   if (wt) {
     // --suppressApplicationTitle is what makes the title STICK. Without it the tab shows "arc"
     // like every other tab: Claude Code sets the terminal title from the project folder, and an
     // application title escape overrides wt's --title. With two identical "arc" tabs you cannot
     // tell the caller from the peer it spawned — so the peer's tab is pinned to its ROLE.
-    return `wt -w 0 new-tab --title ${psQuote('arc: ' + role)} --suppressApplicationTitle -d ${psQuote(root)} `
-      + `cmd /c arc${acct} --resume ${conv} --fork-session '"arc:role ${role}"'`;
+    return `wt -w 0 new-tab --title ${psQuote('arc: ' + role)} --suppressApplicationTitle -d ${psQuote(root)} cmd /c ${inner}`;
   }
   // No Windows Terminal: a fresh console window via start (best-effort fallback).
-  return `cmd /c start "arc: ${role}" /d "${root}" cmd /c arc${acct} --resume ${conv} --fork-session '"arc:role ${role}"'`;
+  return `cmd /c start "arc: ${role}" /d "${root}" cmd /c ${inner}`;
 }
 
-function requestInvite(session, arg, cwd, opts) {
+// Does a conversation still have a transcript on disk? A revive is `--resume <conv>`, and that
+// fails outright ("No conversation found") if the transcript is gone — deleted, trashed, purged.
+// So a vacant claim's convId is a LEAD, not a guarantee, and it must be checked before it is
+// trusted. Profiles junction projects/ to the shared dir, so the account does not matter here.
+function hasTranscript(convId) {
+  if (!convId) return false;
+  const root = path.join(require('os').homedir(), '.claude', 'projects');
+  try {
+    for (const d of fs.readdirSync(root)) {
+      if (d === '.trash') continue;
+      if (fs.existsSync(path.join(root, d, `${convId}.jsonl`))) return true;
+    }
+  } catch {}
+  return false;
+}
+
+// STAFF a role: put a session in an empty chair. Two ways, and picking the right one is the
+// whole value:
+//   REVIVE  the role was held before and its own conversation still exists -> resume THAT.
+//           It comes back as ITSELF, with everything it learned. This is the one that matters:
+//           the entire reason a peer beats a subagent is accumulated context, and forking the
+//           caller instead would hand the role's NAME to a session with none of its MEMORY.
+//   FORK    no history to return to -> fork the caller's context, so the newcomer at least
+//           knows the project.
+function staffRole(session, role, opts) {
   const o = opts || {};
   const doSpawn = o.spawn || spawnSync;           // tests inject a recorder — nothing real opens
   const wt = o.hasWt !== undefined ? o.hasWt : hasWt();
-
-  if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
-  const role = String(arg || '').trim().toLowerCase();
-  if (!role) {
-    return { ok: false, message:
-      'usage: arc:invite <role>   (e.g. arc:invite frontend)\n' +
-      'Opens a NEW TAB in this window: a session that FORKS this conversation\'s context,\n' +
-      'claims <role> on this board, and arms its own listener — a live peer, zero setup.' };
-  }
-  if (!N.VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
 
   // The board, the launch dir and the trusted folder ALL anchor to the session's own recorded
   // cwd (see launchDir below) — never to the caller's argument. Otherwise an agent could `cd`
@@ -156,10 +179,16 @@ function requestInvite(session, arg, cwd, opts) {
       `role "${role}" is already held by a LIVE session (pid ${held.pid}) on the "${board.name}" board.\n` +
       `That session IS your ${role} peer — leave it a note instead:  arc note ${role} "<text>"` };
   }
-  const conv = N.sessionConv(session);
+  // REVIVE OR FORK. A vacant claim remembers the conversation of the session that held this
+  // role; if that transcript still exists, resuming it brings the real peer back. The convId is
+  // a LEAD, not a guarantee — the conversation may have been deleted or purged — so it is only
+  // trusted once the transcript is confirmed on disk. Otherwise: fork the caller.
+  const vacant = R.vacantClaimForRole(board, role);
+  const revive = !!(vacant && (o.hasTranscript || hasTranscript)(vacant.convId));
+  const conv = revive ? vacant.convId : N.sessionConv(session);
   if (!conv) {
     return { ok: false, message:
-      'this conversation has no saved id yet, so there is nothing to fork — send one message first, then invite.' };
+      'this conversation has no saved id yet, so there is nothing to fork from — send one message first, then try again.' };
   }
   const account = (process.env.ARC_RUNTIME_ACCOUNT || '').trim() || null;
 
@@ -188,7 +217,7 @@ function requestInvite(session, arg, cwd, opts) {
   // Only status === 0 is success. And the timeout must stay SHORT: this runs inside the
   // UserPromptSubmit hook, so a wedged launcher stalls the user's own prompt. wt's COM handoff
   // takes ~0.5s.
-  const psCmd = buildLaunch(wt, account, conv, role, launchDir);
+  const psCmd = buildLaunch(wt, account, conv, role, launchDir, !revive);
   let r;
   try {
     r = doSpawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 5000 });
@@ -200,21 +229,91 @@ function requestInvite(session, arg, cwd, opts) {
     return { ok: false, message: `could not open the new tab (${why}) — no peer was started.` };
   }
 
-  const me = N.getRole(session, board);
-  return { ok: true, role, trust, message:
-    `✓ inviting a "${role}" peer — new ${wt ? 'tab in this window' : 'console window'}.\n` +
-    `  it forks THIS conversation's context, claims "${role}" on the "${board.name}" board,\n` +
-    `  and arms its own listener (one small turn in the new tab does all of it).\n` +
+  return { ok: true, role, revived: revive, trust, message:
+    (revive
+      ? `✓ REVIVING "${role}" — new ${wt ? 'tab in this window' : 'console window'}.\n`
+        + `  it resumes ${role}'s OWN conversation, so it comes back as itself: everything it\n`
+        + `  learned before, still there. It re-adopts the role and arms its own listener.\n`
+      : `✓ staffing a new "${role}" peer — new ${wt ? 'tab in this window' : 'console window'}.\n`
+        + `  no ${role} has worked here before, so it FORKS this conversation's context — it starts\n`
+        + `  knowing the project. It claims "${role}" and arms its own listener.\n`) +
     (trust.seeded
       ? `  (trusted "${launchDir}" for this account so the new tab isn't stopped by the trust\n` +
         `   dialog it cannot answer — the same folder you are already working in. Backup:\n` +
         `   .claude.json.bak-arc)\n`
       : trust.ok ? '' :
         `  ⚠ could not pre-accept the folder-trust dialog (${trust.why}) — if the new tab asks\n` +
-        `    "Do you trust the files in this folder?", answer it once and it will never ask again.\n`) +
-    (me
-      ? `  when it's up: arc role shows it — reach it with  arc note ${role} "<text>"`
-      : `  tip: claim a role yourself too (arc:role <name>) so it can address you back.`) };
+        `    "Do you trust the files in this folder?", answer it once and it will never ask again.\n`) };
 }
 
-module.exports = { requestInvite, buildLaunch, ensureTrusted, trustKey, hasWt };
+// ---- THE ONE VERB ------------------------------------------------------------------------
+//     arc delegate <role> [<packet>]
+//
+// "Get <role> on this." One verb, because the AGENT'S INTENT never changes: it wants a job done
+// by whoever owns that area. What changes is only the plumbing — is that peer live, closed, or
+// has it never existed? — and that is DATA arc already holds in the roster. Making the agent
+// branch on it meant four steps of judgment written in prose, and prose is where agents drift:
+// we watched a peer bounce its own decision to a human, and a fork believe it was its caller.
+//
+//     THE AGENT DECIDES WHO. arc DECIDES HOW.
+//
+// "Is this research's job or mine?" is real judgment and stays with the model (that is what the
+// duty file is for). "Is research live, and what do I do if not?" is a lookup, and it lives here.
+//
+// The work and the worker never merge into one act, though — they COMPOSE. A note is free and
+// reversible; staffing spawns a session with its own quota. So the note always posts, and the
+// spawn is gated by arc:mode (arc-pretool-hook, which checks liveness so the gate fires ONLY when
+// a session would actually be created).
+function requestDelegate(session, arg, cwd, opts) {
+  const o = opts || {};
+  if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
+  const m = String(arg || '').trim().match(/^(\S+)(?:\s+([\s\S]+))?$/);
+  if (!m) {
+    return { ok: false, message:
+      'usage: arc delegate <role> "<packet>"     get <role> on a job — they may be live, closed, or new\n' +
+      '       arc delegate <role>                just put someone in that chair, no job attached\n' +
+      '  A live peer is noted (free). A closed one is REVIVED as itself. A role nobody has ever\n' +
+      '  held is staffed from your context. You do not have to know which — that is arc\'s job.' };
+  }
+  const role = m[1].toLowerCase();
+  const packet = (m[2] || '').trim();
+  if (!N.VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
+
+  const board = R.resolveBoard(N.resolveCwd(session, null));
+  const live = R.liveRoles(board).some((l) => l.role === role);
+
+  // CHECK BEFORE YOU SPAWN. A note is posted BY a role — that is what the reply is addressed back
+  // to — so a caller holding no role cannot delegate work, only staff an empty chair. Verifying
+  // that here rather than at the note is not tidiness: staffing OPENS A TAB, and this ran in the
+  // other order once. A roleless session got "claim a role first" as a flat failure while a peer
+  // it never heard about was booting in a new window — the refusal was a lie about what happened.
+  // Every refusal in this function must be reachable without a session existing because of it.
+  if (packet && !N.getRole(session, board)) {
+    return { ok: false, message:
+      `you hold no role on the "${board.name}" board, so there is no one for "${role}" to reply TO —\n` +
+      `a delegation is a question, and the answer has to come back to somebody.\n` +
+      `  claim yours first:  arc:role <yours>    then delegate again (nothing was started).` };
+  }
+
+  // Not live -> STAFF first, so the work lands in a chair that has someone in it. (The note would
+  // survive an empty chair anyway — the cursor is per-role — but "delegate" means someone is on
+  // it, not that it is filed.)
+  let staffed = null;
+  if (!live) {
+    staffed = staffRole(session, role, o);
+    if (!staffed.ok) return staffed;
+  }
+  if (!packet) return staffed || { ok: true, message: `"${role}" is already live — nothing to staff. Give it a job:  arc delegate ${role} "<packet>"` };
+
+  // Then the work. Always a request: a delegation is a question you are owed an answer to, and
+  // that is what makes it tracked and what wakes you when they reply.
+  const note = N.requestNote(session, `${role} --kind request ${packet}`, cwd);
+  if (!note.ok) return note;
+  return { ok: true, role, revived: staffed && staffed.revived, message:
+    (staffed ? staffed.message + '\n' : '') +
+    note.message.replace(/\n\s+⚠ NOBODY HOLDS[\s\S]*$/, '') +
+    (staffed ? `\n  the note is waiting in ${role}'s inbox — it reads it on arrival.`
+             : `\n  ${role} is live: its listener will wake it within seconds.`) };
+}
+
+module.exports = { staffRole, requestDelegate, buildLaunch, ensureTrusted, trustKey, hasWt, hasTranscript };

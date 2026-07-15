@@ -428,7 +428,7 @@ function stripConvArgs(args) {
     // needs its conversation to survive. From the second launch on, an invited peer is just a
     // session with its own conversation, and it must RESUME that, not re-fork it.
     if (x === '--fork-session') continue;
-    // The opening prompt arc:invite injects (`arc:role <role>`) is a BIRTH instruction — it exists
+    // The opening prompt staffing injects (`arc:role <role>`) is a BIRTH instruction — it exists
     // to make the newborn claim + arm itself. Replaying it on every relaunch would re-send it as a
     // prompt forever. It is not needed: the role is re-adopted from the claim (which carries the
     // conversation id, see arc-notes.healClaimConv) and the listener re-arms at the first idle.
@@ -1392,11 +1392,12 @@ async function main() {
     require('./arc-await').awaitOnce(userArgs[1], process.cwd()).then((code) => process.exit(code));
     return;
   }
-  // `arc invite <role>` — the agent form of arc:invite: spawn a peer session (new tab, forked
-  // context, claims <role>, arms itself). Heavier initiative: on the user's order, or ACTIVE.
-  if (userArgs[0] === 'invite') {
-    const r = require('./arc-invite').requestInvite(process.env.ARC_SESSION || '', userArgs.slice(1).join(' '), process.cwd());
-    process.stdout.write(String(r.message).replace(/arc:invite/g, 'arc invite').replace(/arc:role/g, 'arc role') + '\n');
+  // `arc delegate <role> [<packet>]` — THE one verb. "Get <role> on this." arc resolves whether
+  // that peer is live, closed (revive it as itself) or new (staff it from your context), so the
+  // agent never has to branch on data arc already holds.
+  if (userArgs[0] === 'delegate') {
+    const r = require('./arc-invite').requestDelegate(process.env.ARC_SESSION || '', userArgs.slice(1).join(' '), process.cwd());
+    process.stdout.write(String(r.message).replace(/arc:role/g, 'arc role').replace(/arc:note/g, 'arc note') + '\n');
     process.exit(r.ok ? 0 : 1);
   }
   if (userArgs[0] === 'role' || userArgs[0] === 'note' || userArgs[0] === 'notes') {
@@ -1509,8 +1510,8 @@ async function main() {
   // A FORK is not a duplicate: `--resume <id> --fork-session` READS the source transcript
   // once, then writes its own — no collision to guard. And the fork must NOT claim the
   // source conversation's lock (claimConv would OVERWRITE the real owner's lock file, after
-  // which the owner could not even restart itself). This is what lets `arc:invite` fork a
-  // LIVE caller: the caller keeps its lock; the fork never touches it.
+  // which the owner could not even restart itself). This is what lets staffing fork a LIVE
+  // caller: the caller keeps its lock; the fork never touches it.
   const isFork = userArgs.includes('--fork-session');
   // Guard the ids we know pre-launch: a managed convId (incl. /restart re-exec),
   // OR an explicit `arc --resume <uuid>`. A bare picker resume has no id yet — it

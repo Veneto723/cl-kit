@@ -174,11 +174,24 @@ claude on a real terminal and holds no handle into it), which is why it must be 
 command. Nothing to remember: arc asks, once, every time it would otherwise go deaf. If a
 role-holder never armed one, the statusline says `⚠ <role> · DEAF`.
 
-**Invite a peer instead of opening one by hand.** `arc:invite frontend` opens a tab in the current
-window running a session that **forks this conversation's context** — so it already knows the
-project — claims `frontend`, and arms its own listener. Zero setup. How much an *agent* may do
-that on its own is the `arc:mode` dial: `passive` refuses, `balanced` asks you first, `active`
-auto-approves (and still asks once several peers are live — each one burns its own quota).
+**Ask for a peer in prose; there is no command for you to type.** Say *"get research on this"* and
+the agent runs `arc delegate research "<packet>"` — **one verb**, whoever that peer is right now:
+
+| `research` is… | what arc does |
+|---|---|
+| **live** | leaves them a tracked request; their listener wakes them within seconds |
+| **closed** | **revives their own conversation** — they come back *as themselves*, with everything they learned, and re-claim the role |
+| **never existed here** | opens a tab that **forks this conversation's context**, so the newcomer already knows the project |
+
+The agent decides *who* owns the work; arc decides *how* to reach them. That split is deliberate:
+"is this research's job?" is judgment, but "is research live?" is a lookup, and an agent asked to
+branch on it drifts. Revival is the part that matters — a peer beats a subagent *because* of
+accumulated context, so refilling a chair by forking someone else would hand the role's name to a
+session with none of its memory.
+
+Staffing an empty chair spawns a real session, so the `arc:mode` dial gates that one step:
+`passive` refuses, `balanced` asks you first, `active` auto-approves (and still asks once several
+peers are live — each burns its own quota). Noting a *live* peer is never gated; it's just a note.
 
 **A role declares what it owns.** `.arc/roles/<role>.md` says `owns:` / `send me:` / `not me:` in
 three lines. It is **committed**, because a duty is a project fact — the same on every machine,
@@ -189,7 +202,7 @@ shows a roster of who is here *and what this repo has*, so an empty chair is rea
 your role: android — the android app surface
 roster:
   ● research  live   — investigation and docs; READ-ONLY on code
-  ○ frontend  closed — the web surface   ← empty chair: arc:invite frontend
+  ○ frontend  closed — the web surface   ← empty chair: arc delegate frontend
 ```
 
 — which is how an agent knows a job belongs to `frontend` rather than doing it itself or spawning

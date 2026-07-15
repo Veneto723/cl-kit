@@ -68,12 +68,16 @@ function listDuties(board) {
 
 // THE ROSTER: declarations (what this repo says exists) merged with claims (who is actually
 // here). The four states are the whole point — especially `closed`, which is the one an agent
-// could never see before and the one that decides invite-vs-do-it-myself.
+// could never see before: the duty EXISTS here, so the work has an owner even with the chair empty.
 //
 //   live       + declared    a peer you can note RIGHT NOW, and you know what they own
 //   live       + undeclared  someone is here but never said what they own (nudge them)
-//   closed     + declared    this repo HAS this duty; nobody is in the chair -> arc:invite <role>
+//   closed     + declared    this repo HAS this duty; nobody is in the chair right now
 //   (absent)                 not a role here at all
+//
+// The roster answers WHO OWNS THIS, which is the agent's judgment to make. It deliberately does
+// NOT tell the agent what to DO about an empty chair: `arc delegate <role>` covers live, closed
+// and never-existed alike, so branching on this state is arc's job, not the model's.
 function roster(board, liveRoles) {
   const live = new Map((liveRoles || []).map((l) => [l.role, l]));
   const out = [];

@@ -90,7 +90,7 @@ function coreHookEntries(scriptsDir) {
     ['TaskCompleted', 'arc-done.js', ''],
   ];
   const entries = H.map(([event, script, arg]) => ({ event, script, command: `node "${S}/${script}"${arg ? ' ' + arg : ''}` }));
-  // The stance gate for `arc invite`. MATCHED to the shell tools only: unmatched, it would spawn
+  // The stance gate for `arc delegate`. MATCHED to the shell tools only: unmatched, it would spawn
   // node on every Read/Grep/Edit in the session to police one command. A session may be handed
   // EITHER shell tool (the first invited peer had PowerShell and no Bash at all), so both.
   entries.push({
@@ -102,11 +102,11 @@ function coreHookEntries(scriptsDir) {
 
 // Wire arc's core hooks + statusline into settings.json.
 // The BOARD commands an agent must be able to run UNATTENDED. Found by the first live
-// arc:invite: the invited session's whole job is to arm its listener with nobody watching —
+// staffing a peer: the new session's whole job is to arm its listener with nobody watching —
 // it sat forever at a Bash permission prompt instead, claimed but deaf. The same prompt would
 // wedge every Stop-hook re-arm in an unattended session. These are coordination commands
-// (claim, listen, read, post) — nothing destructive is on this list, and `arc invite` itself
-// is deliberately NOT (an agent spawning sessions should stay a human decision per spawn).
+// (claim, listen, read, post) — nothing destructive is on this list, and `arc delegate` is
+// deliberately NOT: it is the one verb that can spawn a session, so it stays gated by arc:mode.
 // EVERY shell tool, not just Bash. A session does not always get the Bash tool: the first
 // INVITED peer reported `No such tool available: Bash` and had only PowerShell — so a Bash-only
 // allowlist matched nothing, `arc join` raised a permission prompt, and the tab sat there

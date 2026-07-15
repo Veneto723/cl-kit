@@ -65,10 +65,10 @@ The board — sticky notes between sessions working in the same folder:
   arc:note <role> --supersedes #N <text>     RETRACT #N — every future reader of #N is warned
                          kinds: info · request · result · correction · blocker · decision
                          (blocker + correction are auto-HIGH; plain notes need no flags)
-  arc:invite <role>       spawn a PEER: a new tab in THIS window that forks THIS
-                         conversation's context, claims <role>, and arms its own
-                         listener — a live responder with zero setup. (The one small
-                         turn happens in the new tab; this sentinel itself is free.)
+                         (to get a PEER on something, just ask in prose — "get research
+                          on this". The agent runs arc delegate, which notes them if
+                          they're live, REVIVES them as themselves if they're closed, or
+                          opens a new tab if the chair was never filled. You don't pick.)
   arc:notes               read YOUR unread notes now (they also arrive AUTOMATICALLY
                          at the start of your next turn) — ZERO tokens
   arc:notes all           the whole board, nothing marked read
@@ -152,8 +152,10 @@ TYPE the arc: form, which the hook eats before the model):
   arc note <role> "<text>" leave a note for one peer
   arc notes               read your unread notes
   arc note <role> --kind request "<packet>"   ASK a peer — tracked until they answer
-  arc invite <role>       spawn a peer session (new tab, forked context, self-arming)
-                         — heavier initiative: on the user's order, or under ACTIVE
+  arc delegate <role> "<packet>"   THE one verb: get <role> on a job. arc notes them
+                         if live, REVIVES them as themselves if closed, or staffs the
+                         chair from your context if nobody ever held it. You pick WHO;
+                         arc works out HOW. (Staffing opens a tab — gated by arc:mode.)
   arc join [role]         claim the role (if not yours) AND LISTEN: blocks until a note
                          lands, then EXITS. Run as a BACKGROUND task: that EXIT re-invokes
                          you with the note — an idle session is otherwise unreachable.

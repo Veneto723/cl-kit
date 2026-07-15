@@ -166,7 +166,7 @@ function rosterLines(board, meRole) {
   return others.map((r) => {
     const what = r.summary ? ` — ${r.summary}`
       : r.declared ? '' : ` — (no duty declared: ${r.path})`;
-    const hint = (!r.live && r.declared) ? `   ← empty chair: arc:invite ${r.role}` : '';
+    const hint = (!r.live && r.declared) ? `   ← empty chair: arc delegate ${r.role}` : '';
     return `    ${r.live ? '●' : '○'} ${r.role.padEnd(w)}  ${r.live ? 'live  ' : 'closed'}${what}${hint}`;
   }).join('\n');
 }
@@ -318,10 +318,10 @@ function requestNote(session, arg, cwd) {
     chair = `\n  ⚠ NOBODY HOLDS "${to}" right now — your note is waiting in an empty chair.\n`
       + (duty
         ? `    It IS a declared role here (owns: ${duty.summary || 'see ' + duty.path}).\n`
-          + `    Put someone in it:  arc:invite ${to}   ← forks your context; it will read this note on arrival.\n`
+          + `    Put someone in it:  arc delegate ${to} "<packet>"   ← staffs the chair AND delivers the work.\n`
         : `    And this repo does not declare a "${to}" role at all — check \`arc role\` for who is\n`
-          + `    actually here. If ${to} really is a job on this board, invite one (arc:invite ${to})\n`
-          + `    and have it declare its duty.\n`)
+          + `    actually here. If ${to} really is a job on this board:  arc delegate ${to} "<packet>"\n`
+          + `    — it will staff the chair and have it declare its duty.\n`)
       + (note.kind === 'request'
         ? `    THIS IS A REQUEST: it will NEVER be answered until someone claims "${to}". Do not go\n`
           + `    idle waiting on it — either invite one now, or do the work yourself/with a subagent.`

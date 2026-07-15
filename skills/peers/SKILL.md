@@ -86,28 +86,35 @@ arc note research --kind request "<packet>"
   your role: android — the android app surface — Kotlin, layouts, gestures
   roster:
     ● research  live   — investigation and docs; READ-ONLY on code
-    ○ frontend  closed — the web surface   ← empty chair: arc:invite frontend
+    ○ frontend  closed — the web surface   ← empty chair: arc delegate frontend
 ```
 
 Every role's duty is declared in `.arc/roles/<role>.md` — committed, so it is the same on every
 machine and it **outlives the session that wrote it**. That's what makes an empty chair readable:
 `frontend` is a real job here, nobody is in it right now.
 
-**Three states, three answers:**
+### You decide WHO. arc decides HOW.
 
-| roster says | means | do |
-|---|---|---|
-| **● live** | a peer is in that chair *now* | **note them** — `arc note <role> --kind request`. Always: it costs ~0 and they hold the context. Idle is fine; their listener wakes them. |
-| **○ closed** | the job exists here, the chair is empty | **is it a thread or a question?** thread → `arc:invite <role>` (use the *declared name*), then note them. question → just do it, or use a subagent. |
-| **not listed** | nobody owns this | it's yours, or a subagent's. |
+The roster answers the only question that needs your judgment: **does someone else own this?**
+If yes, hand it over with the one verb:
 
-**Never mint a synonym.** If the roster says `research`, do not invite `researcher` — you'd split
-one job across two chairs, each with half the context. Reuse the declared name; that is the whole
-point of the roster.
+```
+arc delegate <role> "<what you need, and why you're stuck>"
+```
 
-**Don't spawn a session for a single question.** A peer is a window, a boot, and its own quota,
+That covers **live, closed, and never-existed alike** — arc notes a live peer, revives a closed
+one *as itself* (its own conversation, everything it learned still there), or staffs an empty
+chair from your context. **Do not branch on the roster's ● / ○ yourself.** Whether a chair is
+warm is arc's data, not your decision, and it can change between reading the roster and acting
+on it.
+
+**Never mint a synonym.** If the roster says `research`, do not delegate to `researcher` — you'd
+split one job across two chairs, each with half the context. Reuse the declared name; that is the
+whole point of the roster.
+
+**A peer is not a subagent.** Delegating to an empty chair opens a window with its own quota,
 alive until closed. Worth it for a thread someone should own; absurd for *"what does this flag
-do?"* — that's a subagent.
+do?"* — that's a subagent. If nobody owns the area, it's yours: just do the work.
 
 **A note to an empty chair still keeps.** The cursor is per-*role*, so whoever claims that role
 next reads it in full. But a **request** to an empty chair is never answered — arc will tell you,
@@ -208,12 +215,18 @@ And never bounce a peer's decision to the human: *"should I take this, or leave 
 question for **code**, on the board — they asked you, so they can answer that too. Escalate to your
 human when *they* are the one who has to choose, not to shed a decision a peer already owns.
 
-## If you were INVITED (a forked peer), read this twice
+## If you were STAFFED from someone else's context, read this twice
 
-`arc:invite` forks the caller's conversation into you, so **you can see a whole history you did
-not live**. It reads like your own — the same "assistant" voice, the same relationship with the
-same human, hours of it. **It is not yours.** The session that lived it still exists; it is now a
-**peer**, and it is not you.
+**First: which one are you?** `arc delegate` fills an empty chair two ways, and they are opposites.
+
+- **REVIVED** — you resumed **your own** conversation, because you have held this role here
+  before. The history above *is* yours. You lived it. Pick your work back up; **this section is
+  not about you.** (arc says `✓ REVIVING "<role>"` when it does this.)
+- **FORKED** — nobody had ever held this role, so you were born from a **peer's** context. Read on.
+
+A fork means **you can see a whole history you did not live**. It reads like your own — the same
+"assistant" voice, the same relationship with the same human, hours of it. **It is not yours.**
+The session that lived it still exists; it is now a **peer**, and it is not you.
 
 You were given that context so you'd already know the project. That's the gift and the trap:
 

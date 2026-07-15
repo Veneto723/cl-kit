@@ -1240,7 +1240,7 @@ try {
   }
 } catch (e) { ok('cache sweeper', false, e.message + '\n' + (e.stack || '')); }
 
-// ---- arc:invite (spawn a peer session: new tab, forked context, self-arming) --------
+// ---- staffing a peer (new tab, revived-or-forked context, self-arming) -------------
 // invite adds a TAB, not a mechanism: the new tab runs `arc --account <caller's> --resume
 // <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
 // does the claiming + arming in the new session's first turn. These tests inject a spawn
@@ -1522,9 +1522,9 @@ try {
   ok('a note to an EMPTY CHAIR still posts (the cursor is per-role — it keeps)', req.ok === true);
   ok('...but says so, loudly, instead of a bare ✓',
     /NOBODY HOLDS "research"/.test(req.message));
-  ok('...and uses the DUTY to make the warning actionable (the chair is real, revive it)',
+  ok('...and uses the DUTY to make the warning actionable (the chair is real, staff it)',
     /IS a declared role/.test(req.message) && /investigation and docs/.test(req.message)
-    && /arc:invite research/.test(req.message));
+    && /arc delegate research/.test(req.message));
   ok('...and a REQUEST is called out as never-answerable — do not go idle on it',
     /NEVER be answered/.test(req.message) && /Do not go\n {4}idle/.test(req.message));
 
@@ -1568,7 +1568,7 @@ try {
 } catch (e) { ok('duty roster', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- peer identity: a fork believes it is the session it was forked FROM -------------
-// arc:invite forks the caller's conversation into the peer, so the peer inherits a transcript in
+// Staffing a NEW peer forks the caller's conversation into it, so it inherits a transcript in
 // which "the assistant" has been talking to the human for hours. Its default self-model is
 // therefore "I am that session, reporting to that human" — and it behaves accordingly: it
 // addresses the user, offers THEM work, and asks THEM to decide things a PEER asked it to decide.
@@ -1627,9 +1627,15 @@ try {
 
   // And in the protocol doc, so it survives beyond the birth turn.
   const skill2 = fs.readFileSync(path.join(ROOT, 'skills', 'peers', 'SKILL.md'), 'utf8');
-  ok('the peers skill states who you serve, and what an INVITED peer must not assume',
+  ok('the peers skill states who you serve, and what a FORKED peer must not assume',
     /WHO YOU SERVE/.test(skill2) && /Answer where you were asked/i.test(skill2)
-    && /forked peer/i.test(skill2) && /did not do the work you can see above/i.test(skill2));
+    && /FORKED/.test(skill2) && /did not do the work you can see above/i.test(skill2));
+  // Staffing fills a chair two OPPOSITE ways, and the identity warning is only true for one of
+  // them. A REVIVED peer resumed its OWN conversation — telling it "the history above is not
+  // yours" would make it disown its own memory, which is the exact context that made reviving
+  // worth building. So the doc must sort the reader before it warns them.
+  ok('...and it makes a REVIVED peer sort itself out FIRST (that history really is its own)',
+    /REVIVED/.test(skill2) && /this section is\s+not about you/i.test(skill2));
 
   fs.rmSync(irepo, { recursive: true, force: true });
   for (const s of [FK, NM]) {
@@ -1673,11 +1679,11 @@ try {
   // so the peer graph could only ever be a one-level star around whoever started it.
   const I5 = require(path.join(SRC, 'arc-invite.js'));
   let spawnedFork = null;
-  const okInv = I5.requestInvite(FS_, 'grandchild', frepo, {
+  const okInv = I5.staffRole(FS_, 'grandchild', {
     spawn: (b, a) => { spawnedFork = a; return { status: 0 }; }, hasWt: true,
-    ensureTrusted: () => ({ ok: true, already: true }),
+    ensureTrusted: () => ({ ok: true, already: true }), hasTranscript: () => false,
   });
-  ok('...so an INVITED peer can now invite in turn (a peer tree, not a one-level star)',
+  ok('...so a STAFFED peer can staff another in turn (a peer tree, not a one-level star)',
     okInv.ok === true && spawnedFork.join(' ').includes('--resume fork-conv-9999'));
 
   // The CLAIM was written before the id was knowable, so it carries null — and role adoption on
@@ -1791,12 +1797,21 @@ try {
 // ---- the stance GATE: arc:mode drives whether an agent may spawn a peer ------------
 // Everything else the stance governs is a model-level STEER (injected advice), which is right
 // for a note: cheap, reversible, and "was this the user's order?" is a judgment only the model
-// can make. `arc invite` is different in kind — it spawns a REAL SESSION (window, process, its
-// own quota), and injected text cannot actually STOP an agent from running a command. So this
-// one rides a PreToolUse hook and becomes enforceable: passive DENIES, balanced ASKS, active
-// ALLOWS. The user's own `arc:invite` is a PROMPT, not a tool call, so it never reaches the gate
-// — passive restrains the AGENT, never the human.
-section('arc:mode gate (PreToolUse: passive denies · balanced asks · active allows)');
+// can make. STAFFING is different in kind — it spawns a REAL SESSION (window, process, its own
+// quota), and injected text cannot actually STOP an agent from running a command. So that one
+// step rides a PreToolUse hook and becomes enforceable: passive DENIES, balanced ASKS, active
+// ALLOWS.
+//
+// `arc delegate` carries BOTH costs under one verb, so the gate cannot judge the command string
+// alone — it must look up whether the role is LIVE. A live peer means this is only a note, and
+// gating the commonest thing an agent does would be pure noise; an empty chair means a session
+// gets born, and that is the moment the dial has to mean something.
+//
+// And it binds the HUMAN too, unlike the rest of the stance: a PreToolUse hook sees a tool call
+// and cannot tell the user's order from the agent's own idea. The `arc:invite` sentinel used to
+// be the escape hatch (a prompt is provably yours) and was removed on purpose — a human's
+// natural act is prose, not a command. So passive costs you the spawn whoever wanted it.
+section('arc:mode gate (fires ONLY when a delegate would spawn a session)');
 try {
   const HOOKP = path.join(SRC, 'arc-pretool-hook.js');
   const St3 = require(path.join(SRC, 'arc-stance.js'));
@@ -1811,6 +1826,8 @@ try {
     JSON.stringify({ pid: process.pid, cwd: grepo, convId: 'gc1' }));
   F4.requestRole(GS, 'code', grepo);
 
+  // `frontend` is nobody's role here, so delegating to it WOULD spawn. `code` is GS's own live
+  // role, so delegating to it is just a note and must never be gated.
   const gate = (command, tool = 'Bash', session = GS) => {
     const r = spawnSync(process.execPath, [HOOKP], {
       input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command }, cwd: grepo }),
@@ -1823,54 +1840,62 @@ try {
 
   // The three dial positions.
   St3.setStance(GS, 'passive');
-  const den = gate('arc invite frontend');
-  ok('PASSIVE denies an agent-initiated `arc invite`',
+  const den = gate('arc delegate frontend "do a thing"');
+  ok('PASSIVE denies a delegate that would SPAWN (nobody holds that role)',
     den.decision === 'deny' && /passive/i.test(den.reason || ''));
-  ok('...and tells the USER how to get the peer anyway (type arc:invite yourself)',
-    /arc:invite/.test(den.sys || '') && /arc:mode balanced/.test(den.sys || ''));
+  ok('...and says WHY passive binds the human too (a gate sees a tool call, not who asked)',
+    /arc:mode balanced/.test(den.sys || '') && /cannot tell your order/i.test(den.sys || ''));
 
   St3.setStance(GS, 'balanced');
   ok('BALANCED asks — the permission prompt IS the confirmation',
-    gate('arc invite frontend').decision === 'ask');
+    gate('arc delegate frontend "do a thing"').decision === 'ask');
 
   St3.setStance(GS, 'active');
   ok('ACTIVE allows — auto-approved, no prompt',
-    gate('arc invite frontend').decision === 'allow');
+    gate('arc delegate frontend "do a thing"').decision === 'allow');
+
+  // THE MERGE'S WHOLE POINT: one verb, two costs. Delegating to a LIVE peer is a note — free,
+  // reversible, the commonest thing an agent does — and gating it would be pure noise. The gate
+  // must therefore look up liveness, not just match the command string.
+  St3.setStance(GS, 'passive');
+  ok('a delegate to a LIVE peer is NEVER gated, even in passive (it is only a note)',
+    gate('arc delegate code "ping"').decision === null);
+  St3.setStance(GS, 'active');
 
   // The runaway guard: even ACTIVE asks once the board is crowded. Fails OPEN to a prompt, never
   // to a refusal — "spawn a helper" looks locally reasonable every single time, and each peer
   // burns its own quota.
   for (const r of ['a1', 'a2', 'a3']) RM4.claimRole(gboard, r, process.pid, `other-${r}`, null);
-  const capped = gate('arc invite frontend');
+  const capped = gate('arc delegate frontend "do a thing"');
   ok('ACTIVE still ASKS once several peers are already live (runaway guard)',
     capped.decision === 'ask' && /already live/i.test(capped.reason || ''));
   for (const r of ['a1', 'a2', 'a3']) RM4.releaseRole(gboard, r, process.pid);
 
-  // Inertness. This hook sits in front of EVERY shell call, so anything that is not an invite
-  // must produce NO output at all (= defer to the normal permission flow).
+  // Inertness. This hook sits in front of EVERY shell call, so anything that is not a delegate
+  // to an EMPTY chair must produce NO output at all (= defer to the normal permission flow).
   St3.setStance(GS, 'passive');   // the strictest stance, to prove the bail-outs are real
-  ok('a non-invite command is not touched, even in passive (no output = defer)',
+  ok('a non-delegate command is not touched, even in passive (no output = defer)',
     gate('git status').decision === null && gate('arc note code "hi"').decision === null
     && gate('arc join code').decision === null);
   // FAILS CLOSED by design: a mention inside a string is gated too. A false positive costs a
   // prompt; a false negative would let a session spawn ungated. And the honest limit — this is a
   // guardrail against self-initiation, not a sandbox: any string matcher can be walked around.
-  ok('an invite hidden in a STRING is still gated (fails closed, never silently through)',
-    gate('echo "run arc invite frontend"').decision === 'deny');
-  ok('...but a CHAINED invite IS caught (cd x && arc invite y)',
-    gate('cd /tmp && arc invite frontend').decision === 'deny');
+  ok('a delegate hidden in a STRING is still gated (fails closed, never silently through)',
+    gate('echo "run arc delegate frontend x"').decision === 'deny');
+  ok('...but a CHAINED delegate IS caught (cd x && arc delegate y)',
+    gate('cd /tmp && arc delegate frontend "x"').decision === 'deny');
   ok('a non-shell tool is never gated (matcher is Bash|PowerShell)',
-    gate('arc invite frontend', 'Read').decision === null);
-  ok('the PowerShell tool is gated too (an invited peer may have no Bash tool at all)',
-    gate('arc invite frontend', 'PowerShell').decision === 'deny');
+    gate('arc delegate frontend "x"', 'Read').decision === null);
+  ok('the PowerShell tool is gated too (a staffed peer may have no Bash tool at all)',
+    gate('arc delegate frontend "x"', 'PowerShell').decision === 'deny');
   ok('a NON-arc session is left completely alone (no ARC_SESSION)',
-    gate('arc invite frontend', 'Bash', '').decision === null);
+    gate('arc delegate frontend "x"', 'Bash', '').decision === null);
 
-  // `arc invite` must stay OFF the allowlist, or the gate could never see an "ask": an allow
+  // `arc delegate` must stay OFF the allowlist, or the gate could never see an "ask": an allow
   // rule would satisfy the permission check before the prompt ever happened.
   const W2 = require(path.join(SRC, 'arc-wire-settings.js'));
-  ok('`arc invite` is not allowlisted (else balanced could never ask)',
-    !W2.BOARD_PERMISSIONS.some((p) => /invite/.test(p)));
+  ok('`arc delegate` is not allowlisted (else balanced could never ask before a spawn)',
+    !W2.BOARD_PERMISSIONS.some((p) => /delegate|invite/.test(p)));
 
   // The hook must be wired with a MATCHER — unmatched it would spawn node on every Read/Grep.
   const entries = W2.coreHookEntries('C:/x/scripts');
@@ -1886,10 +1911,12 @@ try {
 
   // The stance TEXT must teach the same rule the gate enforces, or the agent learns one thing
   // and the machine does another.
-  ok('the passive directive warns that invite is refused',
-    /arc invite/.test(St3.directive('passive')) && /REFUSED/.test(St3.directive('passive')));
-  ok('the active directive grants the spawn (and mentions the cap)',
-    /arc invite/.test(St3.directive('active')) && /auto-approved/.test(St3.directive('active')));
+  ok('the passive directive warns that delegating to an EMPTY chair is refused',
+    /EMPTY chair is REFUSED/.test(St3.directive('passive')));
+  ok('...while making clear a note to a LIVE peer is still fine (passive is not deaf-and-mute)',
+    /LIVE peer is still just a note/.test(St3.directive('passive')));
+  ok('the active directive teaches the ONE verb (and mentions the cap)',
+    /arc delegate/.test(St3.directive('active')) && /auto-approved/.test(St3.directive('active')));
 
   fs.rmSync(grepo, { recursive: true, force: true });
   try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${GS}.json`)); } catch {}
@@ -1909,10 +1936,10 @@ try {
       perms.includes(`${tool}(arc join:*)`) && perms.includes(`${tool}(arc notes:*)`)
       && perms.includes(`${tool}(arc note:*)`) && perms.includes(`${tool}(arc role:*)`));
   }
-  // `arc invite` is deliberately NOT allowlisted: an agent spawning whole sessions stays a
-  // per-spawn human decision.
-  ok('`arc invite` is NOT auto-allowed (spawning sessions stays a human decision)',
-    !perms.some((p) => /invite/.test(p)));
+  // `arc delegate` is deliberately NOT allowlisted: it is the one verb that can spawn a whole
+  // session, and that stays a per-spawn decision routed through the arc:mode gate.
+  ok('`arc delegate` is NOT auto-allowed (spawning sessions stays a gated decision)',
+    !perms.some((p) => /delegate|invite/.test(p)));
 
   const st = {};
   W.mergePermissions(st, perms);
@@ -1924,10 +1951,11 @@ try {
       return u.permissions.allow.includes('Bash(git status)') && u.permissions.allow.length === perms.length + 1; })());
 } catch (e) { ok('board permissions', false, e.message); }
 
-section('arc:invite (new tab, forked context, self-arming peer)');
+section('arc delegate -> staffRole (new tab, revived-or-forked context, self-arming peer)');
 try {
   const I = require(path.join(SRC, 'arc-invite.js'));
   const RM3 = require(path.join(SRC, 'arc-board.js'));
+  const NI = require(path.join(SRC, 'arc-notes.js'));
   const vrepo = fs.mkdtempSync(path.join(os.tmpdir(), 'invite-'));
   fs.mkdirSync(path.join(vrepo, '.git'), { recursive: true });
   const VS = 'invite-sess-' + process.pid;
@@ -1943,51 +1971,84 @@ try {
   // load-bearing and were bisected live: wt.exe is a WindowsApps execution alias that drops
   // its args when CreateProcess'd from node, and its COM handoff to the running Terminal dies
   // if the spawner exits first (detached => status 0, no tab, silence).
-  const okr = I.requestInvite(VS, 'frontend', vrepo, { spawn: rec, hasWt: true });
-  ok('invite launches via SYNC PowerShell: a wt tab in the CURRENT window at the repo root',
+  const NOHIST = { spawn: rec, hasWt: true, hasTranscript: () => false };
+  const okr = I.staffRole(VS, 'frontend', NOHIST);
+  ok('staffing launches via SYNC PowerShell: a wt tab in the CURRENT window at the repo root',
     okr.ok === true && spawned && spawned.bin === 'powershell.exe'
     && /wt -w 0 new-tab/.test(psOf()) && psOf().includes(`-d '${vrepo}'`));
-  ok('...running a FORK of the caller\'s conversation',
+  ok('...running a FORK of the caller\'s conversation (no "frontend" has ever worked here)',
     /--resume conv-abc-123 --fork-session/.test(psOf()));
   ok('...whose opening prompt is the arc:role sentinel, quote-nested to survive PS->wt->cmd',
     psOf().includes(`'"arc:role frontend"'`));
-  ok('...and the confirmation tells the caller how to reach the newcomer',
-    /inviting a "frontend" peer/.test(okr.message));
+  ok('...and the confirmation says WHY it forked (it starts knowing the project)',
+    /staffing a new "frontend" peer/.test(okr.message) && /FORKS this conversation/.test(okr.message));
+
+  // ---- REVIVE vs FORK: the whole reason one verb can cover a closed peer ----------------
+  // A vacant claim remembers the CONVERSATION of the session that held the role. If that
+  // transcript still exists, resuming it brings the peer back AS ITSELF — everything it learned,
+  // still there. Forking the caller instead would hand the role's NAME to a session with none of
+  // its MEMORY, which is exactly the failure that makes a peer no better than a subagent.
+  //
+  // And --fork-session is the bit that decides which one you get: resume WITH it and you get a
+  // copy of the CALLER wearing the role's name; resume WITHOUT it and the real peer walks back in.
+  RM3.ensureBoard(RM3.resolveBoard(vrepo));
+  const vboard = RM3.resolveBoard(vrepo);
+  RM3.claimRole(vboard, 'ghost', 999999, 'ghost-sess', 'ghost-conv-777');   // held, then died
+  ok('a vacant claim (dead pid + a convId) is what makes a closed peer revivable',
+    !!RM3.vacantClaimForRole(vboard, 'ghost')
+    && RM3.vacantClaimForRole(vboard, 'ghost').convId === 'ghost-conv-777');
+
+  const rev = I.staffRole(VS, 'ghost', { spawn: rec, hasWt: true, hasTranscript: () => true });
+  ok('REVIVE: a closed peer with a live transcript resumes ITS OWN conversation, NOT the caller\'s',
+    rev.ok === true && rev.revived === true
+    && /--resume ghost-conv-777/.test(psOf()) && !/conv-abc-123/.test(psOf()));
+  ok('...and CRUCIALLY without --fork-session — a fork would be a copy of ME wearing its name',
+    !/--fork-session/.test(psOf()));
+  ok('...and it says so, because "it is back with what it knew" is the whole point',
+    /REVIVING "ghost"/.test(rev.message) && /comes back as itself/.test(rev.message));
+
+  // The convId is a LEAD, not a guarantee: the conversation may have been deleted or purged, and
+  // `--resume <gone>` dies with "No conversation found" — a tab that opens only to fail.
+  const gone = I.staffRole(VS, 'ghost', { spawn: rec, hasWt: true, hasTranscript: () => false });
+  ok('a vacant claim whose TRANSCRIPT IS GONE falls back to a fork (never resumes into a corpse)',
+    gone.ok === true && gone.revived === false
+    && /--resume conv-abc-123 --fork-session/.test(psOf()));
+  RM3.releaseRole(vboard, 'ghost', 999999);
 
   // Account pinning: conversations live in per-account profiles — a tab that auto-selected a
   // different account would not find the transcript and the fork would die.
   const oldAcct = process.env.ARC_RUNTIME_ACCOUNT;
   process.env.ARC_RUNTIME_ACCOUNT = 'veneto';
-  I.requestInvite(VS, 'backend', vrepo, { spawn: rec, hasWt: true });
-  ok('invite PINS the caller\'s account (the transcript only exists in that profile)',
+  I.staffRole(VS, 'backend', NOHIST);
+  ok('staffing PINS the caller\'s account (the transcript only exists in that profile)',
     /arc --account veneto --resume/.test(psOf()));
   if (oldAcct === undefined) delete process.env.ARC_RUNTIME_ACCOUNT; else process.env.ARC_RUNTIME_ACCOUNT = oldAcct;
 
   // No wt: fall back to a fresh console window via `start`.
-  I.requestInvite(VS, 'scout', vrepo, { spawn: rec, hasWt: false });
-  ok('without Windows Terminal, invite falls back to a new console window',
+  I.staffRole(VS, 'scout', { spawn: rec, hasWt: false, hasTranscript: () => false });
+  ok('without Windows Terminal, staffing falls back to a new console window',
     /cmd \/c start "arc: scout"/.test(psOf()));
 
   // A failing launcher must be REPORTED, not swallowed. The obvious guard was WRONG: spawnSync
   // returns status:NULL on both real failure paths — timeout (ETIMEDOUT) and missing binary
   // (ENOENT) — so `status !== 0 && status !== null` fired on NEITHER and invite printed its ✓
   // with no tab. The exact silent no-tab the guard existed to catch. (Found by the scout peer.)
-  const badExit = I.requestInvite(VS, 'flaky', vrepo, { spawn: () => ({ status: 1 }), hasWt: true });
+  const badExit = I.staffRole(VS, 'flaky', { spawn: () => ({ status: 1 }), hasWt: true, hasTranscript: () => false });
   ok('a launcher that exits non-zero is reported (never a silent no-tab)',
     badExit.ok === false && /could not open the new tab/.test(badExit.message));
-  const badTimeout = I.requestInvite(VS, 'flaky', vrepo, {
-    spawn: () => ({ status: null, error: { code: 'ETIMEDOUT' } }), hasWt: true });
+  const badTimeout = I.staffRole(VS, 'flaky', {
+    spawn: () => ({ status: null, error: { code: 'ETIMEDOUT' } }), hasWt: true, hasTranscript: () => false });
   ok('...and a TIMEOUT (status null + ETIMEDOUT) is reported, not read as success',
     badTimeout.ok === false && /ETIMEDOUT/.test(badTimeout.message));
-  const badEnoent = I.requestInvite(VS, 'flaky', vrepo, {
-    spawn: () => ({ status: null, error: { code: 'ENOENT' } }), hasWt: true });
+  const badEnoent = I.staffRole(VS, 'flaky', {
+    spawn: () => ({ status: null, error: { code: 'ENOENT' } }), hasWt: true, hasTranscript: () => false });
   ok('...and a MISSING BINARY (status null + ENOENT) is reported, not read as success',
     badEnoent.ok === false && /ENOENT/.test(badEnoent.message));
 
   // The peer's tab must be identifiable. Claude Code sets the terminal title from the project
   // folder, so without --suppressApplicationTitle both tabs read "arc" and you cannot tell the
   // caller from the peer it spawned.
-  I.requestInvite(VS, 'titled', vrepo, { spawn: rec, hasWt: true });
+  I.staffRole(VS, 'titled', NOHIST);
   ok('the peer tab is titled by ROLE and keeps it (--suppressApplicationTitle)',
     /--title 'arc: titled' --suppressApplicationTitle/.test(psOf()));
 
@@ -1997,8 +2058,8 @@ try {
   // caller ran as "E:\\arc" — a DIFFERENT project key, so it inherited none of the caller's
   // trust and the tab sat at the dialog forever: claimed, deaf, silent about why.
   const canonRoot2 = RM3.resolveBoard(vrepo).root;   // canonical = LOWERCASED (board identity)
-  I.requestInvite(VS, 'pathcheck', vrepo, { spawn: rec, hasWt: true });
-  ok('invite launches at the CALLER\'s real path, NOT the canonical (lowercased) board root',
+  I.staffRole(VS, 'pathcheck', NOHIST);
+  ok('staffing launches at the CALLER\'s real path, NOT the canonical (lowercased) board root',
     psOf().includes(`-d '${vrepo}'`) && !psOf().includes(`-d '${canonRoot2}'`)
     && vrepo !== canonRoot2);   // the two really do differ, or this proves nothing
 
@@ -2028,65 +2089,87 @@ try {
 
   // THE SAFETY PROPERTY: invite only ever trusts the folder the CALLER is already working in.
   // It is spawn-time-derived from the caller's own session, never taken from the argument, so
-  // there is no path by which `arc:invite <role>` can trust somewhere else.
+  // there is no path by which delegating a role can trust somewhere else.
   let trustedPath = null;
-  I.requestInvite(VS, 'auditor', vrepo, {
-    spawn: rec, hasWt: true,
+  I.staffRole(VS, 'auditor', {
+    spawn: rec, hasWt: true, hasTranscript: () => false,
     ensureTrusted: (dir) => { trustedPath = dir; return { ok: true, already: true }; },
   });
-  ok('invite ONLY ever trusts the caller\'s own repo root — never an arbitrary path',
+  ok('staffing ONLY ever trusts the caller\'s own repo root — never an arbitrary path',
     trustedPath === RM3.repoRoot(vrepo));
 
   fs.rmSync(prof, { recursive: true, force: true });
 
   // Refusals — every one is a zero-token block and must NOT spawn anything.
   spawned = null;
-  ok('invite with no role shows usage', I.requestInvite(VS, '', vrepo, { spawn: rec, hasWt: true }).ok === false);
-  ok('invite refuses an invalid role name',
-    /invalid role/.test(I.requestInvite(VS, 'Bad Role!', vrepo, { spawn: rec, hasWt: true }).message));
+  ok('delegate with no role shows usage', I.requestDelegate(VS, '', vrepo, NOHIST).ok === false);
+  ok('delegate refuses an invalid role name',
+    /invalid role/.test(I.requestDelegate(VS, 'bad!role', vrepo, NOHIST).message));
+  // A delegation is a QUESTION, so it needs a return address: the caller must hold a role of its
+  // own. This must refuse BEFORE staffing — it ran in the other order once, and a roleless caller
+  // got a flat "claim a role first" while the peer it never heard about was already booting.
+  spawned = null;
+  const noRole = I.requestDelegate(VS, 'helper "do a thing"', vrepo, NOHIST);
+  ok('delegate refuses a caller with NO ROLE of its own (nobody for the peer to reply to)',
+    noRole.ok === false && /you hold no role/.test(noRole.message));
+  ok('...and it refused WITHOUT spawning the tab (a refusal that opened a window would be a lie)',
+    spawned === null);
+
+  // THE ARG SPLIT: first token = the role, EVERYTHING after = the packet. `arc delegate frontend
+  // fix the login bug` must not be read as a five-word role name — that split is what lets the
+  // verb carry the work, and quoting the packet has to stay optional (agents forget quotes).
+  NI.requestRole(VS, 'caller', vrepo);
+  const split = I.requestDelegate(VS, 'splitcheck fix the login bug', vrepo, NOHIST);
+  ok('delegate splits <role> from the rest as the PACKET (unquoted words are work, not a role)',
+    split.ok === true && split.role === 'splitcheck' && psOf().includes(`'"arc:role splitcheck"'`));
+  ok('...and the packet is posted as a REQUEST, so the caller is owed an answer',
+    RM3.allNotes(RM3.resolveBoard(vrepo)).some((n) =>
+      n.to === 'splitcheck' && n.kind === 'request' && /fix the login bug/.test(n.body)));
   // A SESSION whose own home is not a repo: there is no board to invite anyone onto.
   const noRepo3 = fs.mkdtempSync(path.join(os.tmpdir(), 'invite-nr-'));
   const VS3 = 'invite-norepo-' + process.pid;
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${VS3}.json`),
     JSON.stringify({ pid: process.pid, cwd: noRepo3, convId: 'c9' }));
-  ok('invite refuses when the SESSION is not in a git repo (same guard as a claim)',
-    /not a git repository/.test(I.requestInvite(VS3, 'frontend', noRepo3, { spawn: rec, hasWt: true }).message));
+  ok('staffing refuses when the SESSION is not in a git repo (same guard as a claim)',
+    /not a git repository/.test(I.staffRole(VS3, 'frontend', NOHIST).message));
   // THE ENFORCEMENT: the folder we launch in and pre-trust comes from the RUNNER'S recorded cwd,
   // never from the caller's argument — otherwise an agent could `cd` into any repo on the machine
   // and have invite pre-trust it. The security rule was documentation; now it is enforced.
   // (Found by the scout peer.)
   let trustedFrom = null;
-  I.requestInvite(VS, 'sneaky', noRepo3, {          // a HOSTILE cwd argument: a different folder
-    spawn: rec, hasWt: true,
+  I.requestDelegate(VS, 'sneaky', noRepo3, {        // a HOSTILE cwd argument: a different folder
+    spawn: rec, hasWt: true, hasTranscript: () => false,
     ensureTrusted: (dir) => { trustedFrom = dir; return { ok: true, already: true }; },
   });
   ok('a caller-supplied cwd CANNOT redirect the launch or the trust (agent-forgeable input)',
     trustedFrom === RM3.repoRoot(vrepo) && psOf().includes(`-d '${vrepo}'`));
+  ok('...and staffRole cannot even be ASKED to: the cwd is not a parameter, it is read from the session',
+    I.staffRole.length === 3);
   spawned = null;    // that one legitimately spawned; the refusal assertions below need a clean slate
   // A held role: the would-be invite target already exists — point at the note instead.
   const board3 = RM3.resolveBoard(vrepo); RM3.ensureBoard(board3);
   RM3.claimRole(board3, 'research', process.pid, 'other-sess', null);
-  const heldr = I.requestInvite(VS, 'research', vrepo, { spawn: rec, hasWt: true });
-  ok('invite refuses a role a LIVE session already holds — that session IS the peer',
+  const heldr = I.staffRole(VS, 'research', NOHIST);
+  ok('staffRole refuses a role a LIVE session already holds — that session IS the peer',
     heldr.ok === false && /already held/.test(heldr.message) && /arc note research/.test(heldr.message));
   // No conversation id: nothing to fork.
   const VS2 = 'invite-noconv-' + process.pid;
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${VS2}.json`), JSON.stringify({ pid: process.pid, cwd: vrepo }));
-  ok('invite refuses when the conversation has no id yet (nothing to fork)',
-    /nothing to fork/.test(I.requestInvite(VS2, 'frontend', vrepo, { spawn: rec, hasWt: true }).message));
+  ok('staffing refuses when the conversation has no id yet (nothing to fork)',
+    /nothing to fork/.test(I.staffRole(VS2, 'frontend', NOHIST).message));
   ok('no refusal ever spawned anything', spawned === null);
 
   // The runner-side enabler: a FORK must skip the duplicate-conversation guard AND must not
   // claim (or later release) the source conversation's lock — claimConv would overwrite the
   // real owner's lock file, after which the owner could not even restart itself.
   const runnerSrc = fs.readFileSync(path.join(SRC, 'arc-runner.js'), 'utf8');
-  ok('the duplicate-launch guard skips forks (invite forks a LIVE caller by design)',
+  ok('the duplicate-launch guard skips forks (staffing forks a LIVE caller by design)',
     /isFork = userArgs\.includes\('--fork-session'\)/.test(runnerSrc)
     && /!forceDup && !isFork && guardConv/.test(runnerSrc));
 
   fs.rmSync(vrepo, { recursive: true, force: true });
   fs.rmSync(noRepo3, { recursive: true, force: true });
-} catch (e) { ok('arc:invite', false, e.message + '\n' + (e.stack || '')); }
+} catch (e) { ok('arc delegate -> staffRole', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- arc-await (the ONLY thing that can reach an idle session) -------------------
 // arc runs claude on a real TTY and holds no handle into it; Claude Code has no timer hook.
@@ -2132,7 +2215,7 @@ try {
   // same session would keep polling while being unfindable BY session — an invisible orphan
   // that nothing could ever clean up. Re-arming is routine (a manual `arc join`, a restart's
   // re-arm), so each one would leak a process for the rest of the machine's uptime.
-  // (Found by the arc:invite loop: a duplicate `join code` survived a restart exactly this way.)
+  // (Found by the first live peer loop: a duplicate `join code` survived a restart this way.)
   const { spawn: spawnBg } = require('child_process');
   const ghost = spawnBg(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
   A.markWaiting(WS, 'research', ghost.pid);
@@ -2158,7 +2241,7 @@ try {
 
   // A listener exists to WAKE ITS SESSION. When that session dies it has nothing left to wake,
   // and nothing stops it: it is a detached background process whose poll loop would happily run
-  // for the rest of the machine's uptime. Found by the arc:invite loop — five listeners alive,
+  // for the rest of the machine's uptime. Found by the first live peer loop — five listeners alive,
   // most of them orphans of long-dead sessions, each still polling the board every 2.5s.
   const ORPH = 'orphan-sess-' + process.pid;
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${ORPH}.json`),
@@ -2684,9 +2767,13 @@ try {
   ok('directive: passive injects a RESTRICTION; active injects a GRANT',
     /PASSIVE/.test(St.directive('passive')) && /Do NOT self-initiate/.test(St.directive('passive'))
     && /ACTIVE/.test(St.directive('active'))
-    // ACTIVE grants the PEER tools, not a delegate — that tool is gone. If this ever
-    // mentions delegating again, the dial is pointing at something that does not exist.
-    && /--kind request/.test(St.directive('active')) && !/arc delegate/.test(St.directive('active')));
+    // ACTIVE grants the ONE verb. This guard is pointed at the CURRENT truth on purpose: it
+    // used to assert the opposite (that `arc delegate` was gone — it named a subagent tool we
+    // deleted), and it correctly failed the moment the verb came back meaning something else.
+    // `invite` is now the dead word: if a directive ever teaches it again, the dial is pointing
+    // at a command that does not exist.
+    && /arc delegate/.test(St.directive('active'))
+    && !/invite/.test(St.directive('active')) && !/invite/.test(St.directive('passive')));
   ok('renderBar marks only the selected notch',
     St.renderBar('balanced').includes('[ balanced ]') && !St.renderBar('balanced').includes('[ active ]'));
 
@@ -2889,7 +2976,7 @@ try {
     /arc join code/.test(fire({ hook_event_name: 'Stop', cwd: sboard }).reason || ''));
 
   // NOT gated on a peer existing. Such a check is evaluated at the exact moment it stops
-  // being true: a session that idles ALONE and only then gets a peer (arc:invite, a second
+  // being true: a session that idles ALONE and only then gets a peer (someone delegates to it, a second
   // tab) would be asleep and unarmed, with no way to ever learn about them.
   cycle();
   const others = RM.liveRoles(board).filter((r) => (r.role || r) !== 'code');

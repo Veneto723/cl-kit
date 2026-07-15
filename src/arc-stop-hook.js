@@ -97,7 +97,7 @@ function run(raw) {
     const deadLine = dead.length
       ? `\n⚠ ${dead.length === 1 ? 'One of those is' : `${dead.length} of those are`} addressed to a role NOBODY HOLDS `
         + `(${[...new Set(dead.map((n) => `"${n.to}"`))].join(', ')}). Waiting cannot help: nobody is there to answer.\n`
-        + `  Put someone in the chair →  arc:invite ${dead[0].to}   (it reads the note on arrival)\n`
+        + `  Put someone in the chair →  arc delegate ${dead[0].to} "<packet>"   (it reads it on arrival)\n`
         + `  …or drop it and do the work yourself / with a subagent.\n`
       : '';
     out({
@@ -123,7 +123,7 @@ function run(raw) {
   //
   //    NOT gated on "does a peer exist right now?" — that check is evaluated at the exact
   //    moment it stops being true. A session that idles alone, and only THEN gets a peer
-  //    (someone runs arc:invite, or opens a second tab), would be asleep and unarmed with no
+  //    (someone delegates to it, or opens a second tab), would be asleep and unarmed with no
   //    way to ever learn about them. Holding a role is what makes you addressable; that is the
   //    condition, and it does not expire.
   //

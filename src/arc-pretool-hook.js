@@ -1,43 +1,49 @@
 #!/usr/bin/env node
 // arc-pretool-hook: the stance (arc:mode) as an ENFORCED GATE, not just a steer.
 //
-// Everything else the stance governs is advice injected into the model's context — and that is
-// the right shape for it, because "act only on the user's order" is a judgment only the model
-// can make. But `arc invite` is different in kind: it spawns a REAL SESSION — a window, a
-// process, its own quota — and an injected sentence cannot actually stop an agent from running
-// a command. Heavy, outward-facing, and irreversible-ish actions deserve a gate that holds.
+// Everything else the stance governs is advice injected into the model's context — the right
+// shape for it, because "act only on the user's order" is a judgment only the model can make.
+// Spawning a peer is different in kind: it creates a REAL SESSION — a window, a process, its own
+// quota — and an injected sentence cannot stop an agent from running a command.
 //
-// PreToolUse can return a permission decision, so the dial becomes literal:
+// `arc delegate <role>` carries BOTH costs under one verb, deliberately (the agent should not
+// have to know whether a peer is live — that is arc's data, not its judgment). So this gate does
+// the one thing the verb hides: it checks whether the role is LIVE, and only speaks when a
+// session would actually be created.
 //
-//   passive   → DENY   the agent may not spawn a session at all. (The USER can still type
-//                      `arc:invite <role>` — that is the user's own order, and it is a PROMPT,
-//                      not a tool call, so it never reaches this hook. Passive means the AGENT
-//                      does not self-initiate; it never means the user is blocked.)
-//   balanced  → ASK    (the default) the agent may propose it; the permission prompt IS the
-//                      confirmation. This is also what happens today, since `arc invite` is
-//                      deliberately kept off the allowlist.
-//   active    → ALLOW  auto-approved: you asked for an agent that starts peers on its own.
+//   role LIVE           → defer. It is just a note: free, reversible, the commonest thing an
+//                         agent does. Prompting here would be pure noise.
+//   role EMPTY, passive → DENY   no session gets spawned in passive, whoever asked. A PreToolUse
+//                         hook sees a tool call and CANNOT tell the user's order from the agent's
+//                         own initiative — the `arc:invite` sentinel used to be the escape hatch
+//                         (a prompt is provably yours), and it was removed on purpose: a human's
+//                         natural act is prose, not a command. So passive costs you the spawn.
+//   role EMPTY, balanced→ ASK    (the default) the permission prompt IS the confirmation.
+//   role EMPTY, active  → ALLOW  auto-approved: you asked for an agent that staffs its own peers.
 //
-// RUNAWAY GUARD: even under ACTIVE we downgrade to ASK once the board already has several live
-// peers. Each peer is a session burning its own quota, and "spawn a helper" is exactly the kind
-// of move that looks locally reasonable every single time. A cap costs nothing when it is not
-// hit, and the fall-back is a prompt — never a hard refusal, so the user stays in control.
+// RUNAWAY GUARD: even under ACTIVE it drops to ASK once several peers are live. Each is a session
+// burning its own quota, and "spawn a helper" is exactly the move that looks locally reasonable
+// every single time. It fails OPEN to a prompt, never to a refusal.
 //
-// SAFETY: this hook sits in front of EVERY Bash/PowerShell call, so it must be inert and it must
-// never wedge a session. It bails out silently (exit 0, no output = "defer to the normal flow")
-// for anything that is not an arc-invite command, for non-arc sessions, and on ANY error.
+// SAFETY: this sits in front of EVERY Bash/PowerShell call, so it must be inert and must never
+// wedge a session. No output (= defer to the normal flow) for anything that is not a delegate to
+// an empty chair, for non-arc sessions, and on ANY error.
 'use strict';
 
-// Match `arc invite` anywhere it could plausibly be a command — including inside a quoted string.
-// This FAILS CLOSED on purpose: a false positive costs at worst a permission prompt, while a false
-// negative lets a session spawn ungated.
+// Matches anywhere it could plausibly be a command, including inside a quoted string: it FAILS
+// CLOSED on purpose, because a false positive costs at worst a prompt while a false negative lets
+// a session spawn ungated.
 //
 // And be honest about what this is: a GUARDRAIL against an agent's own self-initiation, not a
-// sandbox against a hostile one. Any command-string matcher can be walked around (build the
-// string at runtime, pipe it to a shell, and no regex sees it). It exists to make the dial mean
-// something for an agent that is trying to cooperate — which is every agent here — not to contain
-// one that is trying not to.
-const RX_INVITE = /(?:^|[\s;&|(`])arc(?:\.cmd|\.exe)?\s+invite\b/i;
+// sandbox against a hostile one. Any command-string matcher can be walked around (build the string
+// at runtime, pipe it to a shell, and no regex sees it). It exists to make the dial mean something
+// for an agent that is trying to cooperate — which is every agent here — not to contain one that
+// is trying not to.
+// `arc delegate <role> …` — capture the ROLE, because whether this costs anything DEPENDS on it:
+// delegating to a LIVE peer is just a note (free, reversible, never gated), while delegating to a
+// closed or unknown one spawns a session. One verb, two costs, and the gate must tell them apart
+// or it would prompt on every note (noise) or on none (a session spawned unasked).
+const RX_DELEGATE = /(?:^|[\s;&|(`])arc(?:\.cmd|\.exe)?\s+delegate\s+([a-z][a-z0-9_-]*)/i;
 
 const MAX_PEERS_AUTO = 3;   // beyond this, even ACTIVE asks first
 
@@ -60,19 +66,35 @@ function run(raw) {
   const tool = String(hook.tool_name || '');
   if (!/^(Bash|PowerShell)$/i.test(tool)) return null;            // not a shell call — defer
   const cmd = String((hook.tool_input && hook.tool_input.command) || '');
-  if (!RX_INVITE.test(cmd)) return null;                          // not an invite — defer, silently
+  const m = cmd.match(RX_DELEGATE);
+  if (!m) return null;                                            // not a delegate — defer, silently
 
   const session = (process.env.ARC_SESSION || '').trim();
   if (!session) return null;                                      // not an arc session — stay out of the way
+
+  // WOULD THIS SPAWN? Delegating to a live peer is a NOTE — free, reversible, and gating it would
+  // be pure noise on the commonest thing an agent does. Only an empty chair costs a session, and
+  // that is the exact moment the dial should mean something. Fails OPEN (treat as a note) if the
+  // board cannot be read: a coordination gate must never block work by being unsure.
+  let spawns = false;
+  try {
+    const R = require('./arc-board');
+    const N = require('./arc-notes');
+    const board = R.resolveBoard(N.resolveCwd(session, typeof hook.cwd === 'string' ? hook.cwd : null));
+    spawns = !R.liveRoles(board).some((l) => l.role === m[1].toLowerCase());
+  } catch { return null; }
+  if (!spawns) return null;                                       // a live peer: this is just a note
 
   const stance = require('./arc-stance').getStance(session);      // passive | balanced | active
 
   if (stance === 'passive') {
     out('deny',
       '[arc:mode passive] The agent may not spawn peer sessions in passive mode.',
-      'arc: refused an agent-initiated `arc invite` — you are in PASSIVE mode.\n'
-      + '  want the peer? type it yourself:  arc:invite <role>   (zero tokens, always allowed)\n'
-      + '  or lift the restriction:          arc:mode balanced');
+      'arc: refused — nobody holds that role, so delegating to it would SPAWN a session, and you\n'
+      + '  are in PASSIVE mode.\n'
+      + '  want it anyway?   arc:mode balanced   — then ask again; you will get a prompt.\n'
+      + '  (a gate sees a TOOL CALL, so it cannot tell your order from the agent\'s own idea.\n'
+      + '   passive therefore refuses the spawn whoever wanted it — that is the trade.)');
     return 'deny';
   }
 
@@ -100,13 +122,14 @@ function run(raw) {
 
   // balanced (the default): the agent may propose it; approving the prompt IS the confirmation.
   out('ask',
-    '[arc:mode balanced] Spawning a peer session is a real action — the prompt is your confirmation.',
-    'arc: the agent wants to spawn a peer session (new tab, forked context, its own quota).\n'
+    '[arc:mode balanced] Nobody holds that role, so this would spawn a session — the prompt is your confirmation.',
+    'arc: nobody holds that role, so the agent wants to put a session in the chair (new tab, its own\n'
+    + '  quota) — reviving that peer\'s own conversation if it has one, else forking this context.\n'
     + '  approve to allow it  ·  arc:mode active auto-approves  ·  arc:mode passive refuses outright');
   return 'ask';
 }
 
-module.exports = { run, RX_INVITE, MAX_PEERS_AUTO };
+module.exports = { run, RX_DELEGATE, MAX_PEERS_AUTO };
 
 if (require.main === module) {
   let raw = '';

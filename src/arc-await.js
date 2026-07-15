@@ -133,7 +133,7 @@ function awaitOnce(roleArg, cwd, opts) {
   // wake and must stop. It does not stop on its own: it is a detached background process, and
   // the poll loop is happy to run forever. Every restart, close, or crash was therefore leaking
   // one node process that polls the board every 2.5s for the rest of the machine's uptime.
-  // (Found by the arc:invite loop: five listeners alive, most of them orphans.)
+  // (Found by the first live peer loop: five listeners alive, most of them orphans.)
   // The session's arc-runner pid is the liveness proxy the whole board already uses for claims.
   const ownerPid = session ? F.sessionPid(session) : 0;
   const orphaned = () => ownerPid && !R.isAlive(ownerPid);
