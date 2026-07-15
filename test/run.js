@@ -1169,6 +1169,77 @@ try {
   fs.rmSync(noRepo, { recursive: true, force: true });
 } catch (e) { ok('arc join', false, e.message + '\n' + (e.stack || '')); }
 
+// ---- the cache sweeper: a hand-maintained list that drifted ---------------------------
+// Every per-session file arc writes must be swept or it lives for the life of the machine. The
+// sweeper's list was written once and never revisited, so every later feature leaked: role,
+// stance, armed, listen-offered, await — 15 orphaned role files and 6 dead listener markers were
+// sitting in a real cache, plus a trigger from a session dead for days. Exactly the same disease
+// as install.ps1's hook list, so it gets the same cure: a test that fails when the list drifts.
+section('cache sweeper (no per-session file may leak, and the list cannot drift)');
+try {
+  const RUN2 = require(path.join(SRC, 'arc-runner.js'));
+
+  // THE DRIFT GUARD. Scan src/ for every `arc-<kind>-${...}` file arc actually writes, and demand
+  // the sweeper knows about each. A new feature that adds a file now fails here until someone
+  // decides its lifetime — swept, or deliberately exempt.
+  const kinds = new Set();
+  for (const f of fs.readdirSync(SRC).filter((x) => x.endsWith('.js'))) {
+    const t = fs.readFileSync(path.join(SRC, f), 'utf8');
+    for (const m of t.matchAll(/[`'"]arc-([a-z][a-z-]*)-\$\{/g)) kinds.add(m[1]);
+  }
+  // arc-claudex-<port>: keyed by PORT, not session, and arc-claudex reclaims a stale one itself
+  // (it must survive to BE reclaimed — the record is how the port's owner is identified).
+  const EXEMPT = new Set(['claudex']);
+  const covered = (k) => RUN2.SWEEP_RX.test(`arc-${k}-x.json`) || /^arc-[a-z-]+-(.+)\.trigger$/.test(`arc-${k}-x.trigger`);
+  const leaks = [...kinds].filter((k) => !EXEMPT.has(k) && !covered(k));
+  ok(`every per-session file kind is swept or exempt (${kinds.size} kinds found in src/)`,
+    leaks.length === 0, leaks.length ? 'LEAKS: ' + leaks.join(', ') : '');
+
+  // A LIVE session must never lose its companions to a clock. This is the reason the missing
+  // kinds could not simply be bolted onto the age sweep: taking arc-role-* from a session that
+  // is alive and working would stop it receiving notes, with nothing to say why.
+  const C = path.join(CLAUDE, 'cache');
+  fs.mkdirSync(C, { recursive: true });
+  const LIVE2 = 'sweep-live-' + process.pid;
+  const DEAD2 = 'sweep-dead-' + process.pid;
+  const old = Date.now() - 30 * 24 * 60 * 60 * 1000;      // a month old: the clock says "bin me"
+  // A REAL other process, not process.pid: arc-runner's pidAlive deliberately treats its OWN pid
+  // as dead ("a file naming my pid is not another live process"), which is right in production —
+  // the sweeper always runs in a FRESH runner — and makes process.pid useless as a live fixture.
+  const { spawn: spawnLive } = require('child_process');
+  const liveProc = spawnLive(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  fs.writeFileSync(path.join(C, `arc-state-${LIVE2}.json`), JSON.stringify({ pid: liveProc.pid, cwd: TMP }));
+  fs.writeFileSync(path.join(C, `arc-state-${DEAD2}.json`), JSON.stringify({ pid: 999999, cwd: TMP }));
+  const mk = (name, when) => { const p = path.join(C, name); fs.writeFileSync(p, '{}'); if (when) fs.utimesSync(p, when / 1000, when / 1000); return p; };
+  const liveRole = mk(`arc-role-${LIVE2}.json`, old);      // ancient, but its session is ALIVE
+  const deadRole = mk(`arc-role-${DEAD2}.json`);           // fresh, but its session is DEAD
+  const deadTrig = mk(`arc-mode-${DEAD2}.trigger`);        // a trigger nobody will ever consume
+
+  RUN2.sweepStaleStates();
+
+  ok('a LIVE session keeps its role file even when the file is a month old (life, not a clock)',
+    fs.existsSync(liveRole));
+  ok('a DEAD session\'s role file is swept immediately, however fresh',
+    !fs.existsSync(deadRole));
+  ok('a trigger whose session died is swept (it can never be consumed)',
+    !fs.existsSync(deadTrig));
+
+  // An UNKNOWABLE session (its state already swept) must not be guessed at: only bin its
+  // companions once they are far too old to belong to anyone.
+  const GHOST = 'sweep-ghost-' + process.pid;              // no arc-state at all
+  const ghostFresh = mk(`arc-role-${GHOST}.json`);
+  const ghostOld = mk(`arc-stance-${GHOST}.json`, old);
+  RUN2.sweepStaleStates();
+  ok('an UNKNOWABLE session\'s fresh file is left alone (absent state != dead session)',
+    fs.existsSync(ghostFresh));
+  ok('...but its ancient one is finally binned', !fs.existsSync(ghostOld));
+
+  try { liveProc.kill(); } catch {}
+  for (const f of [`arc-state-${LIVE2}.json`, `arc-state-${DEAD2}.json`, `arc-role-${LIVE2}.json`, `arc-role-${GHOST}.json`]) {
+    try { fs.unlinkSync(path.join(C, f)); } catch {}
+  }
+} catch (e) { ok('cache sweeper', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- arc:invite (spawn a peer session: new tab, forked context, self-arming) --------
 // invite adds a TAB, not a mechanism: the new tab runs `arc --account <caller's> --resume
 // <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through

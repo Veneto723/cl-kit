@@ -197,13 +197,59 @@ function releaseConv(convId) {
 // kill (terminal closed with the X, machine reboot) don't accumulate forever.
 // Effort memories get 7 days: they're what lets `arc --resume` restore a
 // conversation's effort (incl. ultracode) days later.
+// Every per-session file arc writes must be swept, or it accumulates for the life of the machine.
+// This list is HAND-MAINTAINED and it drifted: role, stance, armed, listen-offered and await were
+// all added by later features and none were registered here — 15 orphaned role files and 6 dead
+// listener markers were sitting in the cache. Same disease as install.ps1's hook list, and the
+// same fix: a test now asserts that every `arc-<kind>-` file written anywhere in src/ appears
+// below, so the next feature cannot quietly leak.
+const SWEEP_RX = /^arc-(state|prefs|active|effort|turn|convlock|rmpending|delpending|win|role|stance|armed|listen-offered|await)-.*\.json$/;
+// A TRIGGER is a sentinel's message to one specific session's poll loop (arc-<action>-<session>
+// .trigger). It is consumed on the next poll — unless that session dies first, and then it sits
+// there forever. One was found from a session dead for days. Session-keyed, so the same liveness
+// rule that governs the companions governs these.
+const TRIGGER_RX = /^arc-[a-z-]+?-(.+)\.trigger$/;   // NON-greedy: a greedy [a-z-]+ eats a lettered session id
+
+// The session's own pid, from its state file. `null` = unknowable (state already swept, or a
+// session that never wrote one) — which is NOT the same as dead, and must not be treated as it.
+function sessionPidOf(session) {
+  try { return JSON.parse(fs.readFileSync(path.join(CACHE_DIR, `arc-state-${session}.json`), 'utf8')).pid || null; }
+  catch { return null; }
+}
+
 function sweepStaleStates() {
   const DAY = 24 * 60 * 60 * 1000;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
-      // Match both arc- (current) and arc- (legacy) so old files get pruned too.
-      if (!/^arc-(state|prefs|active|effort|turn|convlock|rmpending|delpending|win)-.*\.json$/.test(f)) continue;
+      const trig = f.match(TRIGGER_RX);
+      if (trig) {
+        const tp = path.join(CACHE_DIR, f);
+        const tpid = sessionPidOf(trig[1]);
+        try {
+          if (tpid ? !pidAlive(tpid) : Date.now() - fs.statSync(tp).mtimeMs > DAY) fs.unlinkSync(tp);
+        } catch {}
+        continue;
+      }
+      if (!SWEEP_RX.test(f)) continue;
       const p = path.join(CACHE_DIR, f);
+
+      // A session's COMPANION files (its role, stance, armed set, listener markers) must follow
+      // that session's LIFE, never a clock. Age-sweeping arc-role-* would take a role away from a
+      // session that is alive and working — it would simply stop receiving notes, with nothing to
+      // say why. So: if the owning session is knowable, its liveness decides. If it is not
+      // knowable, only bin the file once it is far too old to belong to anyone.
+      const comp = f.match(/^arc-(?:role|stance|armed|listen-offered|await)-(.+)\.json$/);
+      if (comp) {
+        // await carries its OWN pid (the listener process) — more precise than the session's.
+        let pid = null;
+        if (/^arc-await-/.test(f)) { try { pid = JSON.parse(fs.readFileSync(p, 'utf8')).pid || null; } catch {} }
+        if (!pid) pid = sessionPidOf(comp[1]);
+        try {
+          if (pid) { if (!pidAlive(pid)) fs.unlinkSync(p); }
+          else if (Date.now() - fs.statSync(p).mtimeMs > 7 * DAY) fs.unlinkSync(p);
+        } catch {}
+        continue;
+      }
       // convlock files are cleaned by LIVENESS, not age: a still-running session
       // days old must keep its lock. Remove only if its owner pid is dead.
       if (/^arc-convlock-/.test(f)) {
@@ -1747,7 +1793,7 @@ async function main() {
 // it silently ate an invited peer's conversation (a surviving --fork-session re-forked the
 // session on every relaunch) and nothing could unit-test it, because requiring this file used to
 // LAUNCH CLAUDE. A function that decides how a conversation is re-opened has to be testable.
-module.exports = { stripConvArgs, explicitConvId, preservedFlags };
+module.exports = { stripConvArgs, explicitConvId, preservedFlags, SWEEP_RX, sweepStaleStates };
 
 if (require.main === module) {
   main().catch((e) => {
