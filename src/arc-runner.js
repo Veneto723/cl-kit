@@ -415,7 +415,8 @@ function findTranscript(convId) {
 // Strip conversation-control flags (and their values) so the managed path can
 // re-add exactly one --resume/--session-id. Prevents a duplicate when a
 // `arc --resume` session gets adopted into managed mode after the first launch.
-function stripConvArgs(args) {
+function stripConvArgs(args, opts) {
+  const keepPrompt = !!(opts && opts.keepPrompt);
   const out = [];
   for (let i = 0; i < args.length; i++) {
     const x = args[i];
@@ -432,7 +433,9 @@ function stripConvArgs(args) {
     // to make the newborn claim + arm itself. Replaying it on every relaunch would re-send it as a
     // prompt forever. It is not needed: the role is re-adopted from the claim (which carries the
     // conversation id, see arc-notes.healClaimConv) and the listener re-arms at the first idle.
-    if (/^arc:/i.test(x)) continue;
+    // ...but ONLY on a respawn. On the FIRST launch this IS the instruction the newborn exists to
+    // receive; stripping it there opens a tab that claims nothing (see the call site).
+    if (/^arc:/i.test(x) && !keepPrompt) continue;
     if (x === '--resume' || x === '-r' || x === '--session-id') {
       if (args[i + 1] && !args[i + 1].startsWith('-')) i++; // also drop its value
       continue;
@@ -1580,7 +1583,17 @@ async function main() {
     if (userManagesConv) {
       claudeArgs = [...passArgs, ...effFlag];
     } else {
-      const a = stripConvArgs(passArgs); // no lingering --resume/--session-id to duplicate
+      // STRIP THE BIRTH PROMPT ONLY ON A RESPAWN. `arc:role <role>` is a BIRTH instruction: it must
+      // reach the session exactly ONCE — on the launch that creates it — and never again, or every
+      // switch/restart re-sends it as a prompt forever. stripConvArgs enforces the "never again"
+      // half, and it used to be safe to run unconditionally because staffing passed an explicit
+      // --resume, which takes the userManagesConv path above and never strips anything. The moment
+      // a peer was BORN instead of forked, this path started running on the FIRST launch too — and
+      // ate the very instruction the newborn exists to receive. The tab opened, titled itself,
+      // claimed nothing, and sat idle forever: an unattended peer that boots and does nothing.
+      // (Found live: a born research tab at `no role` with its prompt box empty. Verified against
+      // the real CLI first that arg ORDER was NOT the cause — both orders submit fine.)
+      const a = respawning ? stripConvArgs(passArgs) : stripConvArgs(passArgs, { keepPrompt: true });
       // On respawn (switch/restart), also re-apply the session's model + mode.
       // Only --resume if the conversation was actually persisted; a fresh session
       // that just ran a blocked arc: command has no transcript, so --resume would

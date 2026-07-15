@@ -1816,6 +1816,16 @@ try {
     !relaunch.includes('--fork-session'));
   ok('...and the birth prompt is not replayed forever (role re-adopts, listener re-arms on idle)',
     !relaunch.some((a) => /^arc:/i.test(a)));
+  // ...but it MUST survive the launch that creates the peer. This guard used to run
+  // unconditionally, which was safe only because staffing passed an explicit --resume (that takes
+  // the userManagesConv path, which strips nothing). The moment a peer was BORN instead of forked,
+  // the strip ran on the FIRST launch and ate the one instruction the newborn exists to receive:
+  // the tab opened, titled itself `arc: research`, claimed NO role, and sat idle forever.
+  // Once = birth. Twice = a prompt loop. The difference is `respawning`, not the args.
+  ok('...but the BIRTH launch KEEPS it — stripping it there opens a tab that claims nothing',
+    RUN.stripConvArgs(born, { keepPrompt: true }).some((a) => /^arc:role scout$/i.test(a)));
+  ok('...while still dropping --fork-session/--continue on birth (only the prompt is spared)',
+    !RUN.stripConvArgs(born, { keepPrompt: true }).includes('--fork-session'));
   ok('...while the real flags survive untouched',
     relaunch.includes('--account') && relaunch.includes('whale') && !relaunch.includes('caller-conv'));
   // A peer that loses its NAME on a switch is back to being another "arc" in the picker — and a
