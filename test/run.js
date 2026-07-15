@@ -2133,6 +2133,34 @@ try {
   // (Observed live: a staffed tab showing `manual mode on` while its caller ran `auto`.)
   ok('a BORN peer starts in AUTO permission mode (it has no human to answer a prompt)',
     /--permission-mode auto/.test(psOf()));
+
+  // THE ONE THAT COST A DAY. staffRole runs inside a HOOK of a live session, so its env carries
+  // that session's Claude Code identity — CLAUDE_CODE_SESSION_ID (the CALLER's conversation) and
+  // CLAUDE_CODE_CHILD_SESSION ("you are a child of another session"). Every peer arc ever spawned
+  // inherited both, so it booted, claimed, answered, exited code=0 — and NEVER registered as a
+  // conversation of its own. hasTranscript was false for its whole life and after its death, so
+  // staffing could only birth a stranger. Revive had never fired once.
+  //
+  // It hid behind a mechanism that looked airtight and was FALSE: "a newborn writes its transcript
+  // on EXIT; a resumed session appends live." A peer reproduced that with plain claude and no arc —
+  // because IT was spawned from an agent process too and inherited the same poison. Eight theories
+  // died against it (--session-id, --name, --permission-mode, the blocked sentinel, wt, cmd-vs-pwsh,
+  // /c-vs-/k, the window). Every one was a difference between an arc SPAWN and a HUMAN typing the
+  // same command; the only one that ever mattered was the env a human's terminal does not have.
+  // PROOF: identical wt + cmd /k + flags, env stripped -> 21701 bytes, written WHILE STILL LIVE.
+  const dirty = { PATH: 'x', CLAUDE_CONFIG_DIR: 'profile', ARC_RUNTIME_ACCOUNT: 'veneto',
+    CLAUDE_CODE_SESSION_ID: 'caller-conv', CLAUDE_CODE_CHILD_SESSION: '1', ARC_SESSION: 'caller-sess' };
+  const clean = I.birthEnv(dirty);
+  ok('a newborn never inherits the CALLER\'s conversation id (it would never get one of its own)',
+    !('CLAUDE_CODE_SESSION_ID' in clean) && !('CLAUDE_CODE_CHILD_SESSION' in clean));
+  ok('...nor ARC_SESSION, or its hooks read the CALLER\'s role, notes and cursor',
+    !('ARC_SESSION' in clean));
+  ok('...while the account profile SURVIVES — a revive resumes a conv that exists only there',
+    clean.CLAUDE_CONFIG_DIR === 'profile' && clean.ARC_RUNTIME_ACCOUNT === 'veneto' && clean.PATH === 'x');
+  // And it must actually reach the spawn, not just exist as a helper.
+  const invSrc = fs.readFileSync(path.join(SRC, 'arc-invite.js'), 'utf8');
+  ok('...and staffRole SPAWNS with that env (a helper nobody calls fixes nothing)',
+    /doSpawn\('powershell\.exe',[^)]*env: birthEnv\(\)/.test(invSrc));
   // NEVER cmd. cmd.exe parses its command line before a batch %* forwards anything — truncating
   // at newlines, stripping quotes and EXPANDING %VAR% (the secret-leak vector) — and its PATHEXT
   // cannot even see arc.ps1, so `cmd /c arc` reaches the mangler no matter what we ship. That put
@@ -2155,10 +2183,16 @@ try {
     /-NoExit -Command/.test(I.buildLaunch(true, 'v', null, 'x', 'E:/arc', 'pwsh'))
     && /cmd \/k /.test(I.buildLaunch(true, 'v', null, 'x', 'E:/arc', 'cmd'))
     && !/cmd \/c arc/.test(I.buildLaunch(true, 'v', null, 'x', 'E:/arc', 'cmd')));
-  ok('...and PowerShell is preferred over cmd (cmd expands %VAR% and cannot see arc.ps1)',
-    I.launchShell(() => true) === 'pwsh'
-    && I.launchShell((e) => e === 'powershell.exe') === 'powershell'
-    && I.launchShell(() => false) === 'cmd');
+  // PWSH TRIED TWICE, REVERTED TWICE. 1st: claude received the single word "Take" (the outer
+  // powershell.exe -Command strips the quotes before wt sees them). 2nd: quoting the whole inner
+  // command as one PS string produced NO TAB AT ALL, while staffRole still printed its ✓ — a
+  // silent no-tab, the worst outcome available, since the agent then believes a peer exists.
+  // Both passed the tests and both were caught by a human looking at a window: the real chain is
+  // node -> spawnSync -> powershell.exe -Command -> wt -> shell, and each layer re-parses the
+  // quotes. cmd's '"…"' is the only form proven through ALL of them. Worth revisiting via a temp
+  // .ps1 (no layer re-parses a prompt), never by guessing at nesting.
+  ok('the launcher is the form proven through the WHOLE chain, not the one that reads best',
+    I.launchShell() === 'cmd');
   // A REVIVE must not pass --permission-mode: arc-runner's preservedFlags restores the mode the
   // peer was last in, and passing it here too hands claude the flag twice.
   ok('a REVIVE does not duplicate --permission-mode (preservedFlags restores its own)',

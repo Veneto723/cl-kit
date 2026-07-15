@@ -86,11 +86,63 @@ function hasWt() {
 // strips quotes and EXPANDS %VAR% (the secret-leak vector), and its PATHEXT cannot even see
 // arc.ps1 — `cmd /c arc` reaches the mangler no matter what we ship. PowerShell resolves `arc` to
 // arc.ps1, which hands argv to node unparsed.
-function launchShell(probe) {
-  const has = probe || ((exe) => { try { return spawnSync('where.exe', [exe], { timeout: 5000 }).status === 0; } catch { return false; } });
-  if (has('pwsh.exe')) return 'pwsh';
-  if (has('powershell.exe')) return 'powershell';
-  return 'cmd';
+// TRIED TWICE, REVERTED TWICE — and the second failure was worse than the first.
+//   1st: `pwsh -Command arc … '<prompt>'` -> the tab opened and claude got the single word "Take".
+//        The outer powershell.exe -Command strips the quotes before wt sees them, so pwsh got
+//        bare words.
+//   2nd: quoting the whole inner command as one PS string (''…'') -> NO TAB AT ALL. staffRole
+//        reported its ✓ (powershell.exe still exits 0) and nothing opened. A silent no-tab is the
+//        worst outcome available: the agent believes a peer exists.
+// Both survived my tests and both were caught by a human looking at a window, because the real
+// chain is node -> spawnSync -> powershell.exe -Command -> wt -> shell, and I kept testing a
+// shorter one (Invoke-Expression, or just building the string). Each nesting layer re-parses the
+// quotes; cmd's '"…"' is the only form proven through ALL of them.
+//
+// The user asked for pwsh, and the reason is sound (cmd cannot see arc.ps1, so `cmd /c arc` reaches
+// the batch mangler). It is worth doing — but not by guessing at quoting. The right shape is
+// probably to stop building a shell STRING at all: write the launch to a temp .ps1 and run that,
+// so no layer has to re-parse a prompt. Until then, a launcher that works beats one that reads well.
+// The mangler is not reachable from here anyway: this carries only OUR birth prompt, which has no
+// %VAR%, no quotes and no newlines. Peers post notes via arc.ps1 (their own PowerShell tool) — that
+// is where the leak lived and where it is fixed.
+function launchShell() { return 'cmd'; }
+
+// A NEWBORN MUST NOT INHERIT ITS PARENT'S IDENTITY. This one line is why revive never worked, and
+// it hid behind a mechanism we all believed and that was never true.
+//
+// staffRole runs inside a HOOK of a live session, so its env carries that session's Claude Code
+// identity: CLAUDE_CODE_SESSION_ID (the CALLER's conversation) and CLAUDE_CODE_CHILD_SESSION — a
+// flag that says, in as many words, "you are a child of another session". Every peer arc ever
+// spawned inherited both. It booted, claimed, answered notes, exited code=0 — and never registered
+// as a conversation of its own. hasTranscript was false for its whole life and after its death, so
+// staffing could only ever birth a stranger. Revive had never fired once, for anyone.
+//
+// THE FALSE MECHANISM, and why it took a day: the symptom looks EXACTLY like "a newborn writes its
+// transcript on EXIT, and a resumed session appends live". That theory explains every observation,
+// and a peer investigating it reproduced the symptom with plain claude and no arc — because IT was
+// spawned from an agent process too, and inherited the same poison. It concluded the mechanism was
+// Claude Code's. We both believed it. Eight theories died against it: --session-id, --name,
+// --permission-mode, the blocked sentinel, wt, cmd-vs-pwsh, /c-vs-/k, and the window itself. Every
+// one of those was a difference between MY spawns and a HUMAN typing the same command — and the
+// only difference that ever mattered was the ENVIRONMENT the human's terminal did not have.
+// PROOF: same wt, same cmd /k, same flags, env stripped -> 21701 bytes, written WHILE STILL LIVE.
+// A clean newborn persists immediately, like any session. Nothing was ever deferred to exit.
+//
+// arc knew this lesson and forgot it: the old headless delegate stripped ARC_SESSION so the child
+// would not inject the REQUESTER's unread notes and advance their cursor. Same class of bug — a
+// child wearing its parent's name — and staffRole was written later, without it.
+const INHERITED_IDENTITY = [
+  'CLAUDE_CODE_SESSION_ID',      // the CALLER's conversation. A newborn adopting it never gets its own.
+  'CLAUDE_CODE_CHILD_SESSION',   // "you are a child" — the flag that suppresses being a conversation
+  'CLAUDE_CODE_ENTRYPOINT',      // how the CALLER was started; meaningless and misleading for a peer
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_EFFORT',               // the caller's effort pin; the peer's own launch decides its own
+  'ARC_SESSION',                 // or the peer's hooks read the CALLER's role, notes and cursor
+];
+function birthEnv(base) {
+  const env = { ...(base || process.env) };
+  for (const k of INHERITED_IDENTITY) delete env[k];
+  return env;
 }
 
 // THE SHELL MUST OUTLIVE CLAUDE, and that is not cosmetic — it may be the whole revive bug.
@@ -341,7 +393,7 @@ function staffRole(session, role, opts) {
   const psCmd = buildLaunch(wt, account, conv, role, launchDir, o.shell);
   let r;
   try {
-    r = doSpawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 5000 });
+    r = doSpawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 5000, env: birthEnv() });
   } catch (e) {
     return { ok: false, message: `could not open the new tab: ${e.message}` };
   }
@@ -438,4 +490,4 @@ function requestDelegate(session, arg, cwd, opts) {
              : `\n  ${role} is live: its listener will wake it within seconds.`) };
 }
 
-module.exports = { staffRole, requestDelegate, buildLaunch, launchShell, shellPrefix, ensureTrusted, trustKey, hasWt, hasTranscript };
+module.exports = { staffRole, requestDelegate, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript };
