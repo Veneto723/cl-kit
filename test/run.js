@@ -840,6 +840,10 @@ try {
     // not silently become "unknown" and block a legitimately committed task. The task
     // FILE is the fallback, so the fixture must actually have one — point CLAUDE_CONFIG_DIR
     // at a sandbox rather than fake it.
+    // RE-RECORD first: task 7 was COMPLETED above, and a completed task now takes its baseline
+    // with it. This assertion is about readBaseline's SHAPE, so it needs one that still exists.
+    // (That this line is needed at all is the fix working — the test used to rely on the leak.)
+    D.recordBaseline(board, S, '7', base);
     const bl = D.readBaseline(board, S, '7', path.join(repo, 'seed.txt'));
     ok('readBaseline returns BOTH a sha and a birth time', bl.sha === base && typeof bl.born === 'string');
 
@@ -1170,6 +1174,104 @@ try {
 // <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
 // does the claiming + arming in the new session's first turn. These tests inject a spawn
 // recorder — nothing real opens.
+// ---- task baselines must not outlive their task --------------------------------------
+// A baseline is written at TaskCreated so a completion can be checked against git. It lived
+// forever: nothing in arc-done ever called unlink. Three leaks, none with a symptom — just
+// files. A real board had 14 orphans from two long-dead sessions; every task on a busy project
+// left one behind.
+section('arc-done baselines (they must not outlive the task)');
+try {
+  const DN = require(path.join(SRC, 'arc-done.js'));
+  const RMb = require(path.join(SRC, 'arc-board.js'));
+
+  const brepo = fs.mkdtempSync(path.join(os.tmpdir(), 'base-'));
+  spawnSync('git', ['init', '-q'], { cwd: brepo });
+  spawnSync('git', ['config', 'user.email', 't@t'], { cwd: brepo });
+  spawnSync('git', ['config', 'user.name', 't'], { cwd: brepo });
+  fs.writeFileSync(path.join(brepo, 'a.txt'), 'one');
+  spawnSync('git', ['add', '-A'], { cwd: brepo });
+  spawnSync('git', ['commit', '-qm', 'first'], { cwd: brepo });
+  const bb = RMb.resolveBoard(brepo); RMb.ensureBoard(bb);
+
+  const LIVE = 'base-live-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${LIVE}.json`),
+    JSON.stringify({ pid: process.pid, cwd: brepo }));
+
+  const exists = (s, t) => fs.existsSync(DN.baselineFile(bb, s, t));
+  const prevGate = process.env.ARC_DONE_GATE;
+
+  // ---- a COMPLETED task must take its baseline with it ----
+  process.env.ARC_DONE_GATE = 'note';
+  DN.onTaskCreated({ cwd: brepo, task_id: 1 }, LIVE);
+  ok('(setup) TaskCreated records a baseline', exists(LIVE, 1));
+  fs.writeFileSync(path.join(brepo, 'b.txt'), 'two');
+  spawnSync('git', ['add', '-A'], { cwd: brepo });
+  spawnSync('git', ['commit', '-qm', 'the work'], { cwd: brepo });
+  DN.onTaskCompleted({ cwd: brepo, task_id: 1, task_subject: 'x' }, LIVE);
+  ok('a COMPLETED task deletes its baseline (it had done its job)', !exists(LIVE, 1));
+
+  // ---- a BLOCKED completion must KEEP it: the retry needs the exact sha ----
+  // This is the subtle one. Dropping it here would still leave the gate FIRING — just on the
+  // coarser birth-time fallback instead of the exact sha, silently, on the retry.
+  process.env.ARC_DONE_GATE = 'strict';
+  DN.onTaskCreated({ cwd: brepo, task_id: 2 }, LIVE);
+  const blocked = DN.onTaskCompleted({ cwd: brepo, task_id: 2, task_subject: 'no commit yet' }, LIVE);
+  ok('(setup) an uncommitted completion is REFUSED under strict', blocked.block === true);
+  ok('a BLOCKED completion KEEPS its baseline — the retry needs the exact sha',
+    exists(LIVE, 2));
+  // ...and once the agent actually commits, the retry succeeds AND cleans up.
+  fs.writeFileSync(path.join(brepo, 'c.txt'), 'three');
+  spawnSync('git', ['add', '-A'], { cwd: brepo });
+  spawnSync('git', ['commit', '-qm', 'now committed'], { cwd: brepo });
+  const retried = DN.onTaskCompleted({ cwd: brepo, task_id: 2, task_subject: 'now done' }, LIVE);
+  ok('...and the retry, once committed, passes and clears it',
+    retried.block === false && !exists(LIVE, 2));
+
+  // ---- gate OFF must not litter: nothing would ever read it ----
+  process.env.ARC_DONE_GATE = 'off';
+  DN.onTaskCreated({ cwd: brepo, task_id: 3 }, LIVE);
+  ok('with the gate OFF, no baseline is written at all (nothing would ever read it)',
+    !exists(LIVE, 3));
+  process.env.ARC_DONE_GATE = 'note';
+
+  // ---- an ABANDONED task's baseline is swept once its session dies ----
+  const DEAD = 'base-dead-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${DEAD}.json`),
+    JSON.stringify({ pid: 999999, cwd: brepo }));            // a pid that cannot be alive
+  DN.recordBaseline(bb, DEAD, 7, 'deadbeef');
+  DN.recordBaseline(bb, LIVE, 8, 'cafebabe');
+  ok('(setup) both a dead session\'s and a live session\'s baselines exist',
+    exists(DEAD, 7) && exists(LIVE, 8));
+
+  const swept = DN.sweepBaselines(bb);
+  ok('a DEAD session\'s baseline is swept — it can never complete that task',
+    swept >= 1 && !exists(DEAD, 7));
+  ok('...but a LIVE session\'s is untouched (it may still complete it)', exists(LIVE, 8));
+
+  // The session id itself contains a dash (pid-random), so the parse must take the LAST chunk
+  // as the task — get this backwards and it sweeps nothing, or the wrong thing.
+  ok('the <session>-<taskId> key parses correctly even though a session id has a dash',
+    !exists(DEAD, 7) && exists(LIVE, 8));
+
+  // `nosession` is left alone: we cannot judge a liveness we never recorded, and guessing
+  // would delete a live task's baseline.
+  DN.recordBaseline(bb, '', 9, 'nosesh');
+  DN.sweepBaselines(bb);
+  ok('a `nosession` baseline is never swept on a guess', exists('', 9));
+
+  // And TaskCreated does the sweeping, so it happens without anyone remembering to.
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${DEAD}.json`),
+    JSON.stringify({ pid: 999999, cwd: brepo }));
+  DN.recordBaseline(bb, DEAD, 10, 'deadbeef2');
+  const r = DN.onTaskCreated({ cwd: brepo, task_id: 11 }, LIVE);
+  ok('TaskCreated sweeps dead baselines on the way in (nobody has to remember)',
+    r.swept >= 1 && !exists(DEAD, 10));
+
+  if (prevGate === undefined) delete process.env.ARC_DONE_GATE; else process.env.ARC_DONE_GATE = prevGate;
+  fs.rmSync(brepo, { recursive: true, force: true });
+  for (const s of [LIVE, DEAD]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`)); } catch {} }
+} catch (e) { ok('arc-done baselines', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- .plan -> .peer : renaming the board folder without losing a session ------------
 // The folder was `.plan` — a name left from before the room->board rename, confusing enough that
 // it had to be explained out loud ("there is no .board; .plan IS the board"). Renaming it moves

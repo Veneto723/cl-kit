@@ -103,6 +103,41 @@ function recordBaseline(board, session, taskId, sha) {
   } catch { return false; }
 }
 
+// A baseline lives from TaskCreated until the task is genuinely DONE — and it used to outlive
+// that three different ways, none with a symptom. Just files, forever:
+//   * a COMPLETED task never deleted its baseline. Nothing in this file ever called unlink.
+//   * an ABANDONED task's baseline outlived the session that was the only thing that could
+//     have completed it.
+//   * with the gate OFF, one was written on every task and never even READ (onTaskCompleted
+//     returns before the read) — a pure write-only leak.
+// One real board had 14 orphans from two long-dead sessions. Harmless per file; unbounded over
+// time, since every task on a busy project leaves one behind.
+function clearBaseline(board, session, taskId) {
+  try { fs.unlinkSync(baselineFile(board, session, taskId)); return true; } catch { return false; }
+}
+
+// Sweep baselines whose SESSION is gone: it is the only thing that could ever complete that
+// task, so the file is definitionally garbage. Same liveness proxy the board already trusts for
+// claims — the session's arc-runner pid.
+//
+// Parsing: the key is `<session>-<taskId>` and a session id CONTAINS a dash (pid-random), so the
+// LAST chunk is the task and everything before it is the session. `nosession` is left alone: we
+// cannot judge a liveness we never recorded, and guessing would delete a live task's baseline.
+function sweepBaselines(board) {
+  let files = [];
+  try { files = fs.readdirSync(board.planDir); } catch { return 0; }
+  const F = require('./arc-notes');
+  let n = 0;
+  for (const f of files) {
+    const m = f.match(/^base-(.+)-([^-]+)\.json$/);
+    if (!m || m[1] === 'nosession') continue;
+    const pid = F.sessionPid(m[1]);
+    if (pid && R.isAlive(pid)) continue;        // still live: it may yet complete the task
+    try { fs.unlinkSync(path.join(board.planDir, f)); n++; } catch {}
+  }
+  return n;
+}
+
 // Two independent baselines, because either can go missing:
 //   sha  — captured at TaskCreated. Exact. But it can be ORPHANED by a rebase/amend,
 //          after which `git log <sha>..HEAD` fails and we'd learn nothing.
@@ -185,10 +220,16 @@ function buildNote(payload, evidence, proven, role) {
 
 // ---- hook entry points -------------------------------------------------------
 function onTaskCreated(payload, session) {
+  // With the gate OFF nothing ever reads a baseline (onTaskCompleted returns first), so writing
+  // one is pure litter. Don't.
+  if (mode() === 'off') return { ok: true };
   const board = R.resolveBoard(payload.cwd || process.cwd());
   const sha = head(board.root);
   if (sha) recordBaseline(board, session, payload.task_id, sha);
-  return { ok: true };
+  // Creating a task is the natural moment to bin the baselines of sessions that will never
+  // complete theirs: we are already here, it is infrequent, and it costs one readdir.
+  const swept = sweepBaselines(board);
+  return { ok: true, swept };
 }
 
 // Returns {block, stderr} — the caller decides the exit code.
@@ -214,6 +255,13 @@ function onTaskCompleted(payload, session) {
 
   if (v.block) return { block: true, stderr: `[arc] ${v.reason}` };
 
+  // The task is genuinely done now (we are not blocking), so the baseline has done its job.
+  // Deliberately NOT on the blocked path above: a refused completion gets retried after the
+  // agent commits, and that retry needs the EXACT sha. Dropping it there would silently
+  // downgrade the gate to the coarser birth-time fallback — the gate would still fire, just on
+  // worse evidence, and nothing would say so.
+  clearBaseline(board, session, payload.task_id);
+
   // Post only if this session has a role — the board is opt-in, and a note needs a
   // sender. No role means nobody is listening; stay silent rather than invent one.
   const F = require('./arc-notes');
@@ -229,7 +277,7 @@ function onTaskCompleted(payload, session) {
   return { block: false, posted: true, proven: v.proven, stale };
 }
 
-module.exports = { git, head, evidenceSince, recordBaseline, readBaseline, verdict, buildNote, onTaskCreated, onTaskCompleted, mode, baselineFile };
+module.exports = { git, head, evidenceSince, recordBaseline, readBaseline, clearBaseline, sweepBaselines, verdict, buildNote, onTaskCreated, onTaskCompleted, mode, baselineFile };
 
 // ---- main: read the hook payload on stdin ------------------------------------
 if (require.main === module) {
