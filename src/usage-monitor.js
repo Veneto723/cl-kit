@@ -664,8 +664,18 @@ function boardSeg(f) {
 }
 
 // The initiative dial (arc:mode). The circle FILLS as the agent gets more proactive:
-// ○ passive (dim, the default) → ◐ balanced (cyan) → ● active (green). Always shown so the
-// dial is visible, but passive stays quiet.
+// ○ passive (dim) → ◐ balanced (cyan) → ● active (green). Always shown, so the dial stays
+// discoverable even when you have never touched it.
+//
+// The DEFAULT is `balanced`, not passive — see arc-stance.DEFAULT. (This comment claimed passive
+// was the default long after that stopped being true, and the fallback below acted on it.)
+//
+// DELIBERATE, do not "fix": passive renders DIM even though it is a deviation, which is the
+// opposite of the injected directive's rule (only a deviation speaks). Weighed and kept on the
+// user's call — the dial is a persistent ambient readout, not a per-turn announcement, and a bar
+// that changes colour under you is worse than one you have to look at. Note the trade: a stance
+// set by a SENTINEL lands with no re-render (a blocked prompt is not a turn), so the bar can lag
+// until the next real turn.
 function stanceSeg(stance) {
   if (stance === 'active') return '\x1b[1;92m● active\x1b[0m';
   if (stance === 'balanced') return '\x1b[1;96m◐ balanced\x1b[0m';
@@ -817,7 +827,11 @@ async function main() {
     board = require('./arc-notes').badge(
       process.env.ARC_SESSION, sl && sl.workspace ? sl.workspace.current_dir : null);
   } catch {}
-  let stance = 'passive';
+  // Fall back to the DEFAULT the stance module actually declares — never a hardcoded guess.
+  // This said 'passive' from back when passive WAS the default, so after the default moved to
+  // balanced a statusline that couldn't read the stance would report you RESTRICTED while the
+  // agent happily ran balanced. A dial that lies about which way it points is worse than no dial.
+  let stance = require('./arc-stance').DEFAULT;
   try { stance = require('./arc-stance').getStance(process.env.ARC_SESSION); } catch {}
 
   process.stdout.write(

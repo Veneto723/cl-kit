@@ -1818,6 +1818,20 @@ try {
   ok('...without telling the user to run a listener that could never wake the session',
     !/DEAF[^`]*run: arc join/.test(um));
 
+  // THE DIAL MUST NOT LIE ABOUT WHICH WAY IT POINTS. The statusline's fallback hardcoded
+  // 'passive' — correct back when passive WAS the default, and quietly wrong ever since it moved
+  // to balanced: a statusline that couldn't read the stance reported the user RESTRICTED while
+  // the agent ran balanced. Pin it to the source of truth so the two cannot drift apart again.
+  const St5 = require(path.join(SRC, 'arc-stance.js'));
+  ok('the statusline falls back to arc-stance.DEFAULT, never a hardcoded guess',
+    /let stance = require\('\.\/arc-stance'\)\.DEFAULT/.test(um)
+    && !/let stance = '(passive|balanced|active)'/.test(um));
+  ok('...and every stance renders a visible segment (the dial stays discoverable)',
+    St5.STANCES.every((s) => {
+      const seg = um.match(new RegExp(`stance === '${s}'\\) return '[^']+'`)) || (s === 'passive');
+      return !!seg;
+    }));
+
   // THE BUG THE WARNING CAUGHT, minutes after it shipped — in the session that wrote it.
   // "Ask once per cycle" used to close the cycle only when a Stop hook happened to OBSERVE a live
   // listener. That observation is not guaranteed: the hook that asked has already blocked the
