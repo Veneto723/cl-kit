@@ -13,18 +13,25 @@
 //           claim). This is the one that matters — accumulated context is the entire reason a
 //           peer beats a subagent, and forking the caller would hand the role's NAME to a
 //           session with none of its MEMORY.
-//   BIRTH   no history to return to -> a NORMAL managed session: no --resume, no --fork-session.
-//           arc-runner mints its conversation and launches --session-id, so the peer owns a real
-//           history from its first breath. It learns the job from its DUTY FILE and the BOARD —
-//           never from the caller's context, which it never needed.
+//   BIRTH   no history to return to -> FORK THE CALLER (--resume <caller's conv> --fork-session).
+//           It opens knowing what the caller knows, and — because --resume takes arc-runner's
+//           userManagesConv path — on the caller's model and effort too. It still writes its own
+//           transcript, so it is revivable later as itself. Its JOB never comes from that context:
+//           that comes from its DUTY FILE and the BOARD, and the birth prompt says so outright.
 //
-// BIRTH IS WHAT MAKES REVIVAL POSSIBLE, and getting that backwards cost a day. A peer used to be
-// born by FORKING the caller (--resume <caller> --fork-session), which looked generous — it starts
-// knowing the project — and quietly destroyed the thing that matters: a forked session leaves NO
-// resumable transcript, so the moment it closed there was nothing to bring back. Revive had never
-// once fired. The fork also handed the newborn a false identity (it believed it WAS its caller and
-// reported to the wrong human) that the `peers` skill then had to argue it out of. So the fork was
-// never a feature we gave up; it was the bug.
+// THE FORK WAS INNOCENT, AND CONVICTING IT COST A DAY. This header used to say the opposite — that
+// a forked session "leaves NO resumable transcript", so birth had to clone nothing. That was FALSE.
+// The bug was env inheritance: a peer carrying the caller's CLAUDE_CODE_SESSION_ID never mints a
+// conversation of its own, fork or not. birthEnv (below) fixed it. But the env fix and the
+// de-forking shipped in the SAME commit, one test passed, and the credit went to the wrong half —
+// then this comment stood as the reason to keep paying a cost that had already been refunded.
+// Measured on the combination nobody had run (fork + stripped env): the peer's own sessionId on all
+// 2589 entries, 6.6MB, still on disk after its pid was gone.
+//
+// WHAT THE FORK REALLY COSTS is BUG-4: it inherits a history in which it IS the caller, so it will
+// continue the caller's task and answer the caller's human unless told otherwise. That is CONTENT,
+// not env — birthEnv cannot touch it. The birth prompt disavows it first, before the role, and the
+// `peers` skill catches the rest. Context is worth that; it is not worth pretending it is free.
 //
 // AND THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL. `arc:role <role>` is blocked at
 // UserPromptSubmit — that is the point of a sentinel, zero tokens — so it never reaches the model,
@@ -145,14 +152,15 @@ function birthEnv(base) {
   return env;
 }
 
-// THE SHELL MUST OUTLIVE CLAUDE, and that is not cosmetic — it may be the whole revive bug.
-// A NEWBORN session writes NO transcript while it runs; the file appears when it EXITS. With
-// `cmd /c`, claude's exit ends cmd, which ends the wt tab — tearing the process down in the same
-// instant it is trying to flush. A hand-launched peer exits into a terminal that stays alive and
-// persists fine (26652 B); a wt-launched one exits code=0 and leaves nothing. Same flags, same
-// account, same folder. So: -NoExit / /k. The tab stays at a prompt, and the peer gets to save
-// itself. (If that is right, "a peer whose tab is closed with the X is unrevivable forever" was
-// never a Claude Code limitation — it was our launcher killing the peer before it could write.)
+// THE SHELL OUTLIVES CLAUDE so the tab stays at a prompt: a peer that dies on a bad flag leaves
+// its error on screen instead of vanishing. That is the whole reason. It is cosmetic, and that is
+// fine — it is how every launcher bug here was ever caught.
+//
+// DEAD THEORY, do not re-derive it: this once said the shell must outlive claude because "a newborn
+// writes no transcript while it runs; the file appears when it EXITS", so `cmd /c` tore the process
+// down mid-flush. That is FALSE — see the PROOF above (a transcript grows on disk WHILE the session
+// is live). The revive bug was env inheritance, not the launcher. The theory outlived its own
+// refutation in this comment and a peer later cited it back to us as fact.
 //
 // QUOTING, which cost a live tab to learn: the chain is powershell.exe -Command -> wt -> shell.
 // Passing the prompt as `'"…"'` sends PowerShell BARE WORDS (the outer parse strips the quotes
@@ -244,26 +252,39 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // by --suppressApplicationTitle, so "arc: <role>" still wins there.)
 // `conv` = the role's OWN conversation to REVIVE, or null to be BORN.
 //
-// A NEW PEER IS BORN, NOT CLONED. It used to launch `--resume <CALLER's conv> --fork-session`,
-// which looked like a gift (it starts knowing the project) and was actually the bug that made
-// revival impossible: a forked session leaves NO resumable transcript, so the moment it closed
-// there was nothing to bring back — measured, `hasTranscript` was false for a peer that had just
-// worked for an hour, and staffing silently forked a stranger instead of reviving it. Birth
-// destroyed revival. Passing no conversation at all makes it an ordinary MANAGED session, and
-// arc-runner already does the right thing for those: it mints a convId and launches
-// `--session-id`, which DOES persist. Verified end-to-end: minted -> closed -> `--resume`
-// answered from its own memory.
+// A NEW PEER IS FORKED FROM THE CALLER: `--resume <CALLER's conv> --fork-session`. It starts
+// knowing the project, and it is still revivable — those were never in tension.
 //
-// And the caller's context was never what a peer needed. Its job comes from its DUTY FILE (what
-// it owns) and the BOARD (the work) — the two things that outlive any session. Inheriting the
-// caller's transcript only ever handed it a false identity (BUG-4: a fork addressing the caller's
-// human as if it were the caller), which the `peers` skill then had to talk it out of.
-function buildLaunch(wt, account, conv, role, root, shell) {
+// THE FORK WAS INNOCENT, and convicting it cost a day. This comment used to read "a forked session
+// leaves NO resumable transcript", and birth was rewritten to clone nothing. That was FALSE. The
+// real culprit was env inheritance: a peer launched carrying the caller's CLAUDE_CODE_SESSION_ID
+// never mints a conversation of its own, so no transcript appears under its own id — fork or no
+// fork. Both changed at once (2e0bd75 fixed the env AND dropped the fork), one test passed, and the
+// win was credited to the wrong half. Then the false conclusion sat HERE as the justification for
+// born-not-cloned, one line below the birthEnv that had already fixed the real bug.
+//
+// MEASURED, the combination that had never been run — fork + stripped env: own sessionId on all
+// 2589 entries, 6,680,047 bytes, still on disk after the pid was gone, hasTranscript() true.
+//
+// WHAT THE FORK REALLY COSTS is identity, and it is content, not env: the peer inherits a
+// transcript in which it is the caller, and will happily continue the caller's task and address the
+// caller's human (BUG-4). birthEnv cannot help — the confusion is IN the history. So the birth
+// prompt names the split outright, and the `peers` skill catches what the prompt misses. That is
+// the honest trade: context is worth having, and it has to be paid for in the prompt.
+//
+// `from` = the CALLER's conversation to fork at BIRTH (null -> born cold, no context). `conv` =
+// the ROLE's own conversation to REVIVE, which always wins: a returning peer comes back as ITSELF.
+function buildLaunch(wt, account, conv, role, root, shell, from) {
   const acct = account ? ` --account ${account}` : '';
   const sh = shell || launchShell();
   const pre = shellPrefix(sh);
-  // REVIVE resumes the role's own conversation; BIRTH passes nothing and lets the runner mint one.
-  const resume = conv ? ` --resume ${conv}` : '';
+  // REVIVE resumes the role's OWN conversation as itself. BIRTH forks the CALLER's, which is also
+  // what carries model + effort across: --resume makes the runner take its userManagesConv path,
+  // where detectedEffort reads the caller's effort off explicitId and preservedModel re-applies the
+  // caller's model. Inheritance is a CONSEQUENCE of the fork, not a second mechanism.
+  // With no caller conversation to fork (a session that never persisted one), birth still works —
+  // the peer is simply born cold, which is what every peer was until now.
+  const resume = conv ? ` --resume ${conv}` : (from ? ` --resume ${from} --fork-session` : '');
   // THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL — and that is what makes the peer revivable.
   // `arc:role <role>` was blocked at UserPromptSubmit (that is the point of a sentinel: zero
   // tokens), so it never reached the model. Everything the newborn then received arrived as hook
@@ -276,7 +297,23 @@ function buildLaunch(wt, account, conv, role, root, shell) {
   // NO double quotes in here: the whole thing is nested '"..."' to survive PS -> wt -> cmd, so an
   // inner " closes the argument early and the prompt arrives truncated. (Written with quotes the
   // first time; the built command showed it immediately.)
-  const birth = `Take the ${role} role on this board now: run  arc role ${role}  then do what it tells you.`;
+  // A FORKED PEER OPENS ITS EYES BELIEVING IT IS THE CALLER, because it is reading the caller's
+  // whole conversation and every habit in it says: keep going. So the FIRST thing it ever reads as
+  // a real prompt has to break that, and it has to do it before the role instruction — an agent
+  // that has already resumed the caller's task will take `arc role` as one more errand in it.
+  // (Watched live: a fork picked up the caller's investigation, reported back in the first person,
+  // and only learned it was not the caller by reading arc-state.)
+  // NO apostrophes and NO double quotes in here: the whole prompt is nested '"…"' through
+  // powershell -> wt -> cmd, and either one ends the argument early and truncates it.
+  // AND IT IS A SNAPSHOT WITH AN EXPIRY DATE. The first forked peer nearly filed a confident, false
+  // bug against this very file: its inherited history said born-not-cloned, which had been true an
+  // hour earlier and was rewritten before it branched. It caught itself only by re-reading. This is
+  // the one BUG-4 cannot cover — the peer is not confused about WHO it is, it is confident about
+  // code that has since moved, and staleness is invisible from the inside (it feels like knowing).
+  // Git cannot close it either: what rotted here was the caller's UNCOMMITTED tree.
+  const birth = from
+    ? `You were BRANCHED from another session on this board. The conversation above is CONTEXT ONLY: it is not your work, its human is not yours to answer, and its unfinished tasks are not yours to continue. It is also a SNAPSHOT that stopped the moment you branched: the code may have moved since, including edits that were never committed, so re-read any file before you assert anything about it. You are the ${role} peer now, a separate session with its own job: run  arc role ${role}  then do what it tells you.`
+    : `Take the ${role} role on this board now: run  arc role ${role}  then do what it tells you.`;
   // A STAFFED PEER HAS NOBODY TO ANSWER A PROMPT. Its whole job is to boot, claim, arm its
   // listener and answer — unattended. Born in `manual` (the default) it stops at the first
   // permission prompt and sits there claimed-but-deaf: holding the role, so nothing else may
@@ -390,7 +427,13 @@ function staffRole(session, role, opts) {
   // Only status === 0 is success. And the timeout must stay SHORT: this runs inside the
   // UserPromptSubmit hook, so a wedged launcher stalls the user's own prompt. wt's COM handoff
   // takes ~0.5s.
-  const psCmd = buildLaunch(wt, account, conv, role, launchDir, o.shell);
+  // THE CALLER'S CONVERSATION IS WHAT A BIRTH FORKS — and it comes from the SESSION's own record,
+  // never from an argument, for the same reason the board and launch dir do: a forgeable id would
+  // let an agent hand its peer a stranger's history. Only a BIRTH forks; a REVIVE already has the
+  // role's own conversation and must come back as itself. Null is fine and stays supported — a
+  // caller that never persisted a conversation simply births a cold peer.
+  const from = revive ? null : (o.sessionConv || N.sessionConv)(session);
+  const psCmd = buildLaunch(wt, account, conv, role, launchDir, o.shell, from);
   let r;
   try {
     r = doSpawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 5000, env: birthEnv() });
@@ -407,10 +450,19 @@ function staffRole(session, role, opts) {
       ? `✓ REVIVING "${role}" — new ${wt ? 'tab in this window' : 'console window'}.\n`
         + `  it resumes ${role}'s OWN conversation, so it comes back as itself: everything it\n`
         + `  learned before, still there. It re-adopts the role and arms its own listener.\n`
+      // SAY WHICH BIRTH ACTUALLY HAPPENED. This line claimed the peer "starts FRESH... not from
+      // your context" for one commit after birth started forking — the born-not-cloned text
+      // outliving the behaviour it described, and the FIRST live delegate caught it while 668 unit
+      // tests did not (none of them read this string). Same failure as the comments it replaced:
+      // prose asserting a fact about code that has moved.
       : `✓ staffing a new "${role}" peer — new ${wt ? 'tab in this window' : 'console window'}.\n`
-        + `  no ${role} has worked here before, so it starts FRESH with its OWN conversation — it\n`
-        + `  learns the job from .arc/roles/${role}.md and the board, not from your context.\n`
-        + `  That is what makes it revivable later: it will have a history of its own.\n`) +
+        + (from
+          ? `  no ${role} has worked here before, so it is BRANCHED from this conversation: it opens\n`
+            + `  knowing what you know, on your model and effort, told plainly that your history is\n`
+            + `  context and not its own work. It writes its own transcript from there, so it is\n`
+            + `  revivable later as ${role}.\n`
+          : `  no ${role} has worked here before, and this session has no conversation to branch, so\n`
+            + `  it starts COLD: it learns the job from .arc/roles/${role}.md and the board.\n`)) +
     (trust.seeded
       ? `  (trusted "${launchDir}" for this account so the new tab isn't stopped by the trust\n` +
         `   dialog it cannot answer — the same folder you are already working in. Backup:\n` +

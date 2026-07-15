@@ -236,6 +236,19 @@ You were given that context so you'd already know the project. That's the gift a
   talking to.
 - **Your work comes from the board.** Answer it there.
 
+And one more, which outlives all of those — the three above are about **who** you are, and you can
+settle those in a line. This one is about **what you know**, and it never announces itself:
+
+- **Your context is a SNAPSHOT, and it started going stale the instant you branched.** The peer you
+  forked from kept working. Files you can vividly "remember" may have been rewritten since — and
+  `git` will not show you the gap, because the freshest changes are usually **uncommitted**. So you
+  can be perfectly clear that you are not your caller, and still be **confidently wrong about code
+  that moved under you**. It is invisible from the inside: *stale context feels exactly like
+  knowledge.* **Re-read the file before you assert anything about it** — especially when you are
+  about to report a problem, because a memory is exactly what a real finding feels like.
+  (This is not hypothetical: the first forked peer here almost filed a confident, false bug against
+  a header it was quoting *correctly* — from an hour before it was born. It caught it by re-reading.)
+
 Say who you are once, in one line, then listen. arc will wake you when someone needs you.
 
 ---

@@ -1772,11 +1772,15 @@ try {
     spawn: (b, a) => { spawnedFork = a; return { status: 0 }; }, hasWt: true,
     ensureTrusted: () => ({ ok: true, already: true }), hasTranscript: () => false,
   });
-  // Birth REMOVED the constraint this test was built for: staffing no longer needs the caller to
-  // own a conversation at all, so a peer tree needs no bridge. The bridge still matters — a peer's
-  // own convId is what a later REVIVE resumes — but it can no longer block staffing.
   ok('...so a STAFFED peer can staff another in turn (a peer tree, not a one-level star)',
-    okInv.ok === true && !spawnedFork.join(' ').includes('--fork-session'));
+    okInv.ok === true);
+  // AND THE TREE INHERITS ALONG ITS REAL EDGES: the grandchild forks the conversation of the peer
+  // that actually staffed it, not of whoever started the session graph. That id is only knowable
+  // from the BRIDGE — this staffer is a live fork, so its own state file still says convId:null,
+  // and trusting that would fork nothing and silently birth a cold grandchild while the context it
+  // needed sat on disk unread. (The same null-state/live-bridge split the scout peer found.)
+  ok('...forking the conversation of the peer that staffed it (via the bridge), so context follows the tree',
+    spawnedFork.join(' ').includes('--resume fork-conv-9999 --fork-session'));
 
   // The CLAIM was written before the id was knowable, so it carries null — and role adoption on
   // restart matches a vacant claim BY CONVERSATION. That peer would silently lose its role.
@@ -2097,13 +2101,16 @@ try {
   ok('staffing launches via SYNC PowerShell: a wt tab in the CURRENT window at the repo root',
     okr.ok === true && spawned && spawned.bin === 'powershell.exe'
     && /wt -w 0 new-tab/.test(psOf()) && psOf().includes(`-d '${vrepo}'`));
-  // BORN, NOT CLONED. It used to launch --resume <CALLER's conv> --fork-session, and that was the
-  // bug that made revival impossible: a forked session leaves NO resumable transcript, so the
-  // moment it closed there was nothing to bring back (measured: hasTranscript false for a peer
-  // that had just worked an hour). Passing NO conversation makes it an ordinary managed session,
-  // and arc-runner mints one with --session-id — which does persist.
-  ok('a NEW peer is BORN with its own conversation — never a fork of the caller',
-    !/--fork-session/.test(psOf()) && !/--resume/.test(psOf()));
+  // FORKED FROM THE CALLER — and that does NOT cost revival. This test asserted the exact opposite
+  // ("never a fork of the caller"), on the theory that a forked session leaves no resumable
+  // transcript. The theory was FALSE and it was encoded here, in the src comment, and in the birth
+  // shape: the real culprit was env inheritance — a peer wearing the caller's
+  // CLAUDE_CODE_SESSION_ID never mints a conversation of its own, fork or not — and birthEnv had
+  // already fixed it one line away. Both changed at once, one test passed, wrong half credited.
+  // MEASURED, the combination never run until then (fork + stripped env): own sessionId on all 2589
+  // entries, 6,680,047 bytes, still on disk after the pid was gone, hasTranscript() true.
+  ok('a NEW peer is FORKED from the CALLER, so it opens already knowing the project',
+    /--resume conv-abc-123 --fork-session/.test(psOf()));
   // THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL — and that is what makes the peer revivable.
   // A sentinel is BLOCKED at UserPromptSubmit (zero tokens, by design), so it never reaches the
   // model; every later input arrives as a hook injection or a Stop-block reason, never a user
@@ -2111,7 +2118,16 @@ try {
   // says "No conversation found" even after a graceful /exit — so there is nothing to revive and
   // staffing silently births a stranger. A peer that never has a real turn can never come back.
   ok('a BORN peer opens with a REAL prompt, not a blocked sentinel (a sentinel leaves no conversation)',
-    /Take the frontend role on this board now/.test(psOf()) && !/"arc:role frontend"/.test(psOf()));
+    /You were BRANCHED from another session/.test(psOf()) && !/"arc:role frontend"/.test(psOf()));
+  // BUG-4, AND WHY IT MUST COME FIRST. A fork wakes up reading a conversation in which it IS the
+  // caller, and every habit in that history says keep going — watched live: a fork picked up the
+  // caller's investigation, answered in the first person, and only learned it was not the caller by
+  // reading arc-state. birthEnv cannot reach this: the confusion is in the CONTENT, not the env.
+  // The disavowal has to land BEFORE the role instruction, or an agent already resumed into the
+  // caller's task reads `arc role` as one more errand inside it.
+  ok('...and the prompt DISAVOWS the inherited identity BEFORE handing over the role (BUG-4)',
+    /CONTEXT ONLY/.test(psOf()) && /not your work/.test(psOf())
+    && psOf().indexOf('CONTEXT ONLY') < psOf().indexOf('arc role frontend'));
   ok('...telling it to claim, so the claim still happens on its own with nobody watching',
     /arc role frontend/.test(psOf()));
   // THE QUOTING, which cost two live tabs to learn. The chain is powershell.exe -Command -> wt ->
@@ -2203,12 +2219,27 @@ try {
   // hand was guesswork. (Caught live: the tab said "arc: research", the session still said "arc".)
   ok('...and the session is NAMED for its role (else the --resume picker is a list of "arc")',
     /--name frontend/.test(psOf()));
-  ok('...and the confirmation does not promise a context it will not have',
+  // THE CONFIRMATION MUST DESCRIBE THE BIRTH THAT ACTUALLY HAPPENED — in BOTH directions. This
+  // asserted the exact opposite ("starts FRESH ... not from your context") and went on passing for a
+  // commit after birth began forking: born-not-cloned prose outliving its own behaviour, telling
+  // every user the peer knew nothing while it opened with their whole conversation. No unit test
+  // read this string, so none of them caught it; the FIRST live delegate printed the lie on sight.
+  // Hence both halves below: promising context a peer will not have is the same bug mirrored.
+  ok('...and the confirmation describes the birth that ACTUALLY happened (branched, with context)',
     /staffing a new "frontend" peer/.test(okr.message)
-    && /starts FRESH with its OWN conversation/.test(okr.message)
-    && !/FORKS this conversation/.test(okr.message));
-  ok('...naming the two things it DOES learn the job from: its duty file and the board',
-    /roles\/frontend\.md and the board/.test(okr.message));
+    && /BRANCHED from this conversation/.test(okr.message)
+    && !/starts FRESH with its OWN conversation/.test(okr.message));
+  // The COLD fallback is real (a caller that never persisted a conversation has nothing to branch),
+  // and it must NOT inherit the branched wording — that would promise context the peer lacks.
+  const VSNC = 'invite-nocv-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${VSNC}.json`),
+    JSON.stringify({ pid: process.pid, cwd: vrepo, convId: null }));
+  const cold = I.staffRole(VSNC, 'coldpeer', NOHIST);
+  ok('...and a caller with NO conversation to branch is told COLD, not promised a context',
+    /starts COLD/.test(cold.message) && !/BRANCHED/.test(cold.message)
+    && !/--fork-session/.test(psOf()));
+  ok('...naming the two things a COLD peer DOES learn the job from: its duty file and the board',
+    /roles\/coldpeer\.md and the board/.test(cold.message));
 
   // ---- REVIVE vs FORK: the whole reason one verb can cover a closed peer ----------------
   // A vacant claim remembers the CONVERSATION of the session that held the role. If that
@@ -2238,7 +2269,12 @@ try {
   // `--resume <gone>` dies with "No conversation found" — a tab that opens only to fail.
   const gone = I.staffRole(VS, 'ghost', { spawn: rec, hasWt: true, hasTranscript: () => false });
   ok('a vacant claim whose TRANSCRIPT IS GONE is BORN fresh (never resumes into a corpse)',
-    gone.ok === true && gone.revived === false && !/--resume/.test(psOf()));
+    gone.ok === true && gone.revived === false && !/ghost-conv-777/.test(psOf()));
+  // ...but "not the corpse" is not "no context": the two conversations are DIFFERENT ids and only
+  // one of them is dead. Falling back to a cold birth here would silently punish the peer for
+  // having been purged — it would come back knowing less than a peer who never existed.
+  ok('...and it still forks the CALLER, so a purged peer is reborn with context, not blank',
+    /--resume conv-abc-123 --fork-session/.test(psOf()));
   RM3.releaseRole(vboard, 'ghost', 999999);
 
   // Account pinning: conversations live in per-account profiles — a tab that auto-selected a
@@ -2350,7 +2386,7 @@ try {
   const split = I.requestDelegate(VS, 'splitcheck fix the login bug', vrepo, NOHIST);
   ok('delegate splits <role> from the rest as the PACKET (unquoted words are work, not a role)',
     split.ok === true && split.role === 'splitcheck'
-    && /Take the splitcheck role on this board now/.test(psOf()));
+    && /You are the splitcheck peer now/.test(psOf()));
   ok('...and the packet is posted as a REQUEST, so the caller is owed an answer',
     RM3.allNotes(RM3.resolveBoard(vrepo)).some((n) =>
       n.to === 'splitcheck' && n.kind === 'request' && /fix the login bug/.test(n.body)));

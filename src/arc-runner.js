@@ -501,6 +501,16 @@ function preservedFlags(convId) {
   return flags; // effort handled separately (pin > detected; ultracode needs a settings key)
 }
 
+// THE MODEL ALONE, for a conversation someone else is resuming. A FORK BIRTH (staffing a peer)
+// passes `--resume <CALLER's conv> --fork-session`, which takes the userManagesConv path below —
+// the path that never calls preservedFlags. Effort rides along for free there (detectedEffort
+// reads explicitId), but the model does not, so a peer forked from an opus caller would boot on
+// the default. preservedFlags is the wrong tool for it: it also returns --permission-mode, and a
+// birth already passes its own, which would hand claude the flag twice.
+function preservedModel(convId) {
+  return preservedFlags(convId).filter((f, i, a) => f === '--model' || a[i - 1] === '--model');
+}
+
 // ---- trigger files --------------------------------------------------------
 
 const switchTrigger    = path.join(CACHE_DIR, `arc-switch-${SESSION_ID}.trigger`);
@@ -1581,7 +1591,13 @@ async function main() {
 
     let claudeArgs;
     if (userManagesConv) {
-      claudeArgs = [...passArgs, ...effFlag];
+      // INHERIT THE CALLER'S MODEL ON A FORK BIRTH. `--resume <caller> --fork-session` lands here,
+      // and this path passes args through untouched — so without this the peer boots on the default
+      // model no matter what the caller was running. Only when an id was named (a bare picker
+      // resume has none to read) and only if the caller did not already choose: an explicit --model
+      // always wins over what we infer from a transcript.
+      const inheritModel = (explicitId && !passArgs.includes('--model')) ? preservedModel(explicitId) : [];
+      claudeArgs = [...passArgs, ...inheritModel, ...effFlag];
     } else {
       // STRIP THE BIRTH PROMPT ONLY ON A RESPAWN. `arc:role <role>` is a BIRTH instruction: it must
       // reach the session exactly ONCE — on the launch that creates it — and never again, or every
