@@ -1021,11 +1021,23 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
         const actual = readActiveConv();
         if (!actual) return;
         adoptPending = false;
+        // A FORK gets here for a different reason and must NOT be treated the same. It has nothing
+        // to restore — it inherited its effort from the source conversation at launch, and that is
+        // exactly what `applied` is. What it needs is the opposite: this is the FIRST moment its
+        // own id exists, so it is the first chance to seed its sticky file. And relaunching a fork
+        // would be actively destructive — the relaunch re-runs `--resume <source> --fork-session`
+        // and mints a SECOND conversation, orphaning the one the peer has been writing.
+        if (watchAdopt.isFork) { seedEffort(actual, watchAdopt.applied); return; }
         const want = detectedEffort(actual);
         if (want && want !== watchAdopt.applied && want !== defaultEffort()
             && (CLI_EFFORT.has(want) || want === 'ultracode')) {
           killChild(child);
           finish('effort');
+        } else {
+          // Nothing to restore: this session keeps what it launched with, so record it against the
+          // conversation it ACTUALLY writes under — otherwise the file stays null and the next
+          // /restart reads that null as "no effort" and drops to the default.
+          seedEffort(actual, watchAdopt.applied);
         }
       }
     }, TRIGGER_POLL_MS);
@@ -1632,7 +1644,14 @@ async function main() {
     } catch {}
     // Seed the sticky baseline with what we ACTUALLY applied, so the statusline
     // never claims an effort the session isn't really at.
-    if (effConv) seedEffort(effConv, applied);
+    //
+    // EXCEPT ON A FORK, which resumes ONE conversation and writes ANOTHER — the only case where
+    // effConv is not this session's own id. It names the conversation we forked FROM, so seeding it
+    // here would stamp the CALLER's sticky file from a peer's launch: a newborn reaching into a
+    // live session's state. Meanwhile this session's real file stays unseeded, and its next
+    // /restart detects null and silently drops the inherited effort to the default. The minted id
+    // does not exist until claude mints it, so a fork leaves the seeding to the adoption watch.
+    if (effConv && !isFork) seedEffort(effConv, applied);
     // Credentials are isolated per account via CLAUDE_CONFIG_DIR (set in buildEnv →
     // P.ensureProfile); there is no shared login to swap.
     process.stdout.write(`\x1b[2m[arc] starting on ${accountLabel(account)}...\x1b[0m\n`);
@@ -1641,9 +1660,13 @@ async function main() {
     // into 127.0.0.1:<port>. A no-op for every other account type.
     await ensureClaudexProxy(account);
 
-    // Watch for conversation adoption only on a picker resume (no id known
-    // pre-launch), and only until the first effort-restoring relaunch.
-    const watch = (userManagesConv && !explicitId && !adoptFixDone) ? { applied } : null;
+    // Watch for conversation adoption whenever this session's OWN id is unknowable before launch,
+    // and only until the first effort-restoring relaunch. Two ways that happens, not one: a picker
+    // resume has no id at all, and a FORK has one that is the WRONG id — explicitId names the
+    // conversation it forked FROM, while claude mints it a fresh one. This condition read any
+    // explicitId as "we know who we are", which is true for a plain --resume and false for a fork,
+    // so every forked peer skipped the watch and never learned its own conversation.
+    const watch = (userManagesConv && (!explicitId || isFork) && !adoptFixDone) ? { applied, isFork } : null;
     const { reason, exitCode, payload } = await runClaude(claudeArgs, account, effSettings, watch);
     // After the first successful launch the conversation exists; from now on we
     // must --resume it, never re-create it with --session-id.
