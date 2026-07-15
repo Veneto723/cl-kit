@@ -78,6 +78,41 @@ arc role                                   # is there a peer whose job this is?
 arc note research --kind request "<packet>"
 ```
 
+## Whose job is this? — read the roster before you decide
+
+`arc role` tells you who is here, what this repo *has*, and what each one owns:
+
+```
+  your role: android — the android app surface — Kotlin, layouts, gestures
+  roster:
+    ● research  live   — investigation and docs; READ-ONLY on code
+    ○ frontend  closed — the web surface   ← empty chair: arc:invite frontend
+```
+
+Every role's duty is declared in `.arc/roles/<role>.md` — committed, so it is the same on every
+machine and it **outlives the session that wrote it**. That's what makes an empty chair readable:
+`frontend` is a real job here, nobody is in it right now.
+
+**Three states, three answers:**
+
+| roster says | means | do |
+|---|---|---|
+| **● live** | a peer is in that chair *now* | **note them** — `arc note <role> --kind request`. Always: it costs ~0 and they hold the context. Idle is fine; their listener wakes them. |
+| **○ closed** | the job exists here, the chair is empty | **is it a thread or a question?** thread → `arc:invite <role>` (use the *declared name*), then note them. question → just do it, or use a subagent. |
+| **not listed** | nobody owns this | it's yours, or a subagent's. |
+
+**Never mint a synonym.** If the roster says `research`, do not invite `researcher` — you'd split
+one job across two chairs, each with half the context. Reuse the declared name; that is the whole
+point of the roster.
+
+**Don't spawn a session for a single question.** A peer is a window, a boot, and its own quota,
+alive until closed. Worth it for a thread someone should own; absurd for *"what does this flag
+do?"* — that's a subagent.
+
+**A note to an empty chair still keeps.** The cursor is per-*role*, so whoever claims that role
+next reads it in full. But a **request** to an empty chair is never answered — arc will tell you,
+and you must not go idle waiting on it.
+
 ## A peer vs. a subagent — pick by whether context is worth keeping
 
 You have two ways to hand work off, and only one of them is arc's:

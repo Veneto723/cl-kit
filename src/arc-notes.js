@@ -108,7 +108,12 @@ function unarmedRequests(session, cwd) {
     if (!me) return { role: null, notes: [] };
     const armed = readArmed(session);
     const open = R.openRequests(board, me).filter((n) => n.from === me && !armed.has(n.seq));
-    return { role: me, notes: open };
+    // Is anyone actually in the chair I asked? A request whose target went away CANNOT be
+    // answered, so telling the agent to "arm the waker" would be advice to wait forever — and
+    // the peer may well have closed AFTER the ask, so the post-time warning never fired.
+    // A broadcast (to:null) is answerable by anyone, so it never counts as an empty chair.
+    const live = new Set(R.liveRoles(board).map((l) => l.role));
+    return { role: me, notes: open.map((n) => ({ ...n, toLive: !n.to || live.has(n.to) })) };
   } catch { return { role: null, notes: [] }; }
 }
 
@@ -142,6 +147,39 @@ function peers(board, meRole) {
   return others.length ? others.join(', ') : '(nobody else here yet)';
 }
 
+// THE ROSTER — who is here, who this repo HAS, and what each one owns.
+//
+// One line per role, because it is read by an agent that has not yet decided it cares: the
+// `owns:` summary is enough to route a question, and the full declaration is one Read away.
+// (Same progressive disclosure as the skill description — a roster nobody finishes reading
+// routes nothing.)
+//
+// The `closed` rows are the point. A role this repo DECLARES but nobody is holding is exactly
+// the case an agent could not see before: it would either do that role's work itself, or spawn
+// a duplicate under a synonym. Now it can read the duty of an empty chair and choose.
+function rosterLines(board, meRole) {
+  let rows;
+  try { rows = require('./arc-duty').roster(board, R.liveRoles(board)); } catch { return null; }
+  const others = rows.filter((r) => r.role !== meRole);
+  if (!others.length) return null;
+  const w = Math.max(...others.map((r) => r.role.length));
+  return others.map((r) => {
+    const what = r.summary ? ` — ${r.summary}`
+      : r.declared ? '' : ` — (no duty declared: ${r.path})`;
+    const hint = (!r.live && r.declared) ? `   ← empty chair: arc:invite ${r.role}` : '';
+    return `    ${r.live ? '●' : '○'} ${r.role.padEnd(w)}  ${r.live ? 'live  ' : 'closed'}${what}${hint}`;
+  }).join('\n');
+}
+
+// My own duty line, so a session is reminded what it is FOR every time it looks.
+function myDuty(board, role) {
+  if (!role) return null;
+  try {
+    const d = require('./arc-duty').readDuty(board, role);
+    return d && d.summary ? ` — ${d.summary}` : ` — (undeclared: write ${require('./arc-duty').dutyRel(role)})`;
+  } catch { return null; }
+}
+
 // ---- arc:role -----------------------------------------------------------------
 function requestRole(session, arg, cwd) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
@@ -149,10 +187,11 @@ function requestRole(session, arg, cwd) {
   const board = R.resolveBoard(resolveCwd(session, cwd));
   if (!role) {
     const mine = getRole(session, board);
+    const ros = rosterLines(board, mine);
     return { ok: true, plain: true, message:
       `arc board "${board.name}"  (${board.root})\n` +
-      `  your role: ${mine || '(none — set one: arc:role research)'}\n` +
-      `  peers: ${peers(board, mine)}` };
+      `  your role: ${mine ? mine + (myDuty(board, mine) || '') : '(none — set one: arc:role research)'}\n` +
+      (ros ? `  roster:\n${ros}` : `  peers: (nobody else here yet)`) };
   }
   if (!VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
 
@@ -201,9 +240,22 @@ function requestRole(session, arg, cwd) {
     ? '  listener: ✓ already armed — you are reachable while idle'
     : (waiting ? `  listener: armed for your OLD role "${waiting.role}" — it will not hear "${role}".\n` : '  listener: not armed yet.\n') +
       `            arm it now, in the background:  arc join ${role}`;
-  return { ok: true, role, armNeeded, message:
+  // The DUTY of the role you just claimed. Two different jobs depending on whether it exists:
+  // if this repo already declares it, you are INHERITING a charter — adopt it, don't reinvent it.
+  // If it doesn't, you are the first, so write it: the next session to hold this role (and every
+  // peer deciding whether a job is yours) reads it, including long after you are gone.
+  const D = require('./arc-duty');
+  const mineDuty = D.readDuty(board, role);
+  const dutyLine = mineDuty
+    ? `  duty: ${mineDuty.summary || '(declared)'}\n        ← this role's charter, already declared: ${mineDuty.path}. Read it; it is yours now.\n`
+    : `  duty: NOT DECLARED. You are the first "${role}" here — say what it owns, in ${D.dutyRel(role)}:\n`
+      + `        owns: … · send me: … · not me: …   (3 lines. Peers read it to route work to you,\n`
+      + `        and it outlives this session — it is how a future peer knows this chair exists.)\n`;
+  const ros = rosterLines(board, role);
+  return { ok: true, role, armNeeded, duty: mineDuty, message:
     `✓ you are "${role}" on the "${board.name}" board  (${board.root})\n` +
-    `  peers: ${peers(board, role)}\n` +
+    dutyLine +
+    (ros ? `  roster:\n${ros}\n` : '') +
     (unread.count ? `  📌 ${unread.count} unread note(s) — read them: arc:notes\n` : '  board is empty for you\n') +
     listen };
 }
@@ -249,11 +301,37 @@ function requestNote(session, arg, cwd) {
     note.supersedes ? `RETRACTS #${note.supersedes} — readers of it are now warned` : '',
     note.priority === 'high' ? 'priority: HIGH' : '',
   ].filter(Boolean).join(' · ');
+  // THE EMPTY CHAIR. Posting to a role nobody holds used to return a cheerful ✓ and nothing
+  // else: the note went nowhere, and a `request` was worse — the sender armed a listener and
+  // waited forever for an answer that could not come. Silent, and the exact class of failure
+  // this whole system exists to prevent. (Note the irony it sat next to: a dangling --reply-to
+  // is refused because "a dangling reference would be a lie". A dangling RECIPIENT is a bigger
+  // lie, and it was unchecked.)
+  //
+  // We still POST it — the cursor is per-ROLE, so a note to an empty chair is delivered in full
+  // to whoever claims that role next (proven: a fresh session inherits the whole inbox). That is
+  // a real feature, not a leak, so refusing would destroy something useful. What was missing was
+  // the truth, out loud, at the only moment it can be acted on.
+  let chair = '';
+  if (to && !R.liveRoles(board).some((l) => l.role === to)) {
+    const duty = require('./arc-duty').readDuty(board, to);
+    chair = `\n  ⚠ NOBODY HOLDS "${to}" right now — your note is waiting in an empty chair.\n`
+      + (duty
+        ? `    It IS a declared role here (owns: ${duty.summary || 'see ' + duty.path}).\n`
+          + `    Put someone in it:  arc:invite ${to}   ← forks your context; it will read this note on arrival.\n`
+        : `    And this repo does not declare a "${to}" role at all — check \`arc role\` for who is\n`
+          + `    actually here. If ${to} really is a job on this board, invite one (arc:invite ${to})\n`
+          + `    and have it declare its duty.\n`)
+      + (note.kind === 'request'
+        ? `    THIS IS A REQUEST: it will NEVER be answered until someone claims "${to}". Do not go\n`
+          + `    idle waiting on it — either invite one now, or do the work yourself/with a subagent.`
+        : `    It keeps: whoever claims "${to}" next reads it in full.`);
+  }
   return { ok: true, message:
     `✓ note #${seq} posted for ${to || 'everyone'} (from "${me}", on the "${board.name}" board)\n` +
     (extra ? `  ${extra}\n` : '') +
     `  "${body.slice(0, 80)}${body.length > 80 ? '…' : ''}"\n` +
-    `  they'll see it when they next take a turn.` };
+    (chair ? chair : `  they'll see it when they next take a turn.`) };
 }
 
 const NOTE_USAGE =

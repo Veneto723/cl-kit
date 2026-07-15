@@ -175,9 +175,20 @@ function run(raw) {
           additionalContext: identity
             + `[arc] The role claim was already handled by a hook — the claim is DONE:\n`
             + `${r.message}\n\n`
-            + `Your ONLY job this turn: make this session reachable while idle.\n`
+            + `Your job this turn — nothing else:\n`
             + `  1. run in the BACKGROUND (run_in_background: true)  →  arc join ${r.role}\n`
-            + `  2. Say, in ONE line, that you are standing by as "${r.role}" — then STOP.\n`
+            + (r.duty
+              ? `  2. READ ${r.duty.path} — that is this role's charter, written before you and\n`
+                + `     already true. ADOPT it; do not rewrite it from memory. It is what peers read\n`
+                + `     to decide what is yours.\n`
+              : `  2. WRITE ${require('./arc-duty').dutyRel(r.role)} — you are the first "${r.role}" here, so\n`
+                + `     say what this role owns, in 3 short lines:\n`
+                + `       owns: <what is yours in this repo>\n`
+                + `       send me: <what a peer should hand you, in what shape>\n`
+                + `       not me: <the boundary — what you do NOT do>\n`
+                + `     Peers read it to route work to you, and it OUTLIVES this session: it is how a\n`
+                + `     future peer knows this chair exists at all. Commit it with your next commit.\n`)
+            + `  3. Say, in ONE line, that you are standing by as "${r.role}" — then STOP.\n`
             + `     Do not start work nobody asked for, and do not offer any.\n`
             + `(That background command blocks until a note lands, then EXITS — the exit is what\n`
             + `wakes this session. Without it, notes sit unread until a human types something.)`,

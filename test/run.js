@@ -1170,6 +1170,101 @@ try {
 // <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
 // does the claiming + arming in the new session's first turn. These tests inject a spawn
 // recorder — nothing real opens.
+// ---- the duty roster: what a ROLE owns, declared once, outliving every session -------
+// `research` used to be just a STRING. An agent asking "is this research's job or mine?" could
+// only guess — and when research was CLOSED the string said nothing at all, so a peer would
+// either do someone else's work or spawn a duplicate under a synonym. A declaration is the data
+// that makes the question answerable, and because it is a FILE it answers just as well when
+// nobody is home. Committed (a project fact, same on every machine); presence stays local.
+section('duty roster (.arc/roles — a role outlives the session holding it)');
+try {
+  const D = require(path.join(SRC, 'arc-duty.js'));
+  const RM7 = require(path.join(SRC, 'arc-board.js'));
+  const F8 = require(path.join(SRC, 'arc-notes.js'));
+
+  const drepo = fs.mkdtempSync(path.join(os.tmpdir(), 'duty-'));
+  spawnSync('git', ['init', '-q'], { cwd: drepo });
+  const dbd = RM7.resolveBoard(drepo); RM7.ensureBoard(dbd);
+  fs.mkdirSync(path.join(drepo, '.arc', 'roles'), { recursive: true });
+  fs.writeFileSync(path.join(drepo, '.arc', 'roles', 'research.md'),
+    '# research\n\nowns: investigation and docs; READ-ONLY on code\nsend me: bounded questions\nnot me: writing code\n');
+
+  ok('a duty is read from .arc/roles/<role>.md, keyed by ROLE (not by session)',
+    (D.readDuty(dbd, 'research') || {}).summary === 'investigation and docs; READ-ONLY on code');
+  ok('...and the path it reports is repo-relative (identical on every machine)',
+    D.readDuty(dbd, 'research').path === '.arc/roles/research.md');
+  ok('the summary prefers the `owns:` line — that is the one line a peer needs to route work',
+    D.dutySummary('# x\n\nowns: the thing\nsend me: stuff') === 'the thing');
+  ok('...and falls back to the first prose line, so a free-form charter still surfaces something',
+    D.dutySummary('# x\n\njust some prose here\n') === 'just some prose here');
+
+  // THE ROSTER: declarations merged with claims. The `closed` row is the whole point — the state
+  // an agent could not see before, and the one that decides invite-vs-do-it-myself.
+  const ros = D.roster(dbd, [{ role: 'android' }]);
+  const research = ros.find((r) => r.role === 'research');
+  const android = ros.find((r) => r.role === 'android');
+  ok('a DECLARED role with nobody in it shows as closed — an empty chair you can read',
+    research && research.declared === true && research.live === false && !!research.summary);
+  ok('a LIVE role with no declaration shows as undeclared (a nudge, not a lie)',
+    android && android.live === true && android.declared === false);
+  ok('live roles sort first (you can act on them now)', ros[0].role === 'android');
+
+  // THE BLACK HOLE, closed. A note to a role nobody holds used to return a cheerful ✓ and
+  // nothing else; a request would then have the sender arm a listener and wait forever.
+  const AS = 'duty-sess-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${AS}.json`),
+    JSON.stringify({ pid: process.pid, cwd: drepo, convId: 'dc' }));
+  F8.requestRole(AS, 'android', drepo);
+
+  const req = F8.requestNote(AS, 'research --kind request "why does the tap drop?"', drepo);
+  ok('a note to an EMPTY CHAIR still posts (the cursor is per-role — it keeps)', req.ok === true);
+  ok('...but says so, loudly, instead of a bare ✓',
+    /NOBODY HOLDS "research"/.test(req.message));
+  ok('...and uses the DUTY to make the warning actionable (the chair is real, revive it)',
+    /IS a declared role/.test(req.message) && /investigation and docs/.test(req.message)
+    && /arc:invite research/.test(req.message));
+  ok('...and a REQUEST is called out as never-answerable — do not go idle on it',
+    /NEVER be answered/.test(req.message) && /Do not go\n {4}idle/.test(req.message));
+
+  const info = F8.requestNote(AS, 'ghost "heads up"', drepo);
+  ok('an UNDECLARED, unheld role says the repo has no such job at all',
+    /does not declare a "ghost" role/.test(info.message));
+  ok('...and a non-request note is told it keeps for whoever claims the role next',
+    /It keeps:/.test(info.message));
+
+  // A live target must stay silent — the warning has to be rare or it is noise.
+  const BS = 'duty-live-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${BS}.json`),
+    JSON.stringify({ pid: process.pid, cwd: drepo, convId: 'dc2' }));
+  F8.requestRole(BS, 'research', drepo);
+  ok('a note to a LIVE role is not warned about (no noise when the chair is filled)',
+    !/NOBODY HOLDS/.test(F8.requestNote(AS, 'research "ping"', drepo).message));
+
+  // Claiming a role INHERITS its charter — the duty belongs to the role, not the holder.
+  const claim = F8.requestRole(BS, 'research', drepo);
+  ok('claiming a declared role tells you to ADOPT the existing charter, not rewrite it',
+    /already declared/.test(claim.message) && /it is yours now/i.test(claim.message));
+  const fresh = F8.requestRole(AS, 'android', drepo);
+  ok('claiming an UNdeclared role asks you to write it (you are the first in this chair)',
+    /NOT DECLARED/.test(fresh.message) && /\.arc\/roles\/android\.md/.test(fresh.message));
+
+  // The roster is what `arc role` shows — one line per role, full charter one Read away.
+  const q = F8.requestRole(AS, '', drepo);
+  ok('`arc role` renders the roster with live/closed marks and the owns: summary',
+    /roster:/.test(q.message) && /● research/.test(q.message)
+    && /investigation and docs/.test(q.message));
+
+  // The Stop hook must not tell you to wait for an answer that cannot come.
+  const un = F8.unarmedRequests(AS, drepo);
+  ok('unarmedRequests marks whether each target is actually live (arming a dead chair is futile)',
+    un.notes.length > 0 && un.notes.every((n) => 'toLive' in n));
+
+  fs.rmSync(drepo, { recursive: true, force: true });
+  for (const s of [AS, BS]) for (const f of [`arc-state-${s}.json`, `arc-role-${s}.json`]) {
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', f)); } catch {}
+  }
+} catch (e) { ok('duty roster', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- peer identity: a fork believes it is the session it was forked FROM -------------
 // arc:invite forks the caller's conversation into the peer, so the peer inherits a transcript in
 // which "the assistant" has been talking to the human for hours. Its default self-model is

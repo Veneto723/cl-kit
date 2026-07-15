@@ -89,10 +89,20 @@ function run(raw) {
     // A live listener already guarantees the wake — the reply will exit it and re-invoke us.
     // Telling the agent to arm what is armed is exactly the nag this hook promises not to be.
     if (require('./arc-await').isWaiting(session)) return null;
-    const asked = open.notes.map((n) => `#${n.seq} → ${n.to || 'everyone'}: "${String(n.body).replace(/\s+/g, ' ').slice(0, 60)}"`).join('\n  ');
+    const asked = open.notes.map((n) => `#${n.seq} → ${n.to || 'everyone'}${n.toLive === false ? ' [EMPTY CHAIR]' : ''}: "${String(n.body).replace(/\s+/g, ' ').slice(0, 60)}"`).join('\n  ');
+    // A request whose target is GONE cannot be answered — and the peer may have closed AFTER the
+    // ask, so nothing warned at post time. Telling this agent to arm a listener would be telling
+    // it to wait forever. Name the empty chair and give it the only two real options.
+    const dead = open.notes.filter((n) => n.toLive === false);
+    const deadLine = dead.length
+      ? `\n⚠ ${dead.length === 1 ? 'One of those is' : `${dead.length} of those are`} addressed to a role NOBODY HOLDS `
+        + `(${[...new Set(dead.map((n) => `"${n.to}"`))].join(', ')}). Waiting cannot help: nobody is there to answer.\n`
+        + `  Put someone in the chair →  arc:invite ${dead[0].to}   (it reads the note on arrival)\n`
+        + `  …or drop it and do the work yourself / with a subagent.\n`
+      : '';
     out({
       decision: 'block',
-      reason: `[arc] ${open.notes.length} request(s) you asked a peer are STILL UNANSWERED:\n  ${asked}\n\n`
+      reason: `[arc] ${open.notes.length} request(s) you asked a peer are STILL UNANSWERED:\n  ${asked}\n${deadLine}\n`
         + `They answer on their own schedule, and nothing can wake an idle session from outside. `
         + `If you want the answer, arm the waker before you stop:\n`
         + `  run it in the BACKGROUND (run_in_background: true), in whichever shell you use  →  arc join ${open.role}\n\n`
