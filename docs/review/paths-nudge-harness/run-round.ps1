@@ -1,4 +1,4 @@
-# Runs ONE interleaved round: starts a worker trial in each arm (a0, a, b1),
+﻿# Runs ONE interleaved round: starts a worker trial in each arm (a0, a, b1),
 # then polls until every arm has DECIDED — replied to dispatch, or deferred to
 # edge (with a grace window for secondary data) — or the cap hits.
 # Exit 0 = all decided; exit 2 = cap hit (score from artifacts anyway).
