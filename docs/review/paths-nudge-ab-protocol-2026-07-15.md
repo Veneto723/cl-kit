@@ -19,14 +19,17 @@
 - **H-marginal (A vs B1):** a `paths: <globs>` block in the owner's duty file adds deference **on top of** the `owns:` prose that already ships today. **Falsified if** deference B1 ≈ A.
 - A0 additionally controls for "agents defer to any live peer regardless of relevance."
 
-## Routing (predefined, rate-aware — an arm is HIGH ≥3/5, LOW ≤1/5, MID 2/5)
+## Routing (predefined, rate-aware — an arm is HIGH ≥5/10, LOW ≤2/10, MID 3–4/10)
 
-| observation | route |
-|---|---|
-| A0 LOW, A HIGH | ownership declarations WORK, and `owns:` — already shipped — is the mechanism. Then: B1 >> A → also ship the `paths:` convention; B1 ≈ A → `owns:` saturates, do NOT ship 3b0a124's declaration parsing for deference; any hook must beat a saturated baseline |
-| A0 ≈ A, both LOW | declarations inert at the point of contact; the hook's late echo is the only candidate left; needs 3b0a124 pushed + stage 0 before any B2 run |
-| B1 >> A (whatever A0) | the `paths:` block adds real marginal value — ship the convention; the hook question becomes "does it add on top of B1" |
-| A0 HIGH | deference is not ownership-driven (agents defer to any live peer); the mechanism premise is confounded — report as a diagnostic finding, ship nothing on this evidence |
+> Amendment 3 (2026-07-15, still pre-scoring; code's note #30 caught three contract defects): the n=5 thresholds that previously stood in this heading are dead — the Amendment-2 scale above is the only scale. The cells below are evaluated **in order; the first matching row routes and evaluation stops** — no two cells can both apply.
+
+| # | observation | route |
+|---|---|---|
+| 1 | A0 HIGH | **VETO — ship nothing on this run's evidence.** Deference is not ownership-driven (workers defer to a live peer whose duty is irrelevant); every other contrast sits on a falsified premise. Any significant A/B1 gaps are still *reported* as diagnostic input, but they route to REDESIGN of the measure, never to a ship. |
+| 2 | B1 >> A (Fisher p<.05) | the `paths:` block adds real marginal value over prose — ship the convention; the hook question becomes "does it add on top of B1" |
+| 3 | A0 LOW, A HIGH | ownership declarations WORK, and `owns:` — already shipped — is the mechanism. B1 ≈ A here means `owns:` saturates: do NOT ship 3b0a124's declaration parsing for deference; any hook must beat a saturated baseline |
+| 4 | A0 ≈ A, both LOW | declarations inert at the point of contact; the hook's late echo is the only candidate left; needs 3b0a124 pushed + stage 0 before any B2 run |
+| 5 | any named contrast MID | **NOT DEMONSTRATED** for that contrast. The +5/arm escalation (one step) spends on the *deciding* contrast; if both named contrasts are MID, **A0-vs-A wins the escalation** — H-ownership is the foundational question, and H-marginal is meaningless until it is settled. After escalation, re-enter this table once with the combined n; if still MID, the readout is "not demonstrated", full stop. |
 
 ## Screen rule (predefined)
 
