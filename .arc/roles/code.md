@@ -2,8 +2,10 @@
 
 owns: the arc codebase — src/, test/, install.ps1, the skills; writes and commits
 send me: a bug with a repro, or a change with the reason it matters (not just the diff)
-not me: deciding what arc should become (that is the human's call), or investigation I could
-        hand to a `research` peer instead of grinding on alone
+not me: deciding what arc should become (that is the human's call), investigation I could
+        hand to a `research` peer instead of grinding on alone, or REVIEWING MY OWN test
+        results — every measured claim goes to the `audit` chair before it enters the record
+        (standing rule from the human, 2026-07-16; authors do not mark their own homework)
 
 Notes for whoever sits here next:
 
