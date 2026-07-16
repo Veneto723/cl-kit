@@ -608,6 +608,27 @@ const INJECT_MAX = 4000;      // well under the 10k cap, leaving board for the f
 // A BROADCAST is ambient FYI addressed to nobody in particular; that is what a preview is for.
 // Either way, a clip now SAYS SO and names the command that shows the rest — an ellipsis is not a
 // warning, and silent truncation reads exactly like a peer who answered badly.
+// THE WARNING COSTS ~95 CHARS. So hiding fewer than that is a NET LOSS of frame — you spend more
+// lines saying "there is more" than the more would have taken. Measured on arc's own first
+// cross-board broadcast: a 404-char note against a 400 limit hid FOUR characters and spent ninety
+// to announce it, and the four it ate were the closing `ipe>"` of the example command the note
+// existed to teach. Reported from whalephone, which had to run `arc notes all` to recover them.
+// So: a note within SLACK of the limit prints WHOLE. This is not politeness, it is arithmetic.
+const CLIP_SLACK = 140;
+// AND NEVER MID-WORD. A preview is read by a model that then decides whether to fetch the rest;
+// cutting inside a token makes the last thing it sees a lie ("gr" is not a word). Back up to the
+// last space, but only if one is CLOSE — a body with no spaces near the cut (a URL, a base64 blob)
+// gets a hard cut rather than losing a third of its preview to word-hunting.
+function clipBody(body, limit) {
+  const s = String(body);
+  if (s.length <= limit + CLIP_SLACK) return s;
+  let cut = s.lastIndexOf(' ', limit);
+  if (cut < limit - 60) cut = limit;                     // no space nearby: hard cut, keep the frame
+  const hidden = s.length - cut;
+  return s.slice(0, cut).trimEnd()
+    + `…\n      ⚠ CLIPPED — ${hidden} more chars you have NOT seen. Read it whole before acting:  arc notes all`;
+}
+
 const BODY_CLIP = 400;        // broadcasts: a preview is the point
 const DIRECT_CLIP = 3500;     // notes to YOU: the packet, bounded only so one note cannot eat the frame
 
@@ -629,10 +650,7 @@ function injection(session, cwd) {
       // Directed at ME = my work, delivered whole. A broadcast = ambient, previewed. See the
       // constants above for why this distinction is load-bearing rather than cosmetic.
       const limit = n.to === role ? DIRECT_CLIP : BODY_CLIP;
-      const over = n.body.length - limit;
-      const body = over > 0
-        ? n.body.slice(0, limit) + `…\n      ⚠ CLIPPED — ${over} more chars you have NOT seen. Read it whole before acting:  arc notes all`
-        : n.body;
+      const body = clipBody(n.body, limit);
       const kind = n.kind && n.kind !== 'info' ? `  <${n.kind}>` : '';
       const thread = n.replyTo ? `  ↩ re #${n.replyTo}` : '';
       const dead = sup.get(n.seq);

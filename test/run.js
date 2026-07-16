@@ -3235,6 +3235,34 @@ try {
   ok('...and the clip SAYS SO, with the command that shows the rest',
     !!injB && /⚠ CLIPPED — \d+ more chars/.test(injB.text) && /arc notes all/.test(injB.text));
 
+  // A CLIP THAT COSTS MORE THAN IT SAVES IS A NET LOSS. The warning is ~95 chars, so hiding four
+  // spends ninety to announce them. Measured on arc's OWN first cross-board broadcast: a 404-char
+  // note against a 400 limit ate the closing `ipe>"` of the example command it existed to teach,
+  // and whalephone had to run `arc notes all` to recover FOUR characters. Reported from there.
+  R2.markRead(board2, 'coding');
+  const justOver = 'JUST-OVER ' + 'z'.repeat(380) + ' TAIL-KEPT';
+  R2.appendNote(board2, { from: 'research', to: null, body: justOver });
+  const injSlack = F.injection('sb', repo2);
+  ok('a broadcast just OVER the limit prints WHOLE — the warning costs more than it hides',
+    !!injSlack && injSlack.text.includes('TAIL-KEPT') && !/⚠ CLIPPED/.test(injSlack.text));
+
+  // AND NEVER MID-WORD. A preview is read by a model deciding whether to fetch the rest; cutting
+  // inside a token makes the last thing it sees a lie — "gr" is not a word.
+  R2.markRead(board2, 'coding');
+  R2.appendNote(board2, { from: 'research', to: null, body: ('alpha bravo charlie delta '.repeat(60)) });
+  const injWord = F.injection('sb', repo2);
+  const preview = injWord && injWord.text.split('…')[0];
+  ok('...and a real clip lands on a WORD boundary, not mid-token',
+    !!preview && /(alpha|bravo|charlie|delta)$/.test(preview.trimEnd()));
+
+  // A body with no spaces near the cut (a URL, a base64 blob) must HARD-cut: word-hunting would
+  // throw away most of the preview to avoid a boundary that does not exist.
+  R2.markRead(board2, 'coding');
+  R2.appendNote(board2, { from: 'research', to: null, body: 'h'.repeat(900) });
+  const injBlob = F.injection('sb', repo2);
+  ok('...but a space-less blob still hard-cuts, rather than losing the preview to word-hunting',
+    !!injBlob && injBlob.text.split('…')[0].length > 300);
+
   // a burst must be ranked + summarised, never dumped (the 10k cap is a hard limit)
   for (let i = 0; i < 80; i++) R2.appendNote(board2, { from: 'research', to: 'coding', body: 'filler '.repeat(40) + i });
   const big = F.injection('sb', repo2);
