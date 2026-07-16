@@ -448,8 +448,22 @@ function requestNote(session, arg, cwd, opts) {
   // Name the board it ACTUALLY landed on. Reporting the sender's own board for a cross-board post
   // would be the same class of lie as the staffing message that promised "starts FRESH" a commit
   // after birth began forking: a confirmation that describes something other than what happened.
+  // REPORT WHAT WAS STORED, NOT WHAT WAS SENT — they are not always the same, and the gap was
+  // invisible. `arc.cmd` is `node arc-runner.js %*`, and cmd.exe ends the argument list at a
+  // NEWLINE: every multi-line body posted through that shim arrives cut at its first paragraph,
+  // and the CLI printed a cheerful ✓ over the top of it. Reported from the whalephone board
+  // (#129) after three real losses in one session — a 4,407-char review stored as 536, handoffs
+  // that kept their PROMISE ("2 build items below") and dropped the SUBSTANCE. It selects for
+  // exactly the notes someone took care over, so it stays invisible until it costs the most.
+  // arc CANNOT detect the cut (the bytes were gone before the runner ran) — but it can say what
+  // it actually holds, and let the sender see 4,407 leave and 536 land. The reporter's own words:
+  // the real defect is "a success report with no verification behind it". That is the same fault
+  // this repo spent the day finding in a test whose fixture could not fail — a green light nobody
+  // wired to anything. So every post now carries its own receipt.
+  const stored = note.body.length;
   return { ok: true, message:
-    `✓ note #${seq} posted for ${to || 'everyone'} (from "${crossFrom || me}", on the "${target.name}" board)\n` +
+    `✓ note #${seq} posted for ${to || 'everyone'} (from "${crossFrom || me}", on the "${target.name}" board)` +
+    `  — ${stored} chars stored\n` +
     (crossFrom ? `  ⇄ CROSS-BOARD: this left "${board.name}" and landed on "${target.name}". One-way — they\n`
                + `    cannot reply to you here. Anything you need BACK goes through your human.\n` : '') +
     (extra ? `  ${extra}\n` : '') +

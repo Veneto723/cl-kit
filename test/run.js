@@ -3112,6 +3112,7 @@ try {
   ok('arc:note appends', F.requestNote('sa', 'coding P-014 spec changed', repo2).ok === true);
   ok('arc:note broadcast (all)', F.requestNote('sa', 'all repo layout moved', repo2).ok === true);
 
+
   // notes readout + rd()-only cursor
   const n1 = F.requestNotes('sb', '', repo2);
   ok('arc:notes shows both (addressed + broadcast)', /2 new from research/.test(n1.message));
@@ -3132,6 +3133,28 @@ try {
   ok('refreshRole re-asserts the claim after restart', rr && rr.ok === true && rr.role === 'coding');
   ok('and the role still resolves for that session', F.getRole('sb', board2) === 'coding');
   ok('refreshRole is a no-op for a session with no role and no conversation', F.refreshRole('zz', 999, repo2) === null);
+
+  // THE POST CONFIRMATION IS A RECEIPT, NOT A CHEER. `arc.cmd` is `node arc-runner.js %*`, and
+  // cmd.exe ends the argument list at a NEWLINE — so a multi-line body posted through that shim
+  // arrives cut at its first paragraph, and the CLI printed a ✓ over the top of it. Reported from
+  // whalephone (#129) after three real losses in one session: a 4,407-char review stored as 536,
+  // handoffs that kept their PROMISE ("two items below") and dropped the SUBSTANCE. arc cannot see
+  // the cut — the bytes died in the shim, before the runner ran — but it must never claim more
+  // than it holds. So the number it prints is read back off the STORED body, and asserted here
+  // against the ledger itself: a receipt that ever reports the SENT length, or a hardcoded one,
+  // fails instead of reassuring.
+  // On its OWN board: this posts a note, and the shared fixture's neighbours count unread.
+  const rrepo = path.join(base2, 'receipt'); fs.mkdirSync(path.join(rrepo, '.git'), { recursive: true });
+  const rboard = R2.resolveBoard(rrepo); R2.ensureBoard(rboard);
+  mkSession('rc', process.pid); F.requestRole('rc', 'research', rrepo);
+  const multiBody = 'PROMISE: two items below\n\nITEM ONE — the substance\nITEM TWO — also the substance';
+  const rcpt = F.requestNote('rc', 'coding ' + multiBody, rrepo);
+  const storedBody = R2.allNotes(rboard).slice(-1)[0].body;
+  const claimed = (rcpt.message.match(/(\d+) chars stored/) || [])[1];
+  ok('a post reports the STORED length — a silent truncation cannot hide behind a ✓',
+    rcpt.ok === true && claimed !== undefined && Number(claimed) === storedBody.length);
+  ok('...and a multi-line body survives newlines end to end (the shim is what cut them, not arc)',
+    storedBody === multiBody && storedBody.includes('ITEM TWO'));
 
   // ---- LEGACY SHIMS: the board/peer/claim rename must not orphan LIVE state -----------
   // A board used to be a "room" and a claim used to be a "lease". Sessions were live when the
