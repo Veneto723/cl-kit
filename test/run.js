@@ -3156,6 +3156,23 @@ try {
   ok('...and a multi-line body survives newlines end to end (the shim is what cut them, not arc)',
     storedBody === multiBody && storedBody.includes('ITEM TWO'));
 
+  // --body-file: THE ROOT FIX for whalephone #129. The receipt above makes a truncation VISIBLE;
+  // this makes it IMPOSSIBLE. cmd.exe cuts the argument list at a newline before arc ever starts,
+  // so nothing arc does can recover the bytes — the body must not be in argv at all. A path has no
+  // newlines. Asserted against the LEDGER: the file's full text, newlines and all, is what lands.
+  const bfPath = path.join(rrepo, 'packet.md');
+  const bfBody = 'PROMISE: three items\n\nONE — survives\nTWO — survives\nTHREE — the tail cmd.exe eats';
+  fs.writeFileSync(bfPath, bfBody + '\n');            // a real editor leaves a trailing newline
+  const bf = F.requestNote('rc', 'coding --kind request --body-file ' + bfPath, rrepo);
+  const bfStored = R2.allNotes(rboard).slice(-1)[0];
+  ok('--body-file carries a multi-line body whole — the text never enters argv, so it cannot be cut',
+    bf.ok === true && bfStored.body === bfBody && bfStored.kind === 'request'
+    && /(\d+) chars stored/.test(bf.message));
+  ok('--body-file refuses when an inline body is ALSO given (one would silently win)',
+    F.requestNote('rc', 'coding --body-file ' + bfPath + ' and some inline text', rrepo).ok === false);
+  ok('--body-file names an unreadable path instead of posting an empty note',
+    F.requestNote('rc', 'coding --body-file ' + path.join(rrepo, 'nope.md'), rrepo).ok === false);
+
   // ---- LEGACY SHIMS: the board/peer/claim rename must not orphan LIVE state -----------
   // A board used to be a "room" and a claim used to be a "lease". Sessions were live when the
   // rename landed, holding state written in the old shape. Reading only the new keys would

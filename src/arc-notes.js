@@ -318,16 +318,34 @@ function requestNote(session, arg, cwd, opts) {
   // OPTIONAL structure. A bare `arc note all "build is broken"` must stay exactly as cheap as
   // it always was — these only matter when the note is a request, an answer, or a retraction.
   let rest = m[2];
-  let kind = null, replyTo, supersedes, boardArg, mm;
+  let kind = null, replyTo, supersedes, boardArg, bodyFile, mm;
   for (;;) {
     if ((mm = rest.match(/^--board[=\s]+(\S+)\s*/i))) { boardArg = mm[1]; rest = rest.slice(mm[0].length); continue; }
+    if ((mm = rest.match(/^--body-file[=\s]+(\S+)\s*/i))) { bodyFile = mm[1]; rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^--kind[=\s]+(\S+)\s*/i))) { kind = mm[1].toLowerCase(); rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^--reply-to[=\s]+#?(\d+)\s*/i))) { replyTo = parseInt(mm[1], 10); rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^--supersedes[=\s]+#?(\d+)\s*/i))) { supersedes = parseInt(mm[1], 10); rest = rest.slice(mm[0].length); continue; }
     break;
   }
-  const body = rest.trim().replace(/^["']|["']$/g, '');
-  if (!body) return { ok: false, message: 'the note is empty.' };
+  // --body-file: THE BODY NEVER RIDES IN ARGV. This is the root fix for the truncation whalephone
+  // reported (#129) and the only one that makes it IMPOSSIBLE rather than merely visible: arc.cmd
+  // is `node arc-runner.js %*`, and cmd.exe ends the argument list at a NEWLINE, so a multi-line
+  // body posted through that shim is already cut before the runner starts. Nothing downstream can
+  // recover bytes that were never passed. A path has no newlines, so it cannot be cut — and the
+  // file is read here, in node, where a newline is just a byte.
+  let body;
+  if (bodyFile !== undefined) {
+    if (rest.trim()) return { ok: false, message:
+      `--body-file and an inline body are both present — pick one. The file would win and the text\n` +
+      `  you typed would vanish silently, which is the exact failure --body-file exists to end.` };
+    const p = path.resolve(String(bodyFile).replace(/^["']|["']$/g, ''));
+    try { body = fs.readFileSync(p, 'utf8'); }
+    catch (e) { return { ok: false, message: `--body-file "${p}" is unreadable: ${e.code || e.message}` }; }
+    body = body.replace(/\s+$/, '');                 // a trailing newline is the editor's, not yours
+  } else {
+    body = rest.trim().replace(/^["']|["']$/g, '');
+  }
+  if (!body) return { ok: false, message: bodyFile !== undefined ? `--body-file "${bodyFile}" is empty.` : 'the note is empty.' };
   if (kind && !R.KINDS.includes(kind)) {
     return { ok: false, message: `unknown --kind "${kind}" — one of: ${R.KINDS.join(' · ')}` };
   }
@@ -475,9 +493,17 @@ const NOTE_USAGE =
   // NB the examples teach `--reply-to 8`, NOT `#8`: this usage ALSO surfaces on the terminal
   // path (arc note …), where `#` starts a comment in BOTH sh and PowerShell — the rest of the
   // line silently vanishes and a garbage note posts "successfully". The parser accepts both.
-  'usage: arc:note <role|all> [--kind <k>] [--reply-to N] [--supersedes N] [--board <path>] <text>\n' +
+  'usage: arc:note <role|all> [--kind <k>] [--reply-to N] [--supersedes N] [--board <path>]\n' +
+  '                 [--body-file <path>] <text>\n' +
   '  plain:    arc:note coding "P-014 spec changed"          (kind defaults to info)\n' +
   '  ask:      arc:note research --kind request "can you check X?"\n' +
+  // The one flag that is not a convenience. See the --body-file block in requestNote.
+  '  LONG/multi-line: write the body to a file and pass the PATH — never the text:\n' +
+  '            arc note research --kind request --body-file ./packet.md\n' +
+  '            On Windows `arc` can resolve to arc.cmd, which is `node arc-runner.js %*`, and\n' +
+  '            cmd.exe ENDS THE ARGUMENT LIST AT A NEWLINE: a multi-line body is cut at its first\n' +
+  '            paragraph BEFORE arc ever runs, and the post still says OK. A path has no newlines,\n' +
+  '            so it cannot be cut. Every post also reports "N chars stored" — check it.\n' +
   '  another board: arc note code --board E:/arc "arc\'s stop hook fires twice when …"\n' +
   '            ← one-way ANNOUNCEMENT to a DIFFERENT repo\'s board; asks your human first, arrives\n' +
   '              as "<thisboard>/<yourrole>". No requests, no replies: they cannot answer you there.\n' +
