@@ -1,0 +1,5 @@
+# The ledger is APPEND-ONLY: every line is a whole note and no line is ever edited.
+# git's default merge would write <<<<<<< markers INTO it and the board would stop
+# parsing. `union` keeps both sides' lines instead. Merge-safety also needs notes to
+# be referenced by `id`, never by line position — see the design note in arc-board.js.
+notes.jsonl merge=union

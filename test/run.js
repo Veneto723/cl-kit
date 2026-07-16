@@ -1449,6 +1449,51 @@ try {
       const r = spawnSync('git', ['check-ignore', '.arc/roles/code.md'], { cwd: old, encoding: 'utf8' });
       return r.status !== 0; })());
 
+  // WHAT TRAVELS AND WHAT CANNOT — asked of GIT, not of the file's text, because git is the thing
+  // that actually decides. The ledger is merge-safe now (stable ids + per-origin ord + union
+  // merge), so it SHOULD be shareable across machines. Everything else in here is true on exactly
+  // one machine, and one of them is load-bearing:
+  //   origin.json is what makes two clones DISTINGUISHABLE. Share it and both write under a single
+  //   origin; ord is counted per-origin in FILE order, file order differs per clone, so the same
+  //   note gets a different ord on each machine and the cursor silently skips. Committing it would
+  //   undo the entire merge-safety design, quietly. This test is the guard on that.
+  const ig = (p) => spawnSync('git', ['check-ignore', p], { cwd: old, encoding: 'utf8' }).status === 0;
+  for (const f of ['origin.json', 'cursor-code.json', 'claim-code.json', 'anchor-state.json', 'spill-9.txt'])
+    fs.writeFileSync(path.join(old, '.arc', 'peer', f), '{}');
+  ok('the LEDGER is shareable — it is the one thing in the board worth sending to your other PC',
+    !ig('.arc/peer/notes.jsonl'));
+  ok('but origin.json NEVER travels — two clones sharing an origin breaks ord, and cursors skip',
+    ig('.arc/peer/origin.json'));
+  ok('...nor does any other machine-local state (a read position and a pid are true on ONE box)',
+    ig('.arc/peer/cursor-code.json') && ig('.arc/peer/claim-code.json')
+    && ig('.arc/peer/anchor-state.json') && ig('.arc/peer/spill-9.txt'));
+  ok('the board still carries its own merge rule, and that rule is shareable too',
+    !ig('.arc/peer/.gitattributes')
+    && /notes\.jsonl merge=union/.test(fs.readFileSync(path.join(old, '.arc', 'peer', '.gitattributes'), 'utf8')));
+
+  // THE MIGRATION IS MATCHED BY SHAPE, NOT BY BYTES — because arc's ignore body has been rewritten
+  // twice and the live board turned out to carry a THIRD text I had not enumerated ("# The fridge
+  // … the whole .plan/ area"), which an exact-match migration would have skipped in silence. Any
+  // comments + a lone `*` is arc's old rule from any era; upgrading only ADDS the ledger exception,
+  // so the original intent survives. Anything else is someone's own file and is left alone.
+  const mig = (body) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'gimig-'));
+    spawnSync('git', ['init', '-q'], { cwd: d });
+    const bd = RM8.resolveBoard(d); RM8.ensureBoard(bd);
+    fs.writeFileSync(path.join(bd.planDir, '.gitignore'), body);
+    RM8.ensureBoard(bd);                       // the migration point
+    const out = fs.readFileSync(path.join(bd.planDir, '.gitignore'), 'utf8');
+    fs.rmSync(d, { recursive: true, force: true });
+    return out;
+  };
+  const fridgeEra = '# The fridge: cross-session sticky notes. Coordination scratch, not a project\n'
+    + '# artifact — this ignores the whole .plan/ area (including this file), so the\n'
+    + "# project's own .gitignore never needs to know it exists.\n*\n";
+  ok('an ignore-everything body from ANY era migrates — including the one on the live board',
+    /!notes\.jsonl/.test(mig(fridgeEra)) && /!notes\.jsonl/.test(mig('*\n')));
+  ok('...but a .gitignore someone WROTE is never touched — we do not know their repo better',
+    mig('*\n!keep-this.txt\n') === '*\n!keep-this.txt\n' && mig('secret/\n') === 'secret/\n');
+
   // A BRAND-NEW board must simply be .peer — no legacy anything.
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'mig2-'));
   spawnSync('git', ['init', '-q'], { cwd: fresh });

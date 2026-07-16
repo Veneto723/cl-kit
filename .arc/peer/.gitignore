@@ -1,0 +1,12 @@
+# The board. What is SAID travels; what is RUNNING here does not.
+# An allowlist on purpose: this folder holds pids and read-positions, so anything
+# new stays ignored until someone lets it out deliberately.
+*
+!.gitignore
+!.gitattributes
+# The ledger: merge-safe (stable ids + per-origin ord + union merge), so it can be
+# shared across machines. See the design note at the top of arc-board.js.
+!notes.jsonl
+# NOT origin.json — it is what makes two clones distinguishable. Share it and both
+# write under one origin, ord diverges per clone, and cursors silently skip notes.
+# NOT cursor-*/claim-*/anchor — a read position and a pid are true on ONE machine.

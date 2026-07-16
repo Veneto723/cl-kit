@@ -76,12 +76,48 @@ const PLAN_DIR = path.join('.arc', 'peer');
 // Newest first. A machine that skipped a hop (home still on `.plan`) migrates straight here.
 const LEGACY_DIRS = ['.peer', '.plan'];
 const NOTES = 'notes.jsonl';
+// THE LEDGER TRAVELS; THE MACHINE STATE DOES NOT. An ALLOWLIST, so anything added here later is
+// ignored by default and has to be let out on purpose — the safe direction for a folder that holds
+// pids.
+//   notes.jsonl     what was SAID. Merge-safe (ids, per-origin ord, union merge), so it is the one
+//                   thing worth sharing: a peer on the other machine can read the whole history.
+//   origin.json     NEVER. It is what makes two clones DISTINGUISHABLE. Share it and both machines
+//                   write notes under one origin, their ord counts diverge (ord is counted per
+//                   origin in file order, and file order differs per clone), and the cursor starts
+//                   silently skipping — the precise failure the ids were built to stop. This is a
+//                   correctness constraint, not a preference.
+//   cursor-*.json   NEVER. "How far I have read" is per MACHINE. Committing it means one machine's
+//                   read position overwrites the other's — re-reads or, worse, skips.
+//   claim-*.json    NEVER. A claim is a PID + a conversation id. Both are meaningless on the other
+//                   PC, and a pulled claim would advertise a chair as held by a process that does
+//                   not exist there.
+//   spill-*, anchor, born-*  machine-local scratch.
+// Its sibling .arc/roles/ is not ignored at all: a role's duty is a project fact and commits.
 const GITIGNORE_BODY =
-  '# The board: cross-session sticky notes. Coordination scratch, not a project\n' +
-  '# artifact — this ignores the whole .arc/peer/ area (including this file), so\n' +
-  "# the project's own .gitignore never needs to know it exists. Its sibling\n" +
-  '# .arc/roles/ is NOT ignored: a role\'s duty is a project fact and commits.\n' +
-  '*\n';
+  '# The board. What is SAID travels; what is RUNNING here does not.\n' +
+  '# An allowlist on purpose: this folder holds pids and read-positions, so anything\n' +
+  '# new stays ignored until someone lets it out deliberately.\n' +
+  '*\n' +
+  '!.gitignore\n' +
+  '!.gitattributes\n' +
+  '# The ledger: merge-safe (stable ids + per-origin ord + union merge), so it can be\n' +
+  '# shared across machines. See the design note at the top of arc-board.js.\n' +
+  '!notes.jsonl\n' +
+  '# NOT origin.json — it is what makes two clones distinguishable. Share it and both\n' +
+  '# write under one origin, ord diverges per clone, and cursors silently skip notes.\n' +
+  '# NOT cursor-*/claim-*/anchor — a read position and a pid are true on ONE machine.\n';
+// Is this an IGNORE-EVERYTHING body — arc's own, from any era? Matched by SHAPE, not by bytes.
+// I tried enumerating the historical texts and the live board immediately produced a third I had
+// not listed ("# The fridge: ... the whole .plan/ area", from two renames ago), which would have
+// left the one board that matters silently unmigrated. The shape is the honest test: comments plus
+// a single `*` and nothing else. That is arc's old rule in every era, and upgrading it only ADDS an
+// exception for the ledger — the intent ("do not commit the scratch") is preserved either way.
+// A file carrying ANY other rule — especially a `!` negation — is already migrated or is someone's
+// own work, and is left alone.
+function isIgnoreAllBody(s) {
+  const rules = String(s).split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  return rules.length === 1 && rules[0] === '*';
+}
 // Governs notes.jsonl if the board is ever shared (git's default merge corrupts an append-only
 // ledger by writing conflict markers into it). Lives beside the ledger so a board carries its own
 // merge rule wherever it is cloned — no repo-root file to remember, nothing to configure.
@@ -147,8 +183,13 @@ function ensureBoard(board) {
     catch { /* someone raced us, or it is locked — keep using the legacy dir, still correct */ }
   }
   fs.mkdirSync(board.planDir, { recursive: true });
+  // MIGRATE, but only arc's OWN words. Every existing board carries the old ignore-everything body,
+  // and leaving it there would silently keep the ledger unshareable on exactly the machines that
+  // already have history worth sharing. Replaced ONLY when it still matches byte-for-byte — a board
+  // whose .gitignore someone edited is theirs, and we do not know better than they do.
   const gi = path.join(board.planDir, '.gitignore');
-  if (!fs.existsSync(gi)) fs.writeFileSync(gi, GITIGNORE_BODY);
+  let cur = null; try { cur = fs.readFileSync(gi, 'utf8'); } catch {}
+  if (cur === null || isIgnoreAllBody(cur)) fs.writeFileSync(gi, GITIGNORE_BODY);
   // The board declares its OWN merge, next to the file it governs — the same self-contained move as
   // the .gitignore above, and it costs nothing while the board stays ignored. It matters the moment
   // anyone shares one: git's DEFAULT merge on an append-only ledger writes conflict markers straight
