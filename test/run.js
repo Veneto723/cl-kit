@@ -2412,13 +2412,25 @@ try {
   const badExit = I.staffRole(VS, 'flaky', { spawn: () => ({ status: 1 }), hasWt: true, hasTranscript: () => false });
   ok('a launcher that exits non-zero is reported (never a silent no-tab)',
     badExit.ok === false && /could not open the new tab/.test(badExit.message));
-  const badTimeout = I.staffRole(VS, 'flaky', {
+  // A TIMEOUT IS NOT A FAILURE, and this test used to assert that it was. Reported by the peer it
+  // disowned: staffRole printed "no peer was started" while quiettest sat reading it — pwsh ->
+  // arc-runner -> claude.exe, alive, holding the role. The launcher DETACHES (wt hands off over
+  // COM; Start-Process returns before its child is up), so 5s elapsing means WE STOPPED WATCHING,
+  // not that nothing started. Worse than the wrong message: requestDelegate aborts on ok:false, so
+  // THE PACKET WAS NEVER POSTED — the orphan booted with no work, claimed the chair, and nothing
+  // came looking for it, because the one session that knew it might exist was told it did not.
+  // That is the INVERSE of the silent-no-tab above, and strictly worse: a no-tab wastes a claim; a
+  // ghost-with-no-task wastes a claim, a quota, and the chair.
+  const slow = I.staffRole(VS, 'flaky', {
     spawn: () => ({ status: null, error: { code: 'ETIMEDOUT' } }), hasWt: true, hasTranscript: () => false });
-  ok('...and a TIMEOUT (status null + ETIMEDOUT) is reported, not read as success',
-    badTimeout.ok === false && /ETIMEDOUT/.test(badTimeout.message));
+  ok('a TIMEOUT does NOT claim "no peer was started" — the spawn detaches and may have survived',
+    slow.ok === true && slow.unverified === true && !/no peer was started/.test(slow.message));
+  ok('...it says arc did not SEE it land, and how to check — an unverified spawn is not a plain ✓',
+    /did NOT see this land/.test(slow.message) && /arc role/.test(slow.message));
+  // ENOENT is different in kind: with no binary, nothing can have started. Keep it fatal.
   const badEnoent = I.staffRole(VS, 'flaky', {
     spawn: () => ({ status: null, error: { code: 'ENOENT' } }), hasWt: true, hasTranscript: () => false });
-  ok('...and a MISSING BINARY (status null + ENOENT) is reported, not read as success',
+  ok('...but a MISSING BINARY (ENOENT) stays fatal — nothing can start without it',
     badEnoent.ok === false && /ENOENT/.test(badEnoent.message));
 
   // The peer's tab must be identifiable. Claude Code sets the terminal title from the project
@@ -2502,6 +2514,20 @@ try {
   ok('...and the packet is posted as a REQUEST, so the caller is owed an answer',
     RM3.allNotes(RM3.resolveBoard(vrepo)).some((n) =>
       n.to === 'splitcheck' && n.kind === 'request' && /fix the login bug/.test(n.body)));
+  // THE PACKET MUST SURVIVE AN UNVERIFIED SPAWN — the half of quiettest's finding that actually
+  // hurt. requestDelegate aborts on !staffed.ok, so while a timeout was read as failure the packet
+  // was never posted: the orphan booted with no work, claimed the chair, and nothing ever came
+  // looking for it, because the one session that knew it might exist had been told it did not.
+  // Posting is safe in BOTH worlds — a note to an empty chair keeps for whoever claims it next —
+  // so the bad case costs one note and the good case saves a peer from booting blind.
+  const dTimeout = I.requestDelegate(VS, 'ghostpeer do the thing', vrepo, {
+    spawn: () => ({ status: null, error: { code: 'ETIMEDOUT' } }),
+    hasWt: true, hasTranscript: () => false, writeScript: () => 'C:/T/p.txt' });
+  ok('a timed-out spawn STILL posts the packet (an orphan must never boot with no work)',
+    dTimeout.ok === true && RM3.allNotes(RM3.resolveBoard(vrepo)).some((n) =>
+      n.to === 'ghostpeer' && n.kind === 'request' && /do the thing/.test(n.body)));
+  ok('...and says the spawn was unverified rather than printing a clean ✓',
+    /did NOT see this land/.test(dTimeout.message));
   // A SESSION whose own home is not a repo: there is no board to invite anyone onto.
   const noRepo3 = fs.mkdtempSync(path.join(os.tmpdir(), 'invite-nr-'));
   const VS3 = 'invite-norepo-' + process.pid;

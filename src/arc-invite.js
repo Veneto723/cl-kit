@@ -553,12 +553,39 @@ function staffRole(session, role, opts) {
   } catch (e) {
     return { ok: false, message: `could not open the new tab: ${e.message}` };
   }
-  if (!r || r.error || r.status !== 0) {
+  // A TIMEOUT IS NOT A FAILURE — it is us giving up on WATCHING. The launcher detaches (wt hands
+  // off over COM; Start-Process returns before its child is up), so when spawnSync's 5s elapses we
+  // kill powershell.exe and learn NOTHING about the peer, which by then may be booting happily.
+  // Reported live by the very peer it disowned: staffRole printed "no peer was started" while
+  // quiettest was reading it — pwsh -> arc-runner -> claude.exe, alive, holding the role.
+  //
+  // AND THE LIE WAS THE CHEAP HALF. requestDelegate aborts on ok:false, so THE PACKET IS NEVER
+  // POSTED: the orphan boots with no work, claims the chair anyway, and nothing ever comes looking
+  // for it — because the only session that knew it might exist was told it did not. That is the
+  // exact INVERSE of the silent-no-tab this guard was written to catch, and strictly worse: a
+  // no-tab wastes a claim, a ghost-with-no-task wastes a claim AND a quota AND the chair.
+  //
+  // So: ENOENT/spawn-error stays fatal (nothing can have started — the binary is not there), and a
+  // TIMEOUT becomes an HONEST UNCERTAINTY that keeps going. Posting the packet is safe either way:
+  // a note to an empty chair keeps for whoever claims it next, so the bad case costs one note and
+  // the good case saves an orphan. `exit code 0 was never evidence, and neither is ETIMEDOUT`
+  // — quiettest, note #61, which is the same lesson this guard's own comment already carries at
+  // the other end.
+  const timedOut = !!(r && r.error && (r.error.code === 'ETIMEDOUT' || /timed?.?out/i.test(String(r.error.message || ''))));
+  if (!r || (r.error && !timedOut) || (!r.error && r.status !== 0)) {
     const why = r && r.error ? r.error.code || r.error.message : `exit ${r ? r.status : '?'}`;
     return { ok: false, message: `could not open the new tab (${why}) — no peer was started.` };
   }
 
-  return { ok: true, role, revived: revive, trust, message:
+  // SAY THAT WE DID NOT SEE IT LAND. An unverified spawn must not wear the same ✓ as a verified
+  // one — that is how a lie gets believed twice.
+  const unsure = timedOut
+    ? `⚠ the launcher did not return within 5s, so arc did NOT see this land — but the spawn\n`
+      + `  DETACHES, so a peer may be booting right now. The packet below is posted either way (a\n`
+      + `  note to an empty chair keeps). Confirm with:  arc role    ← it appears within ~30s, or\n`
+      + `  it never started and the note simply waits.\n`
+    : '';
+  return { ok: true, role, revived: revive, trust, unverified: timedOut, message: unsure +
     (revive
       ? `✓ REVIVING "${role}" — ${wt ? 'new tab in this window' : (quiet ? 'MINIMISED console window — quiet spawn, it will not take your focus' : 'new console window')}.\n`
         + `  it resumes ${role}'s OWN conversation, so it comes back as itself: everything it\n`
