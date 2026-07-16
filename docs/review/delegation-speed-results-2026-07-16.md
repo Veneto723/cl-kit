@@ -2,6 +2,27 @@
 
 **Protocol:** [`delegation-speed-protocol-2026-07-16.md`](delegation-speed-protocol-2026-07-16.md) (+ Amendments 1–2). Harness: [`delegation-speed-harness/`](delegation-speed-harness/). Run: round 2, load-controlled, hidden spawn, 15 caller trials, **3 void/censored**. Round 1 was voided for a machine-load confound (Amendment 2); this is the clean pass on an audited clock.
 
+## ⚠ SCOPE — 2026-07-16 (the human's reframe, board #118; verified in source). **This study measured the regime arc mostly does NOT use.**
+
+**Nothing below is wrong; it is about the wrong case.** Every number here — the 1.78×, the skill stall, the backlog tax, the owner wake, the "comprehension" — was measured on agents that **had never seen this codebase**. arc's *primary* path is the one we never ran once.
+
+- **arc's design, verbatim** ([`arc-invite.js:10-13`](../../src/arc-invite.js)): *"REVIVE — the role was held before and its own conversation still exists → resume THAT, with **no `--fork-session`**. It comes back as **ITSELF**: everything it learned, still there… **This is the one that matters** — accumulated context is the entire reason a peer beats a subagent."*
+- **what we actually ran:** the warm arm calls `birthOwnerWarm` → `requestDelegate` on a role that had never existed → a **fresh, cold, amnesiac** session per trial. The cold arm spawned fresh too. **`REVIVE` was never exercised — not once.**
+
+So **1.78× is the WORST CASE**: a fresh router handing to a fresh owner. There are **three** states, and we measured one:
+
+| state | context | process | measured? |
+|---|---|---|---|
+| **FRESH** | knows nothing | cold | ✅ this study (both arms) |
+| **LIVE** | hot, listener armed | warm | ❌ ([standing-expert protocol](standing-expert-protocol-2026-07-16.md), blocked) |
+| **REVIVED** | **restored from disk** | **cold** | ❌ **arc's real path** |
+
+A revived owner skips all three arc taxes **by construction** — skill already in context, cursor already advanced, code already comprehended — paying only process boot (~7s) + model first turn (~9s).
+
+**The open question, and it cuts both ways:** a revived peer resumes a *large* conversation and therefore pays **prefill over all of it**. Revive trades *comprehension* cost for *context* cost, and **we have measured neither**. If prefill is cheap, revive collapses the hand-off tax and the reuse design wins outright. If prefill scales with history, **a peer gets slower the more it knows** — and "reuse beats spawn" has a ceiling nobody has seen, with the ugly corollary that arc's most experienced peers would be its slowest. (Plausible modifier, **unmeasured, do not assume**: prompt-cache TTL may make revive *bimodal* — cheap within the cache window, full prefill after — which would fit the fat-tail pattern below rather than contradict it.)
+
+**Everything below stands, scoped to: N=1, fresh→fresh delegation, on a task one agent can do with a ~0–9s solve.**
+
 ## ⚠ RETRACTION 2026-07-16 (board #99, verified by research #100): warm N=3 is GHOST DATA
 
 **The N=3 warm-delegation numbers below (189.4s median, "2.6× slower", "curves diverge") are INVALID and retracted.** Verified from transcripts: **both N=3 warm workers issued NO delegation at all** (`WORKER_ROUTED=NO`; the N=1 workers all routed at real timestamps). The owner edits scored into those trials were not caused by this worker routing — they are a harness leak. **Mechanism, verified (research #102, correcting the #99 first guess):** ONE **orphaned zombie worker** — session `9fa28d80`, born in aborted trial 4 at 05:01:44 — **survived the trial's VOID** (the harness `process.exit(3)`'d without reaping the late-spawned worker) and then delegated to the *fresh* owners of trials 5 (05:05:12–52) and 6 (05:10:13–16), dying only at 05:12:32. Both N=3 "data points" are that one ghost. The owners were **innocent** — they obeyed their park instruction and edited only when the ghost's note arrived; the fresh trial-5/6 workers routed nothing. The oracle (a **state** check — "tests pass" — not **causal**) is the *second* lock: it let the ghost's work be counted. The self arm is immune (its agent dies with its trial), so only the deleg arm rotted. **What is retracted:** warm N=3 = 189.4s, the ~2.6× at N=3, and "the curves diverge." **Delegation at N>1 is UNMEASURED, not measured-and-slow.** **What SURVIVES (clean):** warm N=1 133.0s vs self N=1 74.6s → **1.78× at N=1 stands**; self-flat (one agent, 3 bugs at N=1 cost, 74.6→73.7) stands on verified edits; the axis-3 / re-profile findings are N=1-based and stand. **Two locks owed before any N=3 re-run, in order:** (1) **REAP ON VOID** — the void path must kill the spawn by claim pid (never leave a spawn you cannot see; a late orphan with a task packet *works*, indistinguishably from a real worker). `arc close` does this as of a9aff30. (2) **CAUSAL ATTRIBUTION** — count only an edit whose author *started after* `t_start` (the same `procStart < claim.at` genuineness test arc already uses for chairs). Lock 1 is first because without it every re-run can be re-ghosted.
