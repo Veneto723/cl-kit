@@ -734,11 +734,29 @@ function closePeer(board, role, opts) {
     for (const c of t.children) if (kill(c)) killed.push({ pid: c, what: 'claude' });
     if (t.parent && kill(t.parent)) killed.push({ pid: t.parent, what: 'shell' });
   }
-  // The claim goes regardless: a chair held by a corpse is worse than an empty one — nothing may
-  // staff it, and `arc delegate` will keep refusing with "already held by a LIVE session".
-  try { fs.unlinkSync(claimPath(board, role)); } catch {}
+  // THE CLAIM IS THE REVIVE POINTER — CLOSE MUST NOT BURN IT. This used to unlink the claim file
+  // ("a chair held by a corpse is worse than an empty one"), and that reasoning belonged to the
+  // pre-genuineness era: a pid-less claim cannot read as held (isHolder requires a pid), so nothing
+  // refuses to staff the chair. What unlinking actually destroyed was `convId` — the ONLY thing
+  // vacantClaimForRole has to find the peer's own conversation — so `arc close` printed "REVIVABLE,
+  // not deleted" while guaranteeing the next delegate would silently BIRTH A STRANGER in the
+  // chair's name. Caught in production the first time a real standing peer was closed between
+  // assignments (audit, 2026-07-16): its transcript sat untouched on disk and the roster showed
+  // "empty chair" instead of "was here; REVIVE as itself". The close-then-revive round trip is the
+  // standing-duty lifecycle; the tombstone below is what makes the promise in close's own message
+  // true. Unlink only when there is no conversation to point at — then the chair really is bare.
+  // Read the claim RAW here, not through roleClaim: roleClaim is genuineness-filtered, so a dead
+  // pid reads as "no claim" — which is precisely the common close case, and filtering it would
+  // skip the tombstone for every peer that already exited. The kill above stays filtered (a
+  // recycled pid may be a stranger); the pointer below must not be.
+  const raw = readClaimFile(board, role);
+  if (raw && raw.convId) {
+    atomicWriteJson(claimPath(board, role), { role, sessionId: raw.sessionId || null, convId: raw.convId, at: Date.now() });
+  } else {
+    try { fs.unlinkSync(claimPath(board, role)); } catch {}
+  }
   clearBirth(board, role);
-  return { role, killed, hadClaim: !!claim };
+  return { role, killed, hadClaim: !!raw, revivable: !!(raw && raw.convId) };
 }
 
 // The pids around a runner: its parent shell and its claude child. Windows-only (WMI), and it must

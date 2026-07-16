@@ -754,11 +754,13 @@ function requestClose(session, arg, cwd, opts) {
   const r = (o.close || R.closePeer)(board, role, o);
   const what = r.killed.length ? r.killed.map((k) => `${k.what} (${k.pid})`).join(', ') : 'nothing running';
   return { ok: true, role, killed: r.killed, message:
-    `✓ closed "${role}" — killed ${what}; its chair is free.\n` +
+    `✓ closed "${role}" — killed ${what}; its chair is ${r.revivable ? 'vacant, and it keeps its seat' : 'free'}.\n` +
     (owed.length ? `  ⚠ it still owed ${owed.length} unanswered request(s) (#${owed.map((n) => n.seq).join(', #')}).\n`
                  + `    Those are now unanswerable. If the answer mattered, revive it: arc delegate ${role} "<packet>"\n`
                  + `    — its conversation is still on disk, so it comes back knowing everything it learned.\n` : '') +
-    `  Its transcript is untouched: a closed peer is REVIVABLE, not deleted.` };
+    (r.revivable
+      ? `  Its transcript is untouched: \`arc delegate ${role} "<packet>"\` brings it back AS ITSELF.`
+      : `  It never persisted a conversation, so there is nothing to revive — a new delegate starts fresh.`) };
 }
 
 module.exports = { staffRole, requestDelegate, requestClose, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript, spawnQuiet, spawnWindow };

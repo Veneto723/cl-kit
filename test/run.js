@@ -1660,6 +1660,14 @@ try {
       !RM7.roleClaim(BRD, 'kid') && !RM7.readBirth(BRD, 'kid'));
     ok('...reporting what it actually killed, by role in the tree',
       closed.killed.map((k) => k.what).join() === 'runner,claude,shell');
+    // THE CLAIM SURVIVES AS A PID-LESS TOMBSTONE — it is the REVIVE POINTER. Unlinking it made
+    // "REVIVABLE, not deleted" a lie: the transcript stayed but vacantClaimForRole had nothing to
+    // find it with, so the next delegate silently birthed a STRANGER. Caught in production the
+    // first time a real standing peer (audit) was closed between assignments.
+    const tomb = RM7.vacantClaimForRole(BRD, 'kid');
+    ok('close leaves the chair REVIVABLE: the tombstone keeps convId, holds nobody, blocks nothing',
+      closed.revivable === true && tomb && tomb.convId === 'kid-conv' && !tomb.pid
+      && !RM7.liveRoles(BRD).some((l) => l.role === 'kid'));
 
     // A DEAD PEER'S PID MAY BELONG TO A STRANGER BY NOW. Windows recycles pids, and this repo has
     // already been bitten by treating one as an identity (d7fae3a: a stranger squatting a closed
@@ -1671,8 +1679,15 @@ try {
     const g = RM7.closePeer(BRD, 'ghost', { tree: () => ({ parent: 5, children: [6] }), kill: () => { touched++; return true; } });
     ok('close kills NOTHING when the claim names an unprovable pid (it may be a stranger now)',
       touched === 0 && g.killed.length === 0);
+    // "Frees the chair" no longer means "deletes the file": the ghost had a conversation, so its
+    // tombstone stays as the revive pointer — while holding nobody (roleClaim null = staffable).
     ok('...but STILL frees the chair — a claim held by a corpse blocks staffing forever',
-      !RM7.roleClaim(BRD, 'ghost') && !fs.existsSync(path.join(BRD.planDir, 'claim-ghost.json')));
+      !RM7.roleClaim(BRD, 'ghost') && RM7.vacantClaimForRole(BRD, 'ghost').convId === 'ghost-conv');
+    // Only a chair with NOTHING to come back to is truly bare: no convId -> the file goes.
+    RM7.claimRole(BRD, 'bare', 999998, 'bare-sess', null);
+    RM7.closePeer(BRD, 'bare', { tree: () => ({ parent: null, children: [] }), kill: () => false });
+    ok('close with no conversation unlinks outright — a tombstone pointing nowhere is clutter',
+      !fs.existsSync(path.join(BRD.planDir, 'claim-bare.json')));
   }
   // YOU MAY ONLY CLOSE WHAT YOU SPAWNED — a board is shared, and ending someone else's peer
   // mid-conversation is not yours to do. Checked by CONVERSATION, not session id: a respawn must
@@ -1684,9 +1699,15 @@ try {
     ok('...and refuses SOMEONE ELSE\'S peer — theirs to close, not yours',
       theirs.ok === false && /not spawned by you/.test(theirs.message));
     RM7.recordBirth(RM7.resolveBoard(drepo), 'mine', 'dc');
-    const mine = CI.requestClose(AS, 'mine', drepo, { close: () => ({ role: 'mine', killed: [{ pid: 1, what: 'runner' }], hadClaim: true }) });
-    ok('...but closes YOUR OWN, and says a closed peer is REVIVABLE, not deleted',
-      mine.ok === true && /REVIVABLE, not deleted/.test(mine.message));
+    const mine = CI.requestClose(AS, 'mine', drepo, { close: () => ({ role: 'mine', killed: [{ pid: 1, what: 'runner' }], hadClaim: true, revivable: true }) });
+    ok('...but closes YOUR OWN, and says the peer comes back AS ITSELF',
+      mine.ok === true && /keeps its seat/.test(mine.message) && /back AS ITSELF/.test(mine.message));
+    // ...and does NOT promise revival it cannot deliver: a peer that never persisted a
+    // conversation gets the honest message, not the comforting one.
+    RM7.recordBirth(RM7.resolveBoard(drepo), 'mine2', 'dc');
+    const bare2 = CI.requestClose(AS, 'mine2', drepo, { close: () => ({ role: 'mine2', killed: [], hadClaim: true, revivable: false }) });
+    ok('close never promises revival without a conversation to revive',
+      bare2.ok === true && /nothing to revive/.test(bare2.message) && !/back AS ITSELF/.test(bare2.message));
   }
 
   // ---- quiet spawn: the only launch that cannot take the foreground -----------------------
