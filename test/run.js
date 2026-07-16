@@ -2987,6 +2987,39 @@ try {
   const rc = F.requestRole('sc', 'coding', repo2);
   ok('a third session is REFUSED a held role', rc.ok === false && /already held by a LIVE session/.test(rc.message));
 
+  // THE "RIVAL" WHO IS YOU. ARC_SESSION is pid-derived, so a Claude process that RESPAWNS gets a
+  // new one — and a caller that CACHED the old id asks under a name arc has never seen, so its own
+  // claim looks like a stranger's. Reported by whalephone/android (#58): four failed `arc join` in
+  // a row, each blaming a pid that WAS them post-respawn, while the Stop hook kept demanding a
+  // re-arm that kept failing. They escaped only by printing ARC_SESSION by hand and noticing it had
+  // changed. The CONVERSATION survives a respawn and was on the claim the whole time, uncompared.
+  {
+    const OLD = 'respawn-old-' + process.pid, NEW = 'respawn-new-' + process.pid;
+    const CONV = 'same-conv-6665bfca';
+    // both ids bridge to the SAME conversation — that is what makes them the same session
+    for (const s of [OLD, NEW]) {
+      fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`),
+        JSON.stringify({ pid: process.pid, cwd: repo2, convId: CONV }));
+    }
+    ok('(setup) the post-respawn session claims the role', F.requestRole(NEW, 'respawner', repo2).ok === true);
+    const stale = F.requestRole(OLD, 'respawner', repo2);
+    ok('a stale ARC_SESSION re-claiming its OWN role is told THAT IS YOU, not blamed on a rival',
+      stale.ok === false && /THAT IS YOU/.test(stale.message)
+      && !/Pick another name, or close that session/.test(stale.message));
+    ok('...showing BOTH ids, so the mismatch is visible instead of inferred',
+      stale.message.includes(OLD) && stale.message.includes(NEW));
+    ok('...and naming the root cause: ARC_SESSION is ambient, never cache it',
+      /CACHED ARC_SESSION/.test(stale.message) && /arc join respawner/.test(stale.message));
+    // A GENUINE rival — different conversation — must still be refused the old way, or this fix
+    // would hand one session another's cursor.
+    const OTHER = 'respawn-other-' + process.pid;
+    fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${OTHER}.json`),
+      JSON.stringify({ pid: process.pid, cwd: repo2, convId: 'a-different-conversation' }));
+    const rival = F.requestRole(OTHER, 'respawner', repo2);
+    ok('...but a DIFFERENT conversation is still refused as a real rival (no cursor sharing)',
+      rival.ok === false && /already held by a LIVE session/.test(rival.message) && !/THAT IS YOU/.test(rival.message));
+  }
+
   // Caught live in the first two-session drill: a responder launched in a NON-REPO dir (E:\)
   // claimed its role on a junk "e:\" board while its peer sat on "e:\arc" — two boards, zero
   // contact, no error anywhere. A claim in a non-repo must REFUSE and say where to go, and it

@@ -235,6 +235,35 @@ function requestRole(session, arg, cwd) {
     return { ok: false, message: `role "${role}" is being claimed by another session right now — try again in a moment.` };
   }
   if (!claim.ok) {
+    // IS THE "RIVAL" ACTUALLY YOU? ARC_SESSION is pid-derived, so a Claude process that RESPAWNS
+    // mid-session gets a new one — and a caller that CACHED the old id then asks under a name arc
+    // has never seen. The claim looks like a stranger's, so arc refuses, and the refusal names a
+    // pid the caller does not recognise as itself. Reported by whalephone/android (note #58): four
+    // failed `arc join` in a row, each blaming pid 15008, which WAS them post-respawn — while the
+    // Stop hook kept demanding a re-arm that kept failing. A loop, broken only by printing the
+    // ambient ARC_SESSION by hand and noticing it had changed.
+    //
+    // The CONVERSATION is what survives a respawn, and arc has it on the claim — it was simply
+    // never compared. Same conv = same session wearing a new pid, not a rival.
+    //
+    // Still refused, deliberately: adopting under the caller's STALE id would point the claim at a
+    // session that no longer exists — a worse lie than the one being fixed. What was missing is not
+    // permission, it is the DIAGNOSIS: say it is you, show both ids, and name the actual root cause
+    // (they cached ARC_SESSION instead of reading it per call).
+    const mine = sessionConv(session);
+    const theirs = claim.holder && claim.holder.convId;
+    if (mine && theirs && mine === theirs) {
+      return { ok: false, message:
+        `role "${role}" is held by pid ${claim.holder.pid} — and THAT IS YOU.\n` +
+        `  Same conversation (${String(mine).slice(0, 8)}…), different session id: your Claude process\n` +
+        `  RESPAWNED, and ARC_SESSION is derived from its pid, so yours changed under you:\n` +
+        `      you asked as : ${session}\n` +
+        `      the holder is: ${claim.holder.sessionId || '(unrecorded)'}\n` +
+        `  You already hold this role — nothing to re-claim. The listener is what needs re-arming:\n` +
+        `      arc join ${role}      ← run it in the BACKGROUND, reading ARC_SESSION fresh\n` +
+        `  ROOT CAUSE: you CACHED ARC_SESSION. Never do that — it is ambient and it changes on a\n` +
+        `  respawn. Read it from the environment on every call.` };
+    }
     return { ok: false, message:
       `role "${role}" is already held by a LIVE session (pid ${claim.holder.pid}) on the "${board.name}" board.\n` +
       `Two sessions sharing a role would share a cursor and steal each other's notes. Pick another name, or close that session.` };
