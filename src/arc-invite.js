@@ -282,7 +282,7 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // stripConvArgs only removes --continue/--fork-session/the birth prompt, and arc-runner forwards
 // anything that is not its own flag, so a switched or restarted peer keeps its name.
 // (No conflict with the tab title: --name also sets the terminal title, but the wt tab is pinned
-// by --suppressApplicationTitle, so "arc: <role>" still wins there.)
+// by --suppressApplicationTitle, so the bare role name still wins there.)
 // `conv` = the role's OWN conversation to REVIVE, or null to be BORN.
 //
 // A NEW PEER IS FORKED FROM THE CALLER: `--resume <CALLER's conv> --fork-session`. It starts
@@ -425,7 +425,7 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
     // like every other tab: Claude Code sets the terminal title from the project folder, and an
     // application title escape overrides wt's --title. With two identical "arc" tabs you cannot
     // tell the caller from the peer it spawned — so the peer's tab is pinned to its ROLE.
-    return `wt -w ${win || '0'} new-tab --title ${psQuote('arc: ' + role)} --suppressApplicationTitle -d ${psQuote(root)} ${pre} ${inner}`;
+    return `wt -w ${win || '0'} new-tab --title ${psQuote(role)} --suppressApplicationTitle -d ${psQuote(root)} ${pre} ${inner}`;
   }
   // QUIET: Start-Process -WindowStyle HIDDEN. Not Minimized — that was WRONG, and it was wrong in
   // the most expensive way available.
