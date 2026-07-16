@@ -1623,6 +1623,35 @@ try {
   ok('...and a non-request note is told it keeps for whoever claims the role next',
     /It keeps:/.test(info.message));
 
+  // ---- quiet spawn: the only launch that cannot take the foreground -----------------------
+  // A stolen foreground is not a papercut during a MEASUREMENT: the human's Ctrl+C lands in a
+  // worker, which voids a trial, and voids whose cause tracks human activity are not random —
+  // they bias the wall-clock the run exists to measure. wt has no no-focus flag (1.24), and
+  // capture-then-restore is a timing hack on the path that has burned this repo three times.
+  // A minimised window has no foreground to take, so quiet BYPASSES wt entirely — a real trade.
+  const QI = require(path.join(SRC, 'arc-invite.js'));
+  const qw = (q) => QI.buildLaunch(true, 'veneto', null, 'w', 'E:/arc', 'pwsh', null, () => 'C:/T/p.txt', q);
+  ok('quiet spawn uses Start-Process -WindowStyle Minimized (no foreground to steal)',
+    /Start-Process -FilePath 'pwsh' -WindowStyle Minimized/.test(qw(true)));
+  // MEASURED, not preferred: `cmd /c start` is composed INSIDE `powershell -Command`, so PowerShell
+  // strips the quotes and cmd reads `start "arc: w" …` as `start arc: w` — it treats `arc:` as the
+  // COMMAND, hangs, and staffRole reports ETIMEDOUT. That fallback has never worked through this
+  // wrapper; nobody noticed because every machine here has wt.
+  ok('...and NEVER via cmd /c start, which the powershell -Command wrapper silently breaks',
+    !/cmd \/c start/.test(qw(true)));
+  // -ArgumentList is an ARRAY — nothing downstream re-splits it. That is the whole reason this
+  // path exists rather than another carefully-quoted string.
+  ok('...every argument its own quoted element, so no parser downstream can re-split a path',
+    /-ArgumentList '-NoLogo','-NoProfile'/.test(qw(true)));
+  ok('...and BYPASSES wt entirely, because wt IS the thing that takes focus',
+    !/\bwt -w 0\b/.test(qw(true)) && /\bwt -w 0\b/.test(qw(false)));
+  ok('...and it is OFF by default — an invisible peer is an invisible failure',
+    QI.spawnQuiet() === false && !/Start-Process/.test(qw(false)));
+  ok('...opt-in via ARC_SPAWN_QUIET, so a harness can ask and a human never has to',
+    (() => { const prev = process.env.ARC_SPAWN_QUIET; process.env.ARC_SPAWN_QUIET = '1';
+      const on = QI.spawnQuiet(); if (prev === undefined) delete process.env.ARC_SPAWN_QUIET; else process.env.ARC_SPAWN_QUIET = prev;
+      return on === true; })());
+
   // ---- --board: the ONE hole in the filesystem isolation ----------------------------------
   // Built for an observed pain, not a hypothetical: a session dogfooding arc in ANOTHER repo
   // learns things about arc that belong on arc's board, and the only channel was a human

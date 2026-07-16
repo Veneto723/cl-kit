@@ -307,7 +307,19 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 //
 // `from` = the CALLER's conversation to fork at BIRTH (null -> born cold, no context). `conv` =
 // the ROLE's own conversation to REVIVE, which always wins: a returning peer comes back as ITSELF.
-function buildLaunch(wt, account, conv, role, root, shell, from, writeScript) {
+// QUIET SPAWN — off by default, and it should stay off. A peer you can SEE is the whole reason
+// staffing opens a window: every launcher bug this repo ever had was caught by a human noticing a
+// tab that was wrong, empty, or absent. A minimised peer is an invisible peer, and an invisible
+// failure is the one class this design refuses everywhere else.
+//
+// It exists because a MEASUREMENT needs it. A run that opens ~29 tabs in an hour does not just
+// annoy the human — a stolen foreground means their Ctrl+C lands in a worker, which VOIDS a trial,
+// and voids whose cause tracks human activity are not random: they bias the very wall-clock the
+// run exists to measure (and they kill the long-grinding SELF arm more often than the DELEG arm
+// that posts a note and stops). So the tabs stay for people, and the harness turns them off.
+function spawnQuiet() { return /^(1|true|yes)$/i.test(String(process.env.ARC_SPAWN_QUIET || '').trim()); }
+
+function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, quiet) {
   const acct = account ? ` --account ${account}` : '';
   const sh = shell || launchShell();
   const pre = shellPrefix(sh);
@@ -367,29 +379,61 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript) {
   //   cmd: the last resort keeps its proven '"…"' nesting, and is only reached when NEITHER
   //     PowerShell exists — a machine that has neither is a machine arc has bigger problems on.
   const cmdline = `arc${acct} --name ${role}${mode}${resume}`;   // cmd path only
-  let inner;
+  let inner, quietArgs = null;
   if (sh === 'cmd') {
     inner = `${cmdline} '"${prompt}"'`;
   } else {
     // The role's OWN conversation (a REVIVE) is resumed as itself; the CALLER's (a BIRTH) is forked.
     // Never both — a revive that forked would come back as a copy of whoever staffed it.
     const resumeId = conv || from || null;
-    const t = ['-File', psQuote(birthTemplate()), '-Role', role,
-      '-PromptFile', psQuote((writeScript || writeBirthPrompt)(prompt, role))];
-    if (account) t.push('-Account', account);
-    if (!conv) t.push('-Mode', 'auto');
-    if (resumeId) t.push('-Resume', resumeId);
-    if (!conv && from) t.push('-Fork');
-    inner = t.join(' ');
+    // ONE call — writeScript has a side effect (it writes the prompt file), so it must not be
+    // invoked once per output shape.
+    const promptFile = (writeScript || writeBirthPrompt)(prompt, role);
+    const pairs = [['-File', birthTemplate()], ['-Role', role], ['-PromptFile', promptFile]];
+    if (account) pairs.push(['-Account', account]);
+    if (!conv) pairs.push(['-Mode', 'auto']);
+    if (resumeId) pairs.push(['-Resume', resumeId]);
+    if (!conv && from) pairs.push(['-Fork']);
+    // wt form, UNCHANGED and deliberately so: flags bare, the two PATHS quoted. This exact shape
+    // is the one proven live through powershell -> wt -> pwsh; it is not being re-derived today.
+    inner = pairs.map(([f, v]) => (v === undefined ? f
+      : `${f} ${(f === '-File' || f === '-PromptFile') ? psQuote(v) : v}`)).join(' ');
+    // Start-Process form: EVERY element its own quoted argument. PowerShell passes an -ArgumentList
+    // array to the process as-is, so nothing downstream re-splits it — which is the whole reason
+    // the quiet path uses Start-Process instead of `cmd /c start` (see below).
+    quietArgs = ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit']
+      .concat(pairs.flat().filter((x) => x !== undefined)).map(psQuote).join(',');
   }
-  if (wt) {
+  // `quiet && wt` is not a state that exists: wt IS the thing that takes the foreground, so a
+  // quiet wt tab cannot be built. staffRole already forces wt=false when quiet, and this makes the
+  // invariant hold in the FUNCTION rather than at one call site — a caller that passes both gets
+  // the minimised console it asked for, not a tab that silently ignores the quiet it requested.
+  if (wt && !quiet) {
     // --suppressApplicationTitle is what makes the title STICK. Without it the tab shows "arc"
     // like every other tab: Claude Code sets the terminal title from the project folder, and an
     // application title escape overrides wt's --title. With two identical "arc" tabs you cannot
     // tell the caller from the peer it spawned — so the peer's tab is pinned to its ROLE.
     return `wt -w 0 new-tab --title ${psQuote('arc: ' + role)} --suppressApplicationTitle -d ${psQuote(root)} ${pre} ${inner}`;
   }
-  // No Windows Terminal: a fresh console window via start (best-effort fallback).
+  // QUIET: Start-Process -WindowStyle Minimized. A minimised window has no foreground to take, so
+  // this is not a workaround for focus-steal — it is the absence of the thing that steals. wt has
+  // no equivalent (1.24 exposes no no-focus flag), and capture-GetForegroundWindow-then-restore is
+  // a timing hack on the path that has burned this repo three times: wt hands off over COM and
+  // returns BEFORE the tab exists, so a restore either fires too early or guesses a delay.
+  //
+  // NOT `cmd /c start`, and that is not a preference — MEASURED: the fallback below is composed
+  // INSIDE `powershell -Command`, so PowerShell strips the quotes before cmd ever sees them and
+  // `start "arc: quiettest" …` arrives as `start arc: quiettest`, where cmd reads `arc:` as the
+  // COMMAND. It hangs, and staffRole reports ETIMEDOUT. That path has been broken for as long as
+  // it has existed; nobody noticed because everybody has wt. Start-Process is native to the shell
+  // we are already inside — one parser, and -ArgumentList is an ARRAY nothing re-splits.
+  if (quiet && sh !== 'cmd') {
+    return `Start-Process -FilePath ${psQuote(sh)} -WindowStyle Minimized -WorkingDirectory ${psQuote(root)} -ArgumentList ${quietArgs}`;
+  }
+  // No Windows Terminal and no quiet: a visible console via start. KNOWN BROKEN through the
+  // powershell -Command wrapper (see above) — kept only because removing it is a separate change
+  // on a path no machine with wt ever reaches, and it should be fixed with a live test, not on the
+  // way past. If you land here and it hangs, that is why.
   return `cmd /c start "arc: ${role}" /d "${root}" ${pre} ${inner}`;
 }
 
@@ -420,7 +464,11 @@ function hasTranscript(convId) {
 function staffRole(session, role, opts) {
   const o = opts || {};
   const doSpawn = o.spawn || spawnSync;           // tests inject a recorder — nothing real opens
-  const wt = o.hasWt !== undefined ? o.hasWt : hasWt();
+  // QUIET BYPASSES wt ENTIRELY, and it has to: wt IS the thing that takes the foreground, so there
+  // is no quiet wt to ask for. A quiet spawn is a minimised console instead of a tab — a real
+  // trade (you lose the visible peer), taken only when something asks for it out loud.
+  const quiet = o.quiet !== undefined ? o.quiet : spawnQuiet();
+  const wt = quiet ? false : (o.hasWt !== undefined ? o.hasWt : hasWt());
 
   // The board, the launch dir and the trusted folder ALL anchor to the session's own recorded
   // cwd (see launchDir below) — never to the caller's argument. Otherwise an agent could `cd`
@@ -485,7 +533,7 @@ function staffRole(session, role, opts) {
   const from = revive ? null : (o.sessionConv || N.sessionConv)(session);
   // o.writeScript lets a test capture the birth prompt as DATA instead of grepping it out of a
   // command line — which is the whole point of the change: it is not on the command line any more.
-  const psCmd = buildLaunch(wt, account, conv, role, launchDir, o.shell, from, o.writeScript);
+  const psCmd = buildLaunch(wt, account, conv, role, launchDir, o.shell, from, o.writeScript, quiet);
   let r;
   try {
     r = doSpawn('powershell.exe', ['-NoProfile', '-Command', psCmd], { timeout: 5000, env: birthEnv() });
@@ -499,7 +547,7 @@ function staffRole(session, role, opts) {
 
   return { ok: true, role, revived: revive, trust, message:
     (revive
-      ? `✓ REVIVING "${role}" — new ${wt ? 'tab in this window' : 'console window'}.\n`
+      ? `✓ REVIVING "${role}" — ${wt ? 'new tab in this window' : (quiet ? 'MINIMISED console window — quiet spawn, it will not take your focus' : 'new console window')}.\n`
         + `  it resumes ${role}'s OWN conversation, so it comes back as itself: everything it\n`
         + `  learned before, still there. It re-adopts the role and arms its own listener.\n`
       // SAY WHICH BIRTH ACTUALLY HAPPENED. This line claimed the peer "starts FRESH... not from
@@ -507,7 +555,7 @@ function staffRole(session, role, opts) {
       // outliving the behaviour it described, and the FIRST live delegate caught it while 668 unit
       // tests did not (none of them read this string). Same failure as the comments it replaced:
       // prose asserting a fact about code that has moved.
-      : `✓ staffing a new "${role}" peer — new ${wt ? 'tab in this window' : 'console window'}.\n`
+      : `✓ staffing a new "${role}" peer — ${wt ? 'new tab in this window' : (quiet ? 'MINIMISED console window — quiet spawn, it will not take your focus' : 'new console window')}.\n`
         + (from
           ? `  no ${role} has worked here before, so it is BRANCHED from this conversation: it opens\n`
             + `  knowing what you know, on your model and effort, told plainly that your history is\n`
@@ -594,4 +642,4 @@ function requestDelegate(session, arg, cwd, opts) {
              : `\n  ${role} is live: its listener will wake it within seconds.`) };
 }
 
-module.exports = { staffRole, requestDelegate, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript };
+module.exports = { staffRole, requestDelegate, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript, spawnQuiet };
