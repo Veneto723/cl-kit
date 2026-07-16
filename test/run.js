@@ -1631,8 +1631,15 @@ try {
   // A minimised window has no foreground to take, so quiet BYPASSES wt entirely — a real trade.
   const QI = require(path.join(SRC, 'arc-invite.js'));
   const qw = (q) => QI.buildLaunch(true, 'veneto', null, 'w', 'E:/arc', 'pwsh', null, () => 'C:/T/p.txt', q);
-  ok('quiet spawn uses Start-Process -WindowStyle Minimized (no foreground to steal)',
-    /Start-Process -FilePath 'pwsh' -WindowStyle Minimized/.test(qw(true)));
+  // HIDDEN, NOT MINIMIZED — and the difference cost a human their keystrokes. Minimised stops a
+  // window RESTORING; it does not stop it taking the FOREGROUND. So a minimised peer seized focus
+  // into a window with nothing on screen, and the human could not tell whether they had typed into
+  // an agent's session. Strictly worse than the visible tab-steal it replaced: a Ctrl+C into a
+  // worker is a clean void; text typed into a worker nobody can see is a trial that ran with
+  // unknown input and looks normal. Hidden is STRUCTURAL — no visible window, nothing to activate.
+  ok('quiet spawn uses -WindowStyle Hidden — MINIMIZED still takes the foreground, invisibly',
+    /Start-Process -FilePath 'pwsh' -WindowStyle Hidden/.test(qw(true))
+    && !/-WindowStyle Minimized/.test(qw(true)));
   // MEASURED, not preferred: `cmd /c start` is composed INSIDE `powershell -Command`, so PowerShell
   // strips the quotes and cmd reads `start "arc: w" …` as `start arc: w` — it treats `arc:` as the
   // COMMAND, hangs, and staffRole reports ETIMEDOUT. That fallback has never worked through this

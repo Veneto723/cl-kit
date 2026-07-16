@@ -427,11 +427,32 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
     // tell the caller from the peer it spawned — so the peer's tab is pinned to its ROLE.
     return `wt -w ${win || '0'} new-tab --title ${psQuote('arc: ' + role)} --suppressApplicationTitle -d ${psQuote(root)} ${pre} ${inner}`;
   }
-  // QUIET: Start-Process -WindowStyle Minimized. A minimised window has no foreground to take, so
-  // this is not a workaround for focus-steal — it is the absence of the thing that steals. wt has
-  // no equivalent (1.24 exposes no no-focus flag), and capture-GetForegroundWindow-then-restore is
-  // a timing hack on the path that has burned this repo three times: wt hands off over COM and
-  // returns BEFORE the tab exists, so a restore either fires too early or guesses a delay.
+  // QUIET: Start-Process -WindowStyle HIDDEN. Not Minimized — that was WRONG, and it was wrong in
+  // the most expensive way available.
+  //
+  // MINIMISED STOPS A WINDOW RESTORING. IT DOES NOT STOP IT TAKING THE FOREGROUND. So a minimised
+  // peer could seize focus into a window with NOTHING ON SCREEN: the human's keystrokes went
+  // somewhere invisible, and they could not tell whether they had typed into an agent's session or
+  // not. That is strictly worse than the tab-steal it replaced — a stolen tab is at least VISIBLE,
+  // and a Ctrl+C into a worker produces a clean void; text typed into a worker nobody can see
+  // produces a trial that ran with unknown input and looks normal in the transcript.
+  //
+  // I SHIPPED IT CALLING IT "PROVEN FOCUS-SAFE" on the strength of ONE spawn, measured while the
+  // human happened to be typing in another app — which is exactly when Windows' foreground lock
+  // protects you anyway. One measurement, generalised into a guarantee, on the same day I told a
+  // peer twice not to do that. Reported by the human, who could see the symptom arc could not.
+  //
+  // HIDDEN IS STRUCTURAL, not a timing hack: a window with no visible representation cannot be
+  // activated, so there is no foreground for it to take. The test is therefore also structural —
+  // assert IsWindowVisible == false on the spawned pid's windows, NOT "focus did not move this
+  // time", which is what a foreground lock will happily tell you on a good day.
+  //
+  // THE COST IS REAL AND IT IS THE POINT OF THE DEFAULT: a hidden peer is invisible. No taskbar
+  // entry, no error to read, no window a human can glance at — and every launcher bug this repo
+  // has ever had was caught by a human glancing at a window. Right for a MEASUREMENT, never right
+  // as a default. wt has no equivalent (1.24 exposes no no-focus flag), and
+  // capture-GetForegroundWindow-then-restore is a timing hack on the path that has burned this
+  // repo three times: wt hands off over COM and returns BEFORE the tab exists.
   //
   // NOT `cmd /c start`, and that is not a preference — MEASURED: the fallback below is composed
   // INSIDE `powershell -Command`, so PowerShell strips the quotes before cmd ever sees them and
@@ -440,7 +461,7 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // it has existed; nobody noticed because everybody has wt. Start-Process is native to the shell
   // we are already inside — one parser, and -ArgumentList is an ARRAY nothing re-splits.
   if (quiet && sh !== 'cmd') {
-    return `Start-Process -FilePath ${psQuote(sh)} -WindowStyle Minimized -WorkingDirectory ${psQuote(root)} -ArgumentList ${quietArgs}`;
+    return `Start-Process -FilePath ${psQuote(sh)} -WindowStyle Hidden -WorkingDirectory ${psQuote(root)} -ArgumentList ${quietArgs}`;
   }
   // No Windows Terminal and no quiet: a visible console via start. KNOWN BROKEN through the
   // powershell -Command wrapper (see above) — kept only because removing it is a separate change
@@ -587,7 +608,7 @@ function staffRole(session, role, opts) {
     : '';
   return { ok: true, role, revived: revive, trust, unverified: timedOut, message: unsure +
     (revive
-      ? `✓ REVIVING "${role}" — ${wt ? 'new tab in this window' : (quiet ? 'MINIMISED console window — quiet spawn, it will not take your focus' : 'new console window')}.\n`
+      ? `✓ REVIVING "${role}" — ${wt ? 'new tab in this window' : (quiet ? 'HIDDEN — quiet spawn: no window at all, so it cannot take your focus (and you cannot watch it)' : 'new console window')}.\n`
         + `  it resumes ${role}'s OWN conversation, so it comes back as itself: everything it\n`
         + `  learned before, still there. It re-adopts the role and arms its own listener.\n`
       // SAY WHICH BIRTH ACTUALLY HAPPENED. This line claimed the peer "starts FRESH... not from
@@ -595,7 +616,7 @@ function staffRole(session, role, opts) {
       // outliving the behaviour it described, and the FIRST live delegate caught it while 668 unit
       // tests did not (none of them read this string). Same failure as the comments it replaced:
       // prose asserting a fact about code that has moved.
-      : `✓ staffing a new "${role}" peer — ${wt ? 'new tab in this window' : (quiet ? 'MINIMISED console window — quiet spawn, it will not take your focus' : 'new console window')}.\n`
+      : `✓ staffing a new "${role}" peer — ${wt ? 'new tab in this window' : (quiet ? 'HIDDEN — quiet spawn: no window at all, so it cannot take your focus (and you cannot watch it)' : 'new console window')}.\n`
         + (from
           ? `  no ${role} has worked here before, so it is BRANCHED from this conversation: it opens\n`
             + `  knowing what you know, on your model and effort, told plainly that your history is\n`
