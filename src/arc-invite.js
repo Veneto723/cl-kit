@@ -281,8 +281,8 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // hand was then guesswork on a list of identical names. It survives a relaunch on its own:
 // stripConvArgs only removes --continue/--fork-session/the birth prompt, and arc-runner forwards
 // anything that is not its own flag, so a switched or restarted peer keeps its name.
-// (No conflict with the tab title: --name also sets the terminal title, but the wt tab is pinned
-// by --suppressApplicationTitle, so the bare role name still wins there.)
+// (--name also sets the terminal title. The wt tab STARTS on --title <role>; Claude Code then
+// retitles it from the project folder — we stopped suppressing that so the live status icon shows.)
 // `conv` = the role's OWN conversation to REVIVE, or null to be BORN.
 //
 // A NEW PEER IS FORKED FROM THE CALLER: `--resume <CALLER's conv> --fork-session`. It starts
@@ -421,11 +421,14 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // invariant hold in the FUNCTION rather than at one call site — a caller that passes both gets
   // the minimised console it asked for, not a tab that silently ignores the quiet it requested.
   if (wt && !quiet) {
-    // --suppressApplicationTitle is what makes the title STICK. Without it the tab shows "arc"
-    // like every other tab: Claude Code sets the terminal title from the project folder, and an
-    // application title escape overrides wt's --title. With two identical "arc" tabs you cannot
-    // tell the caller from the peer it spawned — so the peer's tab is pinned to its ROLE.
-    return `wt -w ${win || '0'} new-tab --title ${psQuote(role)} --suppressApplicationTitle -d ${psQuote(root)} ${pre} ${inner}`;
+    // We set --title <role> as the tab's STARTING name, but deliberately do NOT
+    // --suppressApplicationTitle. That flag pinned the role name by telling wt to ignore the
+    // app's own title/icon escapes — and it took Claude Code's green working-icon down with the
+    // title (same OSC channel), so a spawned peer's tab looked dead next to a hand-launched one
+    // (operator, 2026-07-17). The human's call: keep the icon, let Claude Code retitle the tab
+    // from the project folder like every other session. The role is still legible from the
+    // roster and the tab's initial name; the live status icon is worth more than a pinned label.
+    return `wt -w ${win || '0'} new-tab --title ${psQuote(role)} -d ${psQuote(root)} ${pre} ${inner}`;
   }
   // QUIET: Start-Process -WindowStyle HIDDEN. Not Minimized — that was WRONG, and it was wrong in
   // the most expensive way available.
