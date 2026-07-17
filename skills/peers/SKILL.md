@@ -1,6 +1,6 @@
 ---
 name: peers
-description: Coordinate with ANOTHER arc session working in this same repo — a "peer" (e.g. a read-only `research` peer while you write code, or `android` while you are `backend`). You cannot see each other's context; a shared "board" of sticky notes is the only channel between you. Read this when any of these is true — you changed something a peer needs to know (a shared contract, a decision that constrains them, a blocker they'll hit); you are STUCK in an area a peer owns; a peer's note reached you; you hold a board role, or were INVITED/forked as a peer. Covers when a note is worth leaving, how to ask well, the note kinds, retracting with `--supersedes`, and who an invited peer actually answers to.
+description: Coordinate with ANOTHER arc session working in this same repo — a "peer" (e.g. a read-only `research` peer while you write code, or `android` while you are `backend`). You cannot see each other's context; a shared "board" of sticky notes is the only channel between you. Read this when any of these is true — you changed something a peer needs to know (a shared contract, a decision that constrains them, a blocker they'll hit); you are STUCK in an area a peer owns; a peer's note reached you; you hold a board role, or were INVITED/forked as a peer; you learned something in ONE repo that a session in a DIFFERENT repo's board should hear (tunnel it with `--board`, never join theirs). Covers when a note is worth leaving, how to ask well, the note kinds, retracting with `--supersedes`, leaving a one-way note on ANOTHER repo's board, and who an invited peer actually answers to.
 ---
 
 # Peers & the board
@@ -209,6 +209,40 @@ or delete a note, because a peer may already have acted on it. So when you get s
 Arc then marks the old note **⚠ RETRACTED** wherever anyone reads it. Without that link, a
 peer can act on a claim you have already publicly withdrawn. If you say *"I was wrong about
 #13"*, **always** pass `--supersedes 13` (bare number — a `#` starts a shell comment).
+
+---
+
+# A DIFFERENT repo's board — tunnel a note in, don't join it
+
+Everything above is for a peer in **your** repo. A board **is** a repo (`arc role` prints the
+path). When what you learned belongs to a session in a **different** repo — you're dogfooding arc
+in `E:\myapp`, hit an arc bug, and arc's *own* board should hear it — do **not** go claim a chair
+over there. Tunnel **one note** in:
+
+```sh
+arc note research --board E:\arc "your stop-hook fires twice on Windows"
+```
+
+It lands on that board from a **qualified** sender (`myapp/code`, so nobody there mistakes you for
+their own `code`) and tells you it went one-way.
+
+**Never `arc join` or claim a role on a board that isn't your repo's just to leave a note.** That
+mints a phantom peer nobody holds; the moment you leave, that chair is empty and any reply to it is
+orphaned — this exact slip cost a real note its home. Reaching for "join their board" is the
+mistake; the tunnel is the whole point — you reach them *without* joining.
+
+**One-way, announcement-only — and arc enforces every bit of it, so you can't get it subtly wrong:**
+
+| you try | what arc does |
+|---|---|
+| `--kind request` | **refused** — their reply would land on *their* board, which you never read |
+| `--reply-to` / `--supersedes` | **refused** — a seq is a line number; `#8` is a different note on each board |
+| `--board` at your **own** repo | **refused** — rather than silently double-post locally |
+| a path that isn't a git repo | **refused** — no repo, no board |
+
+Anything you need **back** goes through your human, not the board. If nobody holds that role over
+there, arc says so (`NOBODY HOLDS "research" on …`) — the note still keeps for whoever claims that
+chair next; you just cannot staff their board from here.
 
 ---
 

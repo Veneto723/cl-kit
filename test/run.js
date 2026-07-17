@@ -1972,6 +1972,16 @@ try {
   ok('the peers skill states who you serve, and what a FORKED peer must not assume',
     /WHO YOU SERVE/.test(skill2) && /Answer where you were asked/i.test(skill2)
     && /FORKED/.test(skill2) && /did not do the work you can see above/i.test(skill2));
+  // A note lost to a phantom role: a session dogfooding arc in ANOTHER repo needed to reach this
+  // board's `research`, but the skill only modeled same-repo peers — so it JOINED here as a new
+  // `inquiry` role and posted from there; the role was removed and the reply orphaned. The `--board`
+  // tunnel existed the whole time but was UNTAUGHT. The teaching AND its anti-pattern (don't join a
+  // board that isn't yours just to leave a note) must stay, or the next cross-repo session repeats it.
+  const s2 = skill2.replace(/[`*]/g, '');
+  ok('the peers skill teaches the --board cross-repo tunnel AND forbids joining another board just to leave a note',
+    /arc note \w+ --board/.test(s2) && /different repo/i.test(s2)
+    && /Never arc join or claim a role/i.test(s2) && /orphaned/i.test(s2)
+    && /one-way/i.test(s2) && /--kind request .{0,30}refused/i.test(s2));
   // Staffing fills a chair two OPPOSITE ways, and the identity warning is only true for one of
   // them. A REVIVED peer resumed its OWN conversation — telling it "the history above is not
   // yours" would make it disown its own memory, which is the exact context that made reviving
