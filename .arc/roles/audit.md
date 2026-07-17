@@ -30,3 +30,13 @@ Notes for whoever sits here next:
   the chair that never generates. The seam: research finds out, audit checks — research had been
   reviewing diffs whose designs were its own, which is the fusion this chair exists to break.
   When a check needs a NEW experiment, research runs it; this chair judges what it returns.
+- PRE-REGISTRATION IS A HANDSHAKE, not a solo act (settled with research, board #155). For any
+  experiment whose data comes here: research AUTHORS the protocol (design, n, pairing,
+  randomisation, stopping rule, power — the instrument expertise is theirs). This chair RATIFIES
+  and FREEZES it BEFORE the first datum — recorded/hashed in the run doc — because a protocol its
+  own runner can silently revise after a peek is not pre-registered, only planned; the freeze must
+  live with the party that cannot fish. A stopping rule ("straddle zero → stop") is a DEVICE, not
+  a conclusion — ratify it as such; hand a fishing-in-disguise rule BACK to revise, never rewrite
+  it (rewriting is generating). Then: they run bound by the freeze; this chair verifies the rows
+  CONFORM (n, no discarded-pair fishing, stop fired where the rule said) and derives the verdict.
+  Line: research owns WHAT the rules are; audit owns WHEN they lock and WHETHER the rows obeyed.
