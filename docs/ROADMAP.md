@@ -84,6 +84,25 @@ The human deferred this **as an experiment**: *"we can also test whether u remem
 
 ---
 
+## 3. The DEAF badge cries wolf on busy sessions — a heartbeat, not a flag · **SMALL** · designed, ready to build
+
+**Status:** designed this session (2026-07-17), **not built.** Unlike items 1–2 there is no open design question and no measurement pending — a ~20-line, statusline-only change blocked only on slack. Recorded so it is not lost, not because it needs a decision.
+
+**The gap:** `badge()` computes `deaf = !isWaiting && (offerStale > 90s || oldestUnreadStale > 90s)` (`src/arc-notes.js`, `a9b682c`). That staleness test cannot separate two states that look identical on the board — *no armed listener + unread notes older than 90s*:
+
+- **Genuinely deaf** — the session is **idle** (waiting on the human); the notes rot until the human next types. ✅ should badge.
+- **Just busy** — the session is mid-way through a long (>90s) turn; the Stop hook will deliver the notes at turn-end. ❌ should not badge.
+
+So DEAF fires during normal long turns. That is alarm fatigue: it goes off when nothing is wrong → the human learns to ignore it → and then misses the real idle-and-deaf case — the very case `a9b682c` was written to catch.
+
+**The fix:** an active-alive **heartbeat**. The statusline already re-renders ~every 10s while a turn runs (confirmed by `research`, board #208); stamp that as a freshness signal. DEAF then requires *no recent heartbeat* **on top of** stale unread — the session is not merely quiet, it is genuinely doing nothing. Busy sessions stop tripping it.
+
+**The constraint — why not the obvious version:** NOT a flag set on turn-start and cleared on turn-end. An **interrupted** turn never runs the Stop hook, so the flag sticks — the exact interrupt bug behind `a9b682c`. A heartbeat is a freshness **timestamp** (how-long-since-alive), which degrades gracefully instead of wedging.
+
+**Next move:** the human's go-ahead. Designed; nothing blocks it but slack.
+
+---
+
 ## Parked elsewhere — pointers, not entries
 
 These are live threads owned by other chairs or blocked on a call. They are **not** roadmap items; recorded here only so this file is not mistaken for the whole picture.
