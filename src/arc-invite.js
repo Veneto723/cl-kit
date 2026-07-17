@@ -475,15 +475,97 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
 // So a vacant claim's convId is a LEAD, not a guarantee, and it must be checked before it is
 // trusted. Profiles junction projects/ to the shared dir, so the account does not matter here.
 function hasTranscript(convId) {
-  if (!convId) return false;
+  return !!transcriptPath(convId);
+}
+function transcriptPath(convId) {
+  if (!convId) return null;
   const root = path.join(require('os').homedir(), '.claude', 'projects');
   try {
     for (const d of fs.readdirSync(root)) {
       if (d === '.trash') continue;
-      if (fs.existsSync(path.join(root, d, `${convId}.jsonl`))) return true;
+      const p = path.join(root, d, `${convId}.jsonl`);
+      if (fs.existsSync(p)) return p;
     }
   } catch {}
-  return false;
+  return null;
+}
+
+// WHEN did this peer last actually take a turn? The transcript's last ENTRY timestamp — read from
+// the file's CONTENT, not its mtime. mtime is the wrong clock twice over: the resume bumps it (the
+// bug that shipped), and any stray touch (git, backup, AV) moves it forward, which for a freshness
+// brief is the DANGEROUS direction — a too-recent "last sat" HIDES commits the peer never saw, the
+// exact zombie failure. The last content timestamp only moves when the peer really wrote. Read the
+// tail (transcripts run to MBs; the last line is all we need). Fall back to the vacant claim's `at`
+// (a safe lower bound: it can only over-show), then null (which silences the brief — never blocks).
+function lastTurnAt(convId, vacant) {
+  const tp = transcriptPath(convId);
+  if (tp) {
+    try {
+      const fd = fs.openSync(tp, 'r');
+      const size = fs.fstatSync(fd).size;
+      const span = Math.min(65536, size);
+      const buf = Buffer.alloc(span);
+      fs.readSync(fd, buf, 0, span, size - span);
+      fs.closeSync(fd);
+      const tail = buf.toString('utf8').split('\n').filter((l) => l.trim());
+      for (let i = tail.length - 1; i >= 0; i--) {
+        try { const t = JSON.parse(tail[i]).timestamp; if (t) return Date.parse(t); } catch {}
+      }
+    } catch {}
+  }
+  return (vacant && vacant.at) || null;
+}
+
+// ---- THE FRESHNESS BRIEF: a revived peer must not trust a world that moved ---------------------
+// Revive's whole value is accumulated context — and context ROTS. The zombie taught the failure
+// mode precisely: a peer working from a stale snapshot is not slow, it is CONFIDENTLY WRONG — it
+// read its packet, comprehended the bugs, and delegated correct fixes against a repo that had been
+// reset three minutes earlier. And a revived peer will not reliably go look (a referenced file is
+// opened ~60% of the time — the delivery rule): what it must know has to be PUT IN FRONT OF IT.
+// So a revive posts the code's movement to the peer's own chair as a note — the one channel whose
+// delivery is already hardened (whole inline under the clip, spilled to a file above it, receipt
+// on the post) — and the peer's first turn-start injection hands it over with the packet. NOT the
+// launch prompt: that string survives powershell -> wt -> shell re-parsing only because it carries
+// no quotes and no newlines, and a git log has both.
+// "Since you last sat" = the TRANSCRIPT's mtime — its last actual write. Not claim.at (that is
+// when it SAT DOWN, which for a crashed peer can be days before it died), and not the tombstone's
+// timestamp (close time ≥ last turn — it would miss everything between its last look and the
+// close). Scope: the duty file's `paths:` globs when declared; the whole repo otherwise. Silence
+// when nothing moved — a brief that always fires is noise, and noise is what gets skimmed.
+const BRIEF_MAX_SUBJECTS = 24;
+function freshnessBrief(board, role, lastSatMs, opts) {
+  const o = opts || {};
+  try {
+    if (!lastSatMs || !fs.existsSync(path.join(board.root, '.git'))) return null;
+    const iso = new Date(lastSatMs).toISOString();
+    const run = o.git || ((args) => spawnSync('git', ['-C', board.root, ...args], { encoding: 'utf8', timeout: 3000 }));
+    // Duty may scope the brief: a `paths:` line holds git pathspecs. Prose `owns:` is for humans.
+    let scope = [];
+    try {
+      const duty = fs.readFileSync(path.join(board.root, '.arc', 'roles', `${role}.md`), 'utf8');
+      const m = duty.match(/^paths:\s*(.+)$/m);
+      if (m) scope = m[1].trim().split(/[\s,]+/).filter(Boolean);
+    } catch {}
+    const log = run(['log', `--since=${iso}`, '--oneline', '--no-decorate', ...(scope.length ? ['--', ...scope] : [])]);
+    if (!log || log.status !== 0) return null;
+    const lines = String(log.stdout || '').split('\n').filter((l) => l.trim());
+    // The charter is checked separately and ALWAYS repo-wide: a peer whose duty was rewritten
+    // while it slept is working under a contract it has never read, whatever its paths: say.
+    const charter = run(['log', `--since=${iso}`, '--oneline', '--', `.arc/roles/${role}.md`]);
+    const charterChanged = !!(charter && charter.status === 0 && String(charter.stdout || '').trim());
+    if (!lines.length && !charterChanged) return null;                  // nothing moved: say nothing
+    const shown = lines.slice(0, BRIEF_MAX_SUBJECTS);
+    const more = lines.length - shown.length;
+    const days = ((Date.now() - lastSatMs) / 86400000).toFixed(1);
+    const body =
+      `WHILE YOU WERE OUT — ${lines.length} commit(s) landed since you last sat (~${days}d ago)` +
+      (scope.length ? ` touching your paths` : '') + ':\n' +
+      shown.map((l) => '  ' + l).join('\n') +
+      (more > 0 ? `\n  (+${more} more:  git log --oneline --since="${iso}")` : '') +
+      (charterChanged ? `\n⚠ YOUR CHARTER CHANGED while you slept — reread .arc/roles/${role}.md before acting; you are working under a contract you have not seen.` : '') +
+      `\nThe board already fed you the notes; this is the CODE's movement. Verify anything you remember about these files before building on it — what you knew may describe a repo that no longer exists.`;
+    return { body, commits: lines.length, charterChanged };
+  } catch { return null; }                                              // a brief must never block a revive
 }
 
 // STAFF a role: put a session in an empty chair. Two ways, and picking the right one is the
@@ -532,6 +614,11 @@ function staffRole(session, role, opts) {
   // ROLE's own, never the caller's. (The old "nothing to fork" refusal died with the fork: a peer
   // no longer needs the caller to have a saved conversation in order to exist.)
   const conv = revive ? vacant.convId : null;
+  // CAPTURE "LAST SAT" BEFORE THE SPAWN — the resume writes to this very transcript, so reading it
+  // AFTER launching would time the resume's own first write, not the peer's last nap turn. (Caught
+  // live on the first real revive: the brief came up empty because `git log --since` saw a timestamp
+  // the booting tab had already bumped to ~now.) Sampled here, before doSpawn, it is clean.
+  const lastSatMs = revive ? (o.lastTurnAt || lastTurnAt)(conv, vacant) : null;
   const account = (process.env.ARC_RUNTIME_ACCOUNT || '').trim() || null;
 
   // LAUNCH IN THE CALLER'S OWN PATH STRING, not board.root. board.root is CANONICAL (lowercased)
@@ -606,6 +693,18 @@ function staffRole(session, role, opts) {
   // the one nobody is coming to look for.
   R.recordBirth(board, role, from || (o.sessionConv || N.sessionConv)(session));
 
+  // Brief a REVIVED peer on what moved while it slept — posted to its chair, so its first
+  // turn-start injection delivers it alongside the packet (oldest first: brief, then work).
+  // Posted only after the spawn is underway; the peer's first turn is seconds out, the post is
+  // milliseconds, and a failed spawn must not leave notes for a peer that never comes.
+  let briefed = null;
+  if (revive) {
+    try {
+      briefed = freshnessBrief(board, role, lastSatMs, o);
+      if (briefed) R.appendNote(board, { from: 'arc', to: role, kind: 'info', body: briefed.body });
+    } catch { briefed = null; }
+  }
+
   // SAY THAT WE DID NOT SEE IT LAND. An unverified spawn must not wear the same ✓ as a verified
   // one — that is how a lie gets believed twice.
   const unsure = timedOut
@@ -619,6 +718,10 @@ function staffRole(session, role, opts) {
       ? `✓ REVIVING "${role}" — ${wt ? 'new tab in this window' : (quiet ? 'HIDDEN — quiet spawn: no window at all, so it cannot take your focus (and you cannot watch it)' : 'new console window')}.\n`
         + `  it resumes ${role}'s OWN conversation, so it comes back as itself: everything it\n`
         + `  learned before, still there. It re-adopts the role and arms its own listener.\n`
+        + (briefed
+          ? `  briefed: ${briefed.commits} commit(s) landed while it slept${briefed.charterChanged ? ' — INCLUDING ITS CHARTER' : ''} — posted to its chair\n`
+            + `    so its first turn starts from the repo that exists, not the one it remembers.\n`
+          : '')
       // SAY WHICH BIRTH ACTUALLY HAPPENED. This line claimed the peer "starts FRESH... not from
       // your context" for one commit after birth started forking — the born-not-cloned text
       // outliving the behaviour it described, and the FIRST live delegate caught it while 668 unit
@@ -763,4 +866,4 @@ function requestClose(session, arg, cwd, opts) {
       : `  It never persisted a conversation, so there is nothing to revive — a new delegate starts fresh.`) };
 }
 
-module.exports = { staffRole, requestDelegate, requestClose, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript, spawnQuiet, spawnWindow };
+module.exports = { staffRole, requestDelegate, requestClose, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript, transcriptPath, lastTurnAt, freshnessBrief, spawnQuiet, spawnWindow };

@@ -2493,6 +2493,98 @@ try {
     /-Resume conv-abc-123/.test(psOf()) && /-Fork/.test(psOf()));
   RM3.releaseRole(vboard, 'ghost', 999999);
 
+  // ---- THE FRESHNESS BRIEF: a revived peer must not trust a world that moved -------------------
+  // The zombie failure mode: a peer working from a stale snapshot is CONFIDENTLY WRONG, not slow.
+  // A revive now posts the code's movement to the peer's own chair, so its first injection hands
+  // it over with the packet. Real git repo, real commits, a transcript whose mtime IS "last sat".
+  {
+    const frepo = fs.mkdtempSync(path.join(os.tmpdir(), 'fresh-'));
+    const g = (args, env) => spawnSync('git', ['-C', frepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+      { encoding: 'utf8', env: { ...process.env, ...(env || {}) } });
+    g(['init', '-qb', 'main']);
+    fs.mkdirSync(path.join(frepo, '.arc', 'roles'), { recursive: true });
+    fs.writeFileSync(path.join(frepo, '.arc', 'roles', 'sleeper.md'), 'owns: everything here\n');
+    fs.writeFileSync(path.join(frepo, 'old.txt'), 'ancient');
+    const back = new Date(Date.now() - 7200000).toISOString();     // 2h ago — BEFORE the nap
+    g(['add', '-A'], null); g(['commit', '-qm', 'ancient history'], { GIT_AUTHOR_DATE: back, GIT_COMMITTER_DATE: back });
+    // the peer slept from 1h ago; its transcript's mtime is the honest "last sat"
+    const tp = path.join(frepo, 'fake-transcript.jsonl');
+    fs.writeFileSync(tp, '{}\n');
+    const lastSat = Date.now() - 3600000;
+    fs.utimesSync(tp, new Date(lastSat), new Date(lastSat));
+    // the world moves while it sleeps: one code commit, one CHARTER commit
+    fs.writeFileSync(path.join(frepo, 'moved.txt'), 'new world');
+    g(['add', '-A'], null); g(['commit', '-qm', 'the world moved'], null);
+    fs.writeFileSync(path.join(frepo, '.arc', 'roles', 'sleeper.md'), 'owns: everything, REWRITTEN\n');
+    g(['add', '-A'], null); g(['commit', '-qm', 'sleeper duty rewritten'], null);
+
+    const fboard = RM3.resolveBoard(frepo); RM3.ensureBoard(fboard);
+
+    // lastTurnAt reads the last CONTENT timestamp, not the file mtime — the mtime lied on the first
+    // real revive because the resume bumped it before it was read. Prove content wins over mtime:
+    // a transcript whose last entry is OLD but whose file was just TOUCHED must report the OLD turn.
+    const realTp = path.join(path.dirname(tp), 'ct-conv.jsonl');
+    const oldTurn = Date.now() - 5 * 3600000;
+    fs.writeFileSync(realTp, JSON.stringify({ type: 'x' }) + '\n' + JSON.stringify({ timestamp: new Date(oldTurn).toISOString() }) + '\n');
+    fs.utimesSync(realTp, new Date(), new Date());               // touch: mtime = NOW, content unchanged
+    // point transcriptPath at it by putting it where the resolver looks
+    const projDir = path.join(require('os').homedir(), '.claude', 'projects', 'E--fresh-ct-' + process.pid);
+    fs.mkdirSync(projDir, { recursive: true }); fs.copyFileSync(realTp, path.join(projDir, 'ct-conv.jsonl'));
+    const seen = I.lastTurnAt('ct-conv', { at: Date.now() });
+    ok('lastTurnAt reports the last TURN from content, not the file mtime (the bug that shipped)',
+      Math.abs(seen - oldTurn) < 2000);
+    ok('...and falls back to the claim time when no transcript timestamp exists (safe lower bound)',
+      I.lastTurnAt('no-such-conv-' + process.pid, { at: oldTurn }) === oldTurn);
+    try { fs.rmSync(projDir, { recursive: true, force: true }); } catch {}
+
+    const brief = I.freshnessBrief(fboard, 'sleeper', lastSat);
+    ok('the brief names what landed while the peer slept — and NOT what predates its nap',
+      brief && brief.commits === 2 && /the world moved/.test(brief.body)
+      && /duty rewritten/.test(brief.body) && !/ancient history/.test(brief.body));
+    ok('...and shouts when the CHARTER changed — a contract the peer has never read',
+      brief.charterChanged === true && /YOUR CHARTER CHANGED/.test(brief.body));
+    ok('...and tells the peer to verify what it remembers, not to trust it',
+      /Verify anything you remember/.test(brief.body));
+    // +2s: git commit dates truncate to the SECOND, so --since=now still matches a commit made in
+    // this same second. "Slept later than every commit" needs to clear that granularity.
+    ok('a peer whose nap saw NO commits gets NO note — a brief that always fires is noise',
+      I.freshnessBrief(fboard, 'sleeper', Date.now() + 2000) === null);
+    // paths: scoping — commits outside the declared globs are not the peer's movement...
+    fs.writeFileSync(path.join(frepo, '.arc', 'roles', 'scoped.md'), 'owns: docs only\npaths: docs/**\n');
+    g(['add', '-A'], null); g(['commit', '-qm', 'scoped role added'], null);
+    const scoped = I.freshnessBrief(fboard, 'scoped', lastSat);
+    ok('paths: scopes the brief — movement outside the declared globs is not this peer\'s movement',
+      scoped === null || !/the world moved/.test(scoped.body));
+
+    // INTEGRATION: a real REVIVE posts the brief to the chair; a BIRTH never does.
+    const FRS = 'fresh-sess-' + process.pid;
+    fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${FRS}.json`),
+      JSON.stringify({ pid: process.pid, cwd: frepo, convId: 'caller-conv-fresh' }));
+    RM3.claimRole(fboard, 'sleeper', 999999, 'sleeper-sess', 'sleeper-conv-1');   // held, then died
+    const frec = [];
+    const revd = I.staffRole(FRS, 'sleeper', {
+      spawn: (cmd, args) => { frec.push({ cmd, args }); return { status: 0 }; },
+      hasWt: true, hasTranscript: () => true,
+      // lastSat is captured BEFORE the spawn (the race fix); inject the peer's last-turn time so
+      // the test does not depend on a real transcript's content timestamp.
+      lastTurnAt: () => lastSat,
+      ensureTrusted: () => ({ ok: true, already: true }),
+    });
+    const briefNotes = RM3.allNotes(fboard).filter((n) => n.from === 'arc' && n.to === 'sleeper' && /WHILE YOU WERE OUT/.test(n.body));
+    ok('a REVIVE posts the brief to the chair, from arc — the first injection will hand it over',
+      revd.ok === true && revd.revived === true && briefNotes.length === 1 && /commit\(s\) landed since you last sat/.test(briefNotes[0].body));
+    ok('...and tells the CALLER it briefed, with the count',
+      /briefed: \d+ commit\(s\) landed while it slept/.test(revd.message));
+    const born = I.staffRole(FRS, 'newcomer', {
+      spawn: (cmd, args) => ({ status: 0 }), hasWt: true, hasTranscript: () => false,
+      ensureTrusted: () => ({ ok: true, already: true }),
+    });
+    ok('a BIRTH posts no brief — a newborn has no stale memory to warn about',
+      born.ok === true && born.revived === false
+      && RM3.allNotes(fboard).filter((n) => n.from === 'arc' && n.to === 'newcomer').length === 0);
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${FRS}.json`)); } catch {}
+  }
+
   // Account pinning: conversations live in per-account profiles — a tab that auto-selected a
   // different account would not find the transcript and the fork would die.
   const oldAcct = process.env.ARC_RUNTIME_ACCOUNT;
