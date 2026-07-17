@@ -138,14 +138,36 @@ function roster(board, liveRoles) {
   return out.sort((a, b) => (b.live - a.live) || a.role.localeCompare(b.role));
 }
 
-// The shape an agent is asked to write. Deliberately tiny: it is read by OTHER agents, and a
-// charter nobody finishes reading is a charter nobody follows. The boundary lines carry most of
-// the value — "not me" is what stops a peer doing someone else's job.
+// THE ONE CANONICAL SHAPE — the single source of truth for what a charter looks like. It used to
+// be dead code (exported, never called) while TWO other sites hard-coded their own copies of the
+// same instruction, which had already drifted from each other and from this — so every agent riffed
+// and no two role files matched. Now the switch-hook write-branch and requestRole both render THIS,
+// via templateInstruction(). Deliberately tiny: it is read by OTHER agents, and a charter nobody
+// finishes reading is a charter nobody follows. The boundary line ("not me") carries most of the
+// value — it is what stops a peer doing someone else's job.
+//
+// FOUR KEYS, in a fixed order. Three are for humans AND double as delimiters (their presence stops
+// the `owns:` summary from swallowing the rest — see dutySummary). `paths:` is the only OPTIONAL
+// one, and the only one a MACHINE parses beyond `owns:`: it scopes the revive freshness brief to a
+// role's own files. It sits last and says "delete me" so a repo-wide role isn't forced to invent
+// globs. Everything below the header is free: expand into ## sections and file lists as the role
+// warrants — `android` legitimately needs them; a one-file role does not.
 function template(role) {
   return `# ${role}\n\n`
     + `owns: <the one line another agent needs — what is yours, in this repo>\n`
     + `send me: <what a peer should hand you, and in what shape>\n`
-    + `not me: <what you do NOT do — the boundary that stops peers guessing>\n`;
+    + `not me: <what you do NOT do — the boundary that stops peers guessing>\n`
+    + `paths: <optional — git globs that are yours, e.g. src/foo/** test/foo* — so a revive briefs\n`
+    + `        you on only YOUR changes. Delete this line if your role spans the whole repo.>\n`;
+}
+// The same shape as an INDENTED instruction for the claim-time injection (a numbered step inside a
+// larger message). One renderer so the write-branch and the CLI echo cannot drift again.
+function templateInstruction(role, indent) {
+  const p = indent || '       ';
+  return `${p}owns: <what is yours in this repo>\n`
+    + `${p}send me: <what a peer should hand you, in what shape>\n`
+    + `${p}not me: <the boundary — what you do NOT do>\n`
+    + `${p}paths: <optional git globs that are yours; delete if you span the whole repo>\n`;
 }
 
-module.exports = { rolesDir, dutyPath, dutyRel, dutySummary, readDuty, listDuties, roster, template, ROLES_REL };
+module.exports = { rolesDir, dutyPath, dutyRel, dutySummary, readDuty, listDuties, roster, template, templateInstruction, ROLES_REL };

@@ -1521,6 +1521,7 @@ try {
   const D = require(path.join(SRC, 'arc-duty.js'));
   const RM7 = require(path.join(SRC, 'arc-board.js'));
   const F8 = require(path.join(SRC, 'arc-notes.js'));
+  const I = require(path.join(SRC, 'arc-invite.js'));
 
   const drepo = fs.mkdtempSync(path.join(os.tmpdir(), 'duty-'));
   spawnSync('git', ['init', '-q'], { cwd: drepo });
@@ -1829,6 +1830,46 @@ try {
   const un = F8.unarmedRequests(AS, drepo);
   ok('unarmedRequests marks whether each target is actually live (arming a dead chair is futile)',
     un.notes.length > 0 && un.notes.every((n) => 'toLive' in n));
+
+  // ---- ONE CANONICAL TEMPLATE — the drift source was three copies (two live + one dead) ---------
+  // template() used to be exported-but-uncalled while the switch-hook write-branch and requestRole
+  // each hard-coded their own copy of the owns/send-me/not-me shape, already worded differently.
+  // Now both render templateInstruction(); template() is the canonical file shape. Assert the two
+  // renderers agree on the KEYS (the machine-read contract), so they cannot drift apart again.
+  const KEYS = ['owns:', 'send me:', 'not me:', 'paths:'];
+  const tmpl = D.template('demo');
+  ok('template() is the canonical charter shape — all four keys, header, in order',
+    KEYS.every((k) => tmpl.includes(k)) && tmpl.startsWith('# demo\n')
+    && tmpl.indexOf('owns:') < tmpl.indexOf('send me:') && tmpl.indexOf('not me:') < tmpl.indexOf('paths:'));
+  const inst = D.templateInstruction('demo', '    ');
+  ok('templateInstruction renders the SAME four keys, indented — one source, so the two sites cannot drift',
+    KEYS.every((k) => inst.includes('    ' + k)));
+  // The write-branch (switch-hook) and the CLI echo (requestRole) must both go THROUGH it — grep
+  // the source so a future hard-coded copy re-introducing drift fails here.
+  const swSrc = fs.readFileSync(path.join(SRC, 'arc-switch-hook.js'), 'utf8');
+  const ntSrc = fs.readFileSync(path.join(SRC, 'arc-notes.js'), 'utf8');
+  ok('both emission sites call templateInstruction — neither hard-codes the shape any more',
+    /templateInstruction\(/.test(swSrc) && /templateInstruction\(/.test(ntSrc)
+    && !/owns: <what is yours in this repo>/.test(swSrc));   // the old hard-coded line is gone
+
+  // ---- paths: is machine-read and TOLERANT (owns:-grade, plus leading indent + bold value) -----
+  // paths: scopes the revive freshness brief. Its regex used to be strict (^paths:, no bold, no
+  // indent) and NO real role declared one, so scoping never fired. Now it tolerates what owns: does
+  // AND leading whitespace AND a bold-close before the value (or the `**` leaks in as a junk glob).
+  const prepo = fs.mkdtempSync(path.join(os.tmpdir(), 'paths-'));
+  const pg = (a) => spawnSync('git', ['-C', prepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+  pg(['init', '-qb', 'main']);
+  fs.mkdirSync(path.join(prepo, '.arc', 'roles'), { recursive: true });
+  fs.writeFileSync(path.join(prepo, '.arc', 'roles', 'scoped.md'), '# scoped\n\nowns: the foo area\n**paths:** src/foo/**\n');
+  const pbd = RM7.resolveBoard(prepo); RM7.ensureBoard(pbd);
+  const lastSat = Date.now() - 3600000;
+  fs.writeFileSync(path.join(prepo, 'outside.txt'), '1'); pg(['add', '-A']); pg(['commit', '-qm', 'OUTSIDE the scope']);
+  fs.mkdirSync(path.join(prepo, 'src', 'foo'), { recursive: true });
+  fs.writeFileSync(path.join(prepo, 'src', 'foo', 'a'), '1'); pg(['add', '-A']); pg(['commit', '-qm', 'INSIDE the scope']);
+  const pbrief = I.freshnessBrief(pbd, 'scoped', lastSat);
+  ok('a **paths:** line (bold label) scopes the brief to its globs — no leaked ** junk pathspec',
+    !!pbrief && /INSIDE the scope/.test(pbrief.body) && !/OUTSIDE the scope/.test(pbrief.body));
+  fs.rmSync(prepo, { recursive: true, force: true });
 
   fs.rmSync(drepo, { recursive: true, force: true });
   for (const s of [AS, BS]) for (const f of [`arc-state-${s}.json`, `arc-role-${s}.json`]) {
@@ -3922,6 +3963,38 @@ try {
   // and it does NOT consume the note — the board still delivers it on the waking turn
   ok('`arc await` only OBSERVES — it never advances the read cursor',
     RM.unreadFor(board, 'code').count === 1);
+
+  // ---- THE SPAWN NAG lists a LEAK, never a chartered standing duty -----------------------------
+  // The human caught the first cut nagging to close a chartered `research`. Closing a standing peer
+  // is not free (revive pays boot + prefill) and an idle armed listener burns RAM, not quota. So the
+  // nag now fires ONLY for an idle spawn with NO committed charter — a temp worker. Two spawns made
+  // by THIS session (spawnsOf keys by conversation): one chartered, one not; both live and idle.
+  RM.markRead(board, 'code');
+  // spawnsOf/recordBirth key by CONVERSATION, and a birth with no bornOf is a no-op — so the
+  // session must carry a convId (every real one does). Restamp the state file with one.
+  fs.writeFileSync(path.join(scache, `arc-state-${SESSION}.json`), JSON.stringify({ pid: process.pid, cwd: sboard, convId: 'stop-conv-1' }));
+  const myConv = F.sessionConv(SESSION);
+  // stand in a live pid for each so liveRoles counts them as present
+  RM.claimRole(board, 'helper', process.pid, 'helper-sess', 'helper-conv');   // NO charter file
+  RM.claimRole(board, 'auditx', process.pid, 'auditx-sess', 'auditx-conv');   // has a charter below
+  RM.recordBirth(board, 'helper', myConv);
+  RM.recordBirth(board, 'auditx', myConv);
+  fs.mkdirSync(path.join(sboard, '.arc', 'roles'), { recursive: true });
+  fs.writeFileSync(path.join(sboard, '.arc', 'roles', 'auditx.md'), '# auditx\n\nowns: verification\nnot me: building\n');
+  cycle();
+  const nag = fire({ hook_event_name: 'Stop', cwd: sboard });
+  ok('the spawn nag lists the CHARTERLESS spawn (a temp worker = a leak)',
+    nag.decision === 'block' && /"helper"/.test(nag.reason) && /arc close helper/.test(nag.reason));
+  ok('...and NEVER lists the chartered standing duty — closing a teammate is the human\'s call, not a nag\'s',
+    !/"auditx"/.test(nag.reason) && !/arc close auditx/.test(nag.reason));
+  ok('...and the nag no longer claims an idle listener "burns quota" (it is blocked on a poll)',
+    !/burns its own quota/.test(nag.reason));
+  // give the leak a charter -> it becomes a standing duty -> the nag goes silent (nothing to leak)
+  cycle();
+  fs.writeFileSync(path.join(sboard, '.arc', 'roles', 'helper.md'), '# helper\n\nowns: odd jobs\n');
+  ok('once the charterless spawn EARNS a charter, the nag stops — it is now a teammate, not a leak',
+    !fire({ hook_event_name: 'Stop', cwd: sboard }).decision
+    || !/arc close helper/.test(fire({ hook_event_name: 'Stop', cwd: sboard }).reason || ''));
 
   fs.rmSync(sboard, { recursive: true, force: true });
 } catch (e) { ok('arc-stop-hook works', false, e.message + '\n' + (e.stack || '')); }

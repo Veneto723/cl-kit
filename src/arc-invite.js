@@ -543,7 +543,10 @@ function freshnessBrief(board, role, lastSatMs, opts) {
     let scope = [];
     try {
       const duty = fs.readFileSync(path.join(board.root, '.arc', 'roles', `${role}.md`), 'utf8');
-      const m = duty.match(/^paths:\s*(.+)$/m);
+      // Tolerant like owns:, and then some — this runs on the RAW duty text (not trimmed lines), so
+      // it must eat leading indentation itself, plus a **bold** label AND a bold-close before the
+      // value (`**paths:** src/x`), or the closing `**` leaks in as a junk pathspec.
+      const m = duty.match(/^\s*\**\s*paths\**\s*:\s*\**\s*(.+?)\s*$/im);
       if (m) scope = m[1].trim().split(/[\s,]+/).filter(Boolean);
     } catch {}
     const log = run(['log', `--since=${iso}`, '--oneline', '--no-decorate', ...(scope.length ? ['--', ...scope] : [])]);

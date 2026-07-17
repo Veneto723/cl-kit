@@ -291,8 +291,9 @@ function requestRole(session, arg, cwd) {
   const dutyLine = mineDuty
     ? `  duty: ${mineDuty.summary || '(declared)'}\n        ← this role's charter, already declared: ${mineDuty.path}. Read it; it is yours now.\n`
     : `  duty: NOT DECLARED. You are the first "${role}" here — say what it owns, in ${D.dutyRel(role)}:\n`
-      + `        owns: … · send me: … · not me: …   (3 lines. Peers read it to route work to you,\n`
-      + `        and it outlives this session — it is how a future peer knows this chair exists.)\n`;
+      + D.templateInstruction(role, '        ')
+      + `        (Peers read the owns: line to route work to you, and it outlives this session — it is\n`
+      + `         how a future peer knows this chair exists. Expand below with ## sections if warranted.)\n`;
   const ros = rosterLines(board, role);
   return { ok: true, role, armNeeded, duty: mineDuty, message:
     `✓ you are "${role}" on the "${board.name}" board  (${board.root})\n` +

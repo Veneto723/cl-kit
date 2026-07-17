@@ -151,13 +151,20 @@ function run(raw) {
   //     can know the work is done, and this is the one moment it is both about to forget and
   //     still able to act.
   //
-  //     NAG, NEVER KILL. A peer with an armed listener is idle BY DESIGN — that is a standing team
-  //     member waiting for work, and silently reaping it would make `arc delegate` a trap where
-  //     your team evaporates between turns. So: name them, offer the verb, and let the agent
-  //     decide. Only ones that OWE NOTHING are mentioned; a peer mid-answer is working.
+  //     NAG, NEVER KILL — AND NAG ONLY A LEAK. A peer with an armed listener is idle BY DESIGN: a
+  //     standing team member waiting for work, and silently reaping it would make `arc delegate` a
+  //     trap where your team evaporates between turns. But the first cut nagged too widely — it
+  //     listed a CHARTERED standing duty (`research`) as something to close, and the human caught
+  //     it: closing a standing peer is not free (revive pays boot + prefill on its whole history),
+  //     and the process it saves costs RAM, not quota (an armed listener is blocked on a poll, it
+  //     makes no API calls). So the nag now fires ONLY for an idle spawn with NO committed charter
+  //     — a temp worker, the one thing the doctrine says should barely exist. A chartered peer is a
+  //     teammate; it is never listed. Only ones that OWE NOTHING are candidates; a peer mid-answer
+  //     is working.
   try {
     const R = require('./arc-board');
     const N = require('./arc-notes');
+    const D = require('./arc-duty');
     const board = R.resolveBoard(N.resolveCwd(session, null));
     const myConv = N.sessionConv(session);
     const mine = R.spawnsOf(board, myConv);
@@ -166,19 +173,31 @@ function run(raw) {
       // Idle = live, and owes me nothing. Anything still holding an unanswered request is working.
       const idle = mine.filter((b) => live.some((l) => l.role === b.role)
         && !R.openRequests(board, b.role).some((n) => n.to === b.role));
-      if (idle.length) {
-        const list = idle.map((b) => `  arc close ${b.role}`).join('\n');
+      // A CHARTERED role — one with a committed .arc/roles/<role>.md — is a STANDING DUTY, and the
+      // nag must NEVER push you to close it. That was the bug the human caught: it listed a chartered
+      // `research` as something to reap, and closing a standing peer is not free — reviving it pays
+      // boot + prefill on its whole history, while the process it "saves" costs a little RAM, not
+      // quota (an armed listener is BLOCKED ON A FILE POLL; it makes no API calls while it idles, so
+      // "burns its own quota" was simply false). The doctrine's own words: a fresh-born peer is a
+      // subagent with extra steps — so what is worth keeping is exactly the peer with accumulated
+      // context, which is exactly the chartered one. So the nag now catches ONLY the leak: an idle
+      // spawn with NO charter. That is a temp worker, and a temp worker is the smell the doctrine
+      // warns about — if the job was real it earns a charter; if not, it was noise.
+      const leaks = idle.filter((b) => !D.readDuty(board, b.role));
+      if (leaks.length) {
+        const list = leaks.map((b) => `  arc close ${b.role}`).join('\n');
         out({
           decision: 'block',
-          reason: `[arc] You spawned ${idle.length} peer(s) that are still running and owe you nothing:\n`
-            + `${idle.map((b) => `  "${b.role}"`).join(', ')}\n\n`
-            + `Each holds a chair nobody else can staff and burns its own quota while it idles. `
-            + `Closing what you opened is YOUR job, not your human's — they should never have to `
-            + `notice a peer you forgot.\n${list}\n\n`
-            + `A closed peer is REVIVABLE, not deleted: its conversation stays on disk, so `
-            + `\`arc delegate <role>\` brings it back knowing everything it learned. If one is a `
-            + `standing teammate you want waiting for work, say so and leave it — you will not be `
-            + `asked about these again this turn.`,
+          reason: `[arc] You spawned ${leaks.length} peer(s) with NO charter, still running and owing you nothing:\n`
+            + `${leaks.map((b) => `  "${b.role}"`).join(', ')}\n\n`
+            + `A peer with no committed .arc/roles/ charter is a temp worker — and reaching for one is a `
+            + `smell the doctrine warns about: if its job is real it earns a chartered standing duty; if `
+            + `it is not, it was probably noise. So either WRITE its charter (\`arc role\` shows the shape) `
+            + `— then it is a teammate, not a leak — or close it. Closing what you opened is YOUR job, not `
+            + `your human's.\n${list}\n\n`
+            + `A closed peer is REVIVABLE: its conversation stays on disk, so \`arc delegate <role>\` `
+            + `brings it back knowing everything it learned. Chartered standing peers are NOT listed here — `
+            + `they are teammates waiting for work, and leaving them live between assignments is correct.`,
         });
         return 'spawns';
       }

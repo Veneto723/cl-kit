@@ -180,12 +180,11 @@ function run(raw) {
                 + `     already true. ADOPT it; do not rewrite it from memory. It is what peers read\n`
                 + `     to decide what is yours.\n`
               : `  2. WRITE ${require('./arc-duty').dutyRel(r.role)} — you are the first "${r.role}" here, so\n`
-                + `     say what this role owns, in 3 short lines:\n`
-                + `       owns: <what is yours in this repo>\n`
-                + `       send me: <what a peer should hand you, in what shape>\n`
-                + `       not me: <the boundary — what you do NOT do>\n`
-                + `     Peers read it to route work to you, and it OUTLIVES this session: it is how a\n`
-                + `     future peer knows this chair exists at all. Commit it with your next commit.\n`)
+                + `     say what this role owns, keeping these keys as the header:\n`
+                + require('./arc-duty').templateInstruction(r.role)
+                + `     Peers read the \`owns:\` line to route work to you, and it OUTLIVES this session: it\n`
+                + `     is how a future peer knows this chair exists at all. Expand below the header with\n`
+                + `     ## sections if the role warrants it. Commit it with your next commit.\n`)
             + `  3. Say, in ONE line, that you are standing by as "${r.role}" — then STOP.\n`
             + `     Do not start work nobody asked for, and do not offer any.\n`
             + `(That background command blocks until a note lands, then EXITS — the exit is what\n`
