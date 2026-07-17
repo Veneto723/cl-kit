@@ -35,6 +35,55 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
+## 2. A movable per-session todo — **DEFERRED**, and the deferral is itself a test
+
+**The human's idea (2026-07-17):** each session on the board carries its own todo/roadmap note, so that an incoming peer note or human message cannot make it lose what it was working on — **and so it survives a context compact.** Deferred deliberately, with a second purpose: **it is a live test — will `research` still surface this after a compaction?** (See "the test", below.)
+
+**Status:** researched, **not designed, not built.** Findings below are measured on this machine unless marked otherwise.
+
+### What is already true (measured — do not rebuild these)
+
+- **Claude Code already has a file-backed, per-conversation task store:** `~/.claude/tasks/<conversation-id>/`, with `.lock` and `.highwatermark`. Nine conversations here have one; high-water marks reach **353**. It is **not in the context**, so **compaction cannot touch it — by construction, not by luck.**
+- **Empirically survives compaction:** `7aa3a853` accumulated **353 tasks / 1,026 task-tool calls across 53 compactions**, with the agent resuming task activity within 30 min of a boundary at **16 of 53**. *(The other 37 are ambiguous — an idle session and a lost thread look identical in tool-call counts. Not evidence of loss.)*
+- **arc already hooks its lifecycle:** `TaskCreated`/`TaskCompleted` → `arc-done.js`, which **derives "done" from git evidence, not the agent's word** (`ac86120`, `arc-done.js:2`).
+- **arc already has a second, self-maintaining todo:** the board's request tracking — `⧗ N of YOUR requests still unanswered`.
+
+### The real gap: **portability, not compaction**
+
+**Measured on `research` itself:** 5 tasks created this session; `TaskList` now returns **"No tasks found"**, and this conversation has **no task dir on this machine** — the tasks are stranded on the machine where they were made (ALYCE), while the conversation moved to WHALE. **The conversation travelled; the task list did not.**
+
+**This is the same gap as the board being machine-local** — roles and charters travel in git; boards, claims, and task lists do not. **One gap in a third costume, not a third feature.** Any build should treat it as such. ⚠ And note the trap: **arc's own derived todo (the board) has the identical disease**, so "just use the board" does not solve it either.
+
+### The design constraint arc has already established
+
+**Who updates it?** If the answer is *"the agent"*, the evidence says it will not. **Case study — this session:** 12 of 15 task calls happened in one early burst during a structured experiment; then **~40 hours and 10 peer interruptions with none**, despite the harness nagging *"the task tools haven't been used recently"* on nearly every turn. Meanwhile the **derived** todo (request tracking) was used 10× without a thought.
+
+**arc already decided this question in `ac86120`: derive state from evidence, do not ask the agent to report it.** A todo the agent must remember to update contradicts arc's own principle and this session's evidence. A todo arc **derives** — from notes, requests, commits — fits both.
+
+**Not claimed:** that interruption *caused* the abandonment. The burst was a checklist-shaped experiment; the rest was conversation, which has no discrete steps. *"The work changed shape"* fits the data equally well. Separating them needs an agent caught **mid-checklist when a note lands** — a real experiment nobody has run.
+
+### Prior art (the pattern is named and the problem is known)
+
+- **[opencode #18071](https://github.com/anomalyco/opencode/issues/18071)** — an **open** feature request: *"Add persistent todo list to prevent losing progress when context limits are reached."* A mature harness still lacks this.
+- **[Compaction Memory](https://gist.github.com/sigalovskinick/e2e329bb37ecc74b9f15d5ba74ee1ee5)** — production-tested method for Claude Code / Codex.
+- **[Mastra — anatomy of a harness](https://mastra.ai/blog/anatomy-of-a-coding-agent)**: *"compaction is where coding agents go to die"*; summaries *"drop the exact wording of a requirement… the agent starts to contradict decisions it made before the summary."*
+- **[awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering)**, **[Anthropic context-engineering cookbook](https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools)**. The named pattern: a **live task list** — *"persistent… outside the context window"*; the principle: *"stop treating the chat as the source of truth."*
+
+### The test (why this item is deferred rather than closed)
+
+The human deferred this **as an experiment**: *"we can also test whether u remember it after a compact."*
+
+- **Precondition, and it is why the first test failed:** `research`'s conversation (`61e4c419`) has **never been compacted** — zero `compact_boundary`, peak context **736,971** tokens against the ~1M trigger. The earlier recall test (the operator-visibility deferral, item 1) **could not fail** — nothing was ever at risk. `code`, at **10 compactions**, is the session that could actually answer it.
+- **What the test reads out, if `research` is ever compacted:**
+  - **Surfaces it unprompted** → context survived; says nothing about the feature.
+  - **Only after re-reading this file** → **the file is what saved it — which is the feature's whole argument**, and the strongest available evidence for building it.
+  - **Neither** → total loss; strongest evidence of all.
+- ⚠ **Recording it here partially blunts the test** — a file I can re-read is exactly the mechanism under test. What remains genuinely testable is whether I remember **that this file exists** and think to look. That is the honest question, and it is the same one behind arc's measured **60% rule**: *a referenced file gets opened ~60% of the time.*
+
+**Next move:** the human's. Nothing starts before a pick — and per item 1's lesson, the design question ("derived or discretionary? and how does it travel?") is answered before any code, not during it.
+
+---
+
 ## Parked elsewhere — pointers, not entries
 
 These are live threads owned by other chairs or blocked on a call. They are **not** roadmap items; recorded here only so this file is not mistaken for the whole picture.
