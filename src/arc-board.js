@@ -562,7 +562,11 @@ function procStarts(pids) {
       const m = line.trim().match(/^(\d+)\s+(\d+)$/);
       if (m) seen[m[1]] = Number(m[2]) / 10000 - FILETIME_EPOCH;
     }
-    // A pid absent from the output is GONE — cache that as null, it is a real answer.
+    // A pid absent from the output has NO READABLE start — cache null, a real answer. Absent means
+    // one of two things, and for our purpose they are the same: the pid is GONE, or it is ALIVE but
+    // UNREADABLE (a protected/system process whose StartTime the query cannot see — dwm.exe on a
+    // recycled number is the live example). Either way this pid is not a start we can match a claim
+    // against, so isHolder treats null as "not a provable holder" — see :584.
     for (const p of need) pidStartMemo[p] = { start: seen[p] !== undefined ? seen[p] : null, at: now };
     try { fs.mkdirSync(path.dirname(PIDSTART_CACHE), { recursive: true }); atomicWriteJson(PIDSTART_CACHE, pidStartMemo); } catch {}
   }
@@ -581,7 +585,13 @@ function isHolder(claim, starts) {
   // invites a duplicate session into an occupied chair. Unsure means "behave as we always did".
   if (!s) return true;
   const t = s[claim.pid];
-  if (t == null) return false;                    // it died between the two probes
+  // No readable start for a pid that isAlive() accepted. TWO causes, same verdict: it died between
+  // the two probes, OR it is alive but its start is UNREADABLE — a recycled pid now owned by a
+  // PROTECTED process (dwm.exe was the live find). In both the pid cannot be proven to be the one
+  // that WROTE this claim, so fail CLOSED: the chair is vacant. This is the opposite of the !s
+  // branch above (fail OPEN) on purpose — there the OS could not be asked at all; here it answered,
+  // and the answer excludes this pid.
+  if (t == null) return false;
   return claim.at >= t - CLAIM_SKEW_MS;
 }
 
