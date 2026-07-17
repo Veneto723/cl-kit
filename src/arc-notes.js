@@ -691,8 +691,12 @@ function badge(session, cwd) {
         const now = Date.now();
         const offAt = A.offeredAt(session);
         const offerStale = offAt != null && now - offAt > DEAF_STALE_MS;
-        const oldestUnread = u.count ? Math.min(...u.notes.map((n) => new Date(n.ts).getTime())) : now;
-        const unreadStale = u.count > 0 && now - oldestUnread > DEAF_STALE_MS;
+        // filter NaN (audit #204 Q3): ONE note with a malformed/missing ts makes Math.min return NaN,
+        // NaN>threshold is false, and deaf is SUPPRESSED even with a genuinely-old note sitting there
+        // — one bad ts would blind the whole check. Drop non-finite times; empty ⇒ can't judge ⇒ safe.
+        const times = u.count ? u.notes.map((n) => new Date(n.ts).getTime()).filter(Number.isFinite) : [];
+        const oldestUnread = times.length ? Math.min(...times) : now;
+        const unreadStale = times.length > 0 && now - oldestUnread > DEAF_STALE_MS;
         deaf = offerStale || unreadStale;
       }
     } catch {}

@@ -2161,6 +2161,18 @@ try {
     (F6.badge(DS, drepo) || {}).deaf === true);
   A6.clearWaiting(DS); A6.clearOffered(DS); RM6.markRead(dboard2, 'code');
 
+  // audit #204 Q3: a single note with a malformed ts must not blind the age check (NaN via Math.min
+  // would have SUPPRESSED deaf even with a genuinely-old note sitting right beside it).
+  RM6.appendNote(dboard2, { from: 'peer', to: 'code', kind: 'info', body: 'good old' });
+  RM6.appendNote(dboard2, { from: 'peer', to: 'code', kind: 'info', body: 'bad ts' });
+  (() => { const ls = fs.readFileSync(dnp, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    ls[ls.length - 2].ts = new Date(Date.now() - 120000).toISOString();   // the good note: genuinely OLD
+    ls[ls.length - 1].ts = 'not-a-date';                                   // the poison note
+    fs.writeFileSync(dnp, ls.map((l) => JSON.stringify(l)).join('\n') + '\n'); })();
+  ok('a bad-ts note does NOT blind the age check — the old note beside it still reads DEAF (Q3)',
+    (F6.badge(DS, drepo) || {}).deaf === true);
+  A6.clearWaiting(DS); A6.clearOffered(DS); RM6.markRead(dboard2, 'code');
+
   // The statusline must actually SHOW it — a fact nobody surfaces is a fact nobody has.
   const um = fs.readFileSync(path.join(SRC, 'usage-monitor.js'), 'utf8');
   ok('the statusline renders DEAF loudly',
