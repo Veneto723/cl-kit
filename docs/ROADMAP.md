@@ -6,7 +6,27 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 1. Operator visibility — the board is invisible to the human · **BIG** · parked
+## 1. `arc delegate` does not check whether the target is closed · **RAW** · recorded, not analysed
+
+**The human's report, verbatim (2026-07-17):** *"research delegate an issue to code, while code is actually closed. it doesnt check code status before delegating."*
+
+**Status: RECORDED ONLY, and promoted to #1 by the human.** They asked for this to be recorded without analysis, so none has been done — the report above has not been verified against the code, no mechanism has been traced, and no fix is proposed. Written down so it is not lost, and deliberately nothing more.
+
+**Owner of the next move:** the human, to say when it is worth thinking about.
+
+---
+
+## 2. `/exit` appears to break listener stability · **RAW** · recorded, not analysed
+
+**The human's report, verbatim (2026-07-17):** *"seems like /exit a session will break it listener stability. Its no longer auto connect and keep it alive."*
+
+**Status: RECORDED ONLY, placed at #2 by the human.** They asked for this to be recorded without analysis, so none has been done — the report above has not been reproduced or verified against the code, no mechanism has been traced, and no fix is proposed. Their own hedge (*"seems like"*) is preserved deliberately: it is an observation, not yet a finding.
+
+**Owner of the next move:** the human, to say when it is worth thinking about.
+
+---
+
+## 3. Operator visibility — the board is invisible to the human · **BIG** · parked
 
 **Classified by the human (2026-07-17) as a BIG update:** substantial work, not a quick fix — parked until there is slack, then handled properly. arc tells an operator nothing about what its agents are doing.
 
@@ -35,7 +55,7 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 2. A movable per-session todo — **DEFERRED**, and the deferral is itself a test
+## 4. A movable per-session todo — **DEFERRED**, and the deferral is itself a test
 
 **The human's idea (2026-07-17):** each session on the board carries its own todo/roadmap note, so that an incoming peer note or human message cannot make it lose what it was working on — **and so it survives a context compact.** Deferred deliberately, with a second purpose: **it is a live test — will `research` still surface this after a compaction?** (See "the test", below.)
 
@@ -73,20 +93,20 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 The human deferred this **as an experiment**: *"we can also test whether u remember it after a compact."*
 
-- **Precondition, and it is why the first test failed:** `research`'s conversation (`61e4c419`) has **never been compacted** — zero `compact_boundary`, peak context **736,971** tokens against the ~1M trigger. The earlier recall test (the operator-visibility deferral, item 1) **could not fail** — nothing was ever at risk. `code`, at **10 compactions**, is the session that could actually answer it.
+- **Precondition, and it is why the first test failed:** `research`'s conversation (`61e4c419`) has **never been compacted** — zero `compact_boundary`, peak context **736,971** tokens against the ~1M trigger. The earlier recall test (the operator-visibility deferral, item 3) **could not fail** — nothing was ever at risk. `code`, at **10 compactions**, is the session that could actually answer it.
 - **What the test reads out, if `research` is ever compacted:**
   - **Surfaces it unprompted** → context survived; says nothing about the feature.
   - **Only after re-reading this file** → **the file is what saved it — which is the feature's whole argument**, and the strongest available evidence for building it.
   - **Neither** → total loss; strongest evidence of all.
 - ⚠ **Recording it here partially blunts the test** — a file I can re-read is exactly the mechanism under test. What remains genuinely testable is whether I remember **that this file exists** and think to look. That is the honest question, and it is the same one behind arc's measured **60% rule**: *a referenced file gets opened ~60% of the time.*
 
-**Next move:** the human's. Nothing starts before a pick — and per item 1's lesson, the design question ("derived or discretionary? and how does it travel?") is answered before any code, not during it.
+**Next move:** the human's. Nothing starts before a pick — and per item 3's lesson, the design question ("derived or discretionary? and how does it travel?") is answered before any code, not during it.
 
 ---
 
-## 3. The DEAF badge cries wolf on busy sessions — a heartbeat, not a flag · **SMALL** · designed, ready to build
+## 5. The DEAF badge cries wolf on busy sessions — a heartbeat, not a flag · **SMALL** · designed, ready to build
 
-**Status:** designed this session (2026-07-17), **not built.** Unlike items 1–2 there is no open design question and no measurement pending — a ~20-line, statusline-only change blocked only on slack. Recorded so it is not lost, not because it needs a decision.
+**Status:** designed this session (2026-07-17), **not built.** Unlike items 3–4 there is no open design question and no measurement pending — a ~20-line, statusline-only change blocked only on slack. Recorded so it is not lost, not because it needs a decision.
 
 **The gap:** `badge()` computes `deaf = !isWaiting && (offerStale > 90s || oldestUnreadStale > 90s)` (`src/arc-notes.js`, `a9b682c`). That staleness test cannot separate two states that look identical on the board — *no armed listener + unread notes older than 90s*:
 
@@ -100,6 +120,16 @@ So DEAF fires during normal long turns. That is alarm fatigue: it goes off when 
 **The constraint — why not the obvious version:** NOT a flag set on turn-start and cleared on turn-end. An **interrupted** turn never runs the Stop hook, so the flag sticks — the exact interrupt bug behind `a9b682c`. A heartbeat is a freshness **timestamp** (how-long-since-alive), which degrades gracefully instead of wedging.
 
 **Next move:** the human's go-ahead. Designed; nothing blocks it but slack.
+
+---
+
+## 6. Asymmetric note permission — initiating asks, replying does not · **RAW** · recorded, not analysed
+
+**The human's idea, verbatim (2026-07-17):** *"Session initiate a note need permission, but replying a note doesn't require user permission."*
+
+**Status: RECORDED ONLY.** The human asked for this to be parked without analysis, so none has been done — no gap statement, no evidence, no design. It is written down here so it is not lost, and deliberately nothing more. Do not mistake this entry for a considered proposal; it is a raw idea awaiting its turn.
+
+**Owner of the next move:** the human, to say when it is worth thinking about.
 
 ---
 
