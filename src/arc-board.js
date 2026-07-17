@@ -911,7 +911,7 @@ module.exports = {
   KINDS, KIND_RANK, DEFAULT_KIND, normalizeKind, supersededMap, openRequests, repliesTo, seenBy, requestStatus,
   readCursor, readCursorMap, writeCursor, unreadFor, markRead, stampSeen, readSeen,
   boardOrigin, noteOrigin, noteKey, refKey, resolveRef, refSeq, legacyId,
-  isAlive, isHolder, procStarts, roleClaim, claimRole, releaseRole, liveRoles, vacantClaimForRole,
+  isAlive, isHolder, procStarts, roleClaim, readClaimFile, claimRole, releaseRole, liveRoles, vacantClaimForRole,
   atomicWriteJson, withLock, vacantClaimForConv,
   recordBirth, readBirth, clearBirth, spawnsOf, closePeer, treeOf,
 };

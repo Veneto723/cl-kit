@@ -584,6 +584,26 @@ try {
     const im2 = sync.doImport('brd-sess', `"${tgz}"`);
     const liveClaim = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
     ok('a HELD chair survives import — never tombstone a live peer', /claim alpha: chair is HELD/.test(im2.message) && liveClaim.pid === process.pid, im2.message);
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', 'arc-state-brd-live.json')); } catch {}
+
+    // IMPORT 2b — a local TOMBSTONE that is newer AND revivable here beats the archive's stale
+    // one. The tiebreak must read the claim RAW: through roleClaim a tombstone is null, and the
+    // week-of-work-on-B revive pointer would be silently clobbered (audit #234).
+    const cidB = '99999999-aaaa-bbbb-cccc-222222222222';
+    fs.writeFileSync(path.join(pdA, cidB + '.jsonl'), JSON.stringify({ type: 'user', cwd: repoA, message: { content: 'newer life' }, timestamp: '2026-07-02T10:00:00.000Z' }) + '\n');
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', sessionId: 'b-sess', convId: cidB, at: 8000 }));
+    const im2b = sync.doImport('brd-sess', `"${tgz}"`);
+    const keptTomb = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('a NEWER local tombstone with a revivable conversation is KEPT (raw read, not roleClaim)',
+      /claim alpha: local revive pointer is newer/.test(im2b.message) && keptTomb.convId === cidB && keptTomb.at === 8000, im2b.message);
+
+    // IMPORT 2c — newer but BROKEN loses: a pointer this machine cannot revive is worth less
+    // than an older one it can (the local side passes the same availability gate).
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', sessionId: 'x-sess', convId: 'conv-that-exists-nowhere', at: 999999999 }));
+    const im2c = sync.doImport('brd-sess', `"${tgz}"`);
+    const healedTomb = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('a newer local pointer at an UNAVAILABLE conversation loses to a working archive one',
+      healedTomb.convId === cidA && healedTomb.pid === undefined, im2c.message);
 
     // IMPORT 3 — --dest onto a fresh clone: the board lands whole, gated correctly
     const destOuter = path.join(base, 'dest');

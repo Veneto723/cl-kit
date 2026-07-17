@@ -703,9 +703,16 @@ function importBoard(stageDir, ctx) {
     if (dryRun) { lines.push(`    claim ${role}: would carry the revive pointer -> ${tomb.convId.slice(0, 8)}`); continue; }
     try {
       B.withLock(board, `role-${role}`, () => {
-        const local = B.roleClaim(board, role);
-        if (local && B.isHolder(local)) { lines.push(`    claim ${role}: chair is HELD by a live session here — kept (never tombstone a live peer)`); return; }
-        if (local && local.convId && (local.at || 0) >= (tomb.at || 0)) { lines.push(`    claim ${role}: local revive pointer is newer — kept`); return; }
+        if (B.roleClaim(board, role)) { lines.push(`    claim ${role}: chair is HELD by a live session here — kept (never tombstone a live peer)`); return; }
+        // The tiebreak must read the claim RAW: roleClaim is genuineness-filtered, so a local
+        // TOMBSTONE reads as null through it and would be clobbered unconditionally — a week of
+        // work on this machine losing its revive pointer to a stale archive (audit #234, proved
+        // with a maximally-newer tombstone). And the local side passes the SAME availability
+        // gate as the archive side: a newer pointer at a conversation this machine cannot
+        // revive loses to an older one it can.
+        const raw = B.readClaimFile(board, role);
+        const localOk = raw && raw.convId && availableConv(raw.convId);
+        if (localOk && (raw.at || 0) >= (tomb.at || 0)) { lines.push(`    claim ${role}: local revive pointer is newer — kept`); return; }
         B.atomicWriteJson(path.join(board.planDir, f), tomb);
         lines.push(`    claim ${role}: revivable here as ${tomb.convId.slice(0, 8)}`);
       });
