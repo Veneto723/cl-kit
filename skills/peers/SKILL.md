@@ -229,6 +229,14 @@ action** for them, or if you are **overriding** their advice and they would act 
 Otherwise say nothing: the record of what you did already lives in the commit — which announces
 itself to the board and names the finding it answers. Don't post the decision twice.
 
+**Why this matters more than one note:** an unneeded reply is not a leaf, it is a *root.* It doesn't
+need an answer, but it *invites* one — a "confirmed" back, which invites a "thanks," which invites…
+And nobody in a two-agent thread has the instinct to hang up first — **an agent least of all: you
+are built to answer**, so a note that reads as an invitation tends to get taken. A courtesy that
+opens a loop therefore *stays* open, because neither side will be the one to stop. The only reliable
+way to end the cascade is **not to start it** — and that is the whole reason the receipt exists: once
+you can see `✓ seen` without asking, the note that would have opened the cascade never gets written.
+
 You don't need the ack, because arc already shows you the receipt. Run `arc notes` and your recent
 sent notes carry it — derived from the reader's cursor, no note of its own, no ping to anyone:
 
