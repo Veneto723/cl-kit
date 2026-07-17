@@ -352,6 +352,28 @@ function openRequests(board, role) {
     && (!role || n.from === role || n.to === role || n.to == null));
 }
 
+// ---- receipts: has a note's recipient SEEN it --------------------------------
+// A receipt with NO note and NO state of its own — derived purely from each recipient's read
+// cursor, the exact inverse of unreadFor's filter (n.ord > cursor = unread ⇒ n.ord <= cursor =
+// seen). "Seen" is the mail-signature sense: the note was DELIVERED into that role's context
+// (their cursor passed it), NOT read-and-agreed. This is what lets a RESULT be terminal — the
+// sender can see it landed, so a content-free "received" acknowledgement (a whole extra note, and
+// a WAKE if they were idle) is never needed. Returns { recipients, seen }:
+//   DIRECTED (to a role): recipients = [that role] — one addressee signs for it.
+//   BROADCAST (to == null): recipients = the LIVE peers (minus the sender) — an announcer can ask
+//     "did everyone get it?" and read `seen.length` of `recipients.length`, and who is missing.
+//     A closed chair is not counted: nobody is there to read, so it would be a permanent "unseen".
+function seenBy(board, note, all) {
+  if (!note) return { recipients: [], seen: [] };
+  const notes = all || allNotes(board);
+  const n = notes.find((x) => x.id === note.id) || note;   // ensure per-origin ord + origin are present
+  const recipients = note.to != null
+    ? [note.to]
+    : liveRoles(board).map((l) => l.role).filter((r) => r !== note.from);
+  const hasSeen = (role) => n.ord != null && n.ord <= ((readCursorMap(board, role, notes)[noteOrigin(n)]) || 0);
+  return { recipients, seen: recipients.filter(hasSeen) };
+}
+
 // Every note answering `ref`, oldest first — the thread under a request. Takes a display seq (what
 // a human types) or an id; both resolve to the same thread.
 function repliesTo(board, ref, all) {
@@ -851,7 +873,7 @@ module.exports = {
   PLAN_DIR, GITIGNORE_BODY,
   canonical, repoRoot, resolveBoard, ensureBoard,
   notesPath, appendNote, allNotes, noteCount, latestSeq,
-  KINDS, KIND_RANK, DEFAULT_KIND, normalizeKind, supersededMap, openRequests, repliesTo,
+  KINDS, KIND_RANK, DEFAULT_KIND, normalizeKind, supersededMap, openRequests, repliesTo, seenBy,
   readCursor, readCursorMap, writeCursor, unreadFor, markRead, stampSeen, readSeen,
   boardOrigin, noteOrigin, noteKey, refKey, resolveRef, refSeq, legacyId,
   isAlive, isHolder, procStarts, roleClaim, claimRole, releaseRole, liveRoles, vacantClaimForRole,

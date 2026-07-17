@@ -3886,6 +3886,67 @@ try {
     importers.length === 0, importers.join(', '));
 } catch (e) { ok('arc:delegate removal', false, e.message + '\n' + (e.stack || '')); }
 
+// ---- receipts: a note reports whether it landed, so an ack is never needed ---
+section('arc-notes receipts (seenBy — a result is terminal, no "received" note)');
+try {
+  const F = require(path.join(SRC, 'arc-notes.js'));
+  const RM = require(path.join(SRC, 'arc-board.js'));
+  const rroot = fs.mkdtempSync(path.join(os.tmpdir(), 'rcpt-'));
+  fs.mkdirSync(path.join(rroot, '.git'));
+  const rboard = RM.resolveBoard(rroot);
+  const cache = path.join(CLAUDE, 'cache'); fs.mkdirSync(cache, { recursive: true });
+  const S = (n) => 'rcpt-' + n + '-' + process.pid;
+  for (const r of ['a', 'b', 'c']) writeJSON(path.join(cache, `arc-state-${S(r)}.json`), { pid: process.pid, cwd: rroot });
+  F.requestRole(S('a'), 'aa', rroot);
+  F.requestRole(S('b'), 'bb', rroot);
+  F.requestRole(S('c'), 'cc', rroot);
+
+  // DIRECTED — the ack-cutting case. aa answers bb; the receipt is derived from bb's cursor, so
+  // aa never sends "received" and bb never has to: aa just watches its own sent note flip to seen.
+  F.requestNote(S('a'), 'bb "heads up schema changed"', rroot);
+  const dn = RM.allNotes(rboard).find((n) => /schema changed/.test(n.body));
+  ok('a directed note is NOT seen before the recipient reads (receipt = derived, no note of its own)',
+    JSON.stringify(RM.seenBy(rboard, dn)) === JSON.stringify({ recipients: ['bb'], seen: [] }));
+  const beforeRead = F.requestNotes(S('a'), '', rroot);
+  ok('the SENDER sees a pull-only receipt in `arc notes` — not yet seen',
+    /your recent sent/.test(beforeRead.message) && /bb hasn't read it yet/.test(beforeRead.message));
+  F.requestNotes(S('b'), '', rroot);   // bb reads the board — its cursor passes the note
+  ok('...which flips to ✓ seen once the recipient reads — the reason a "thanks" note is pure waste',
+    JSON.stringify(RM.seenBy(rboard, dn).seen) === JSON.stringify(['bb'])
+    && /seen by bb/.test(F.requestNotes(S('a'), '', rroot).message));
+
+  // BROADCAST — the announcer's check: did everyone get it? Recipients are the LIVE peers minus me.
+  F.requestNote(S('a'), 'all --kind blocker "staging down"', rroot);
+  const bn = RM.allNotes(rboard).find((n) => /staging down/.test(n.body));
+  ok('a broadcast\'s recipients are the LIVE peers minus the sender, none seen before any read',
+    JSON.stringify(RM.seenBy(rboard, bn).recipients.slice().sort()) === JSON.stringify(['bb', 'cc'])
+    && RM.seenBy(rboard, bn).seen.length === 0);
+  F.requestNotes(S('b'), '', rroot);
+  ok('...partial once one reads (an announcer can see WHO is missing)',
+    (() => { const s = RM.seenBy(rboard, bn); return s.seen.length === 1 && s.seen[0] === 'bb'; })());
+  F.requestNotes(S('c'), '', rroot);
+  ok('...seen by all once every live peer reads — a blocker reached everyone, without asking',
+    RM.seenBy(rboard, bn).seen.length === 2);
+
+  // A broadcast to an empty board (no live peers) has no recipient, so it can never falsely read
+  // "seen by all" — it reports having no one to receive it.
+  const lone = fs.mkdtempSync(path.join(os.tmpdir(), 'rcpt1-'));
+  fs.mkdirSync(path.join(lone, '.git'));
+  const lb = RM.resolveBoard(lone); RM.ensureBoard(lb);
+  const ln = RM.appendNote(lb, { from: 'solo', to: null, kind: 'blocker', body: 'nobody here' });
+  ok('a broadcast with no live peer reports zero recipients (never a false "all seen")',
+    RM.seenBy(lb, ln).recipients.length === 0 && RM.seenBy(lb, ln).seen.length === 0);
+
+  const skillR = fs.readFileSync(path.join(ROOT, 'skills', 'peers', 'SKILL.md'), 'utf8').replace(/[`*]/g, '');
+  ok('the peers skill teaches: a result is terminal, receipts are automatic, don\'t send "received"',
+    /do not acknowledge a result/i.test(skillR) && /receipt/i.test(skillR)
+    && /seen by research/.test(skillR) && /delivered into their context, not read-and-agreed/i.test(skillR));
+
+  for (const r of ['a', 'b', 'c']) { try { fs.unlinkSync(path.join(cache, `arc-state-${S(r)}.json`)); } catch {} try { fs.unlinkSync(path.join(cache, `arc-role-${S(r)}.json`)); } catch {} }
+  fs.rmSync(rroot, { recursive: true, force: true });
+  fs.rmSync(lone, { recursive: true, force: true });
+} catch (e) { ok('arc-notes receipts', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- arc-stop-hook (auto-feed at TURN END, no human keystroke) ---------------
 section('arc-stop-hook (a note is never left sitting on the board)');
 try {

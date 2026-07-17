@@ -534,6 +534,36 @@ const NOTE_USAGE =
   '  a --supersedes note WARNS every future reader of the note it retracts — that is how an\n' +
   '  append-only ledger stays honest: you never rewrite history, you correct it.';
 
+// ---- receipts: what I SENT, and whether it landed -----------------------------
+// Pull-only (shown in `arc notes`, never injected, never wakes anyone) and derived from the
+// recipients' cursors — no note of its own. This is the other half of "a note only sticks when
+// necessary": once the sender can SEE their result/announcement was delivered, a content-free
+// "received" ack is pure waste. Requests live in the unanswered line below; here are my recent
+// results / decisions / broadcasts. Newest first, capped, and only recent — a receipt is closure,
+// not a log.
+const RECEIPT_WINDOW_MS = 24 * 3600 * 1000;
+function sentReceipts(board, me, all, limit = 5) {
+  const notes = all || R.allNotes(board);
+  const cutoff = Date.now() - RECEIPT_WINDOW_MS;
+  return notes.filter((n) => n.from === me && n.kind !== 'request' && new Date(n.ts).getTime() >= cutoff)
+    .slice(-limit).reverse()
+    .map((n) => ({ n, ...R.seenBy(board, n, notes) }));
+}
+function receiptBlock(board, me, all) {
+  const recs = sentReceipts(board, me, all);
+  if (!recs.length) return '';
+  const rows = recs.map(({ n, recipients, seen }) => {
+    const kind = n.kind && n.kind !== 'info' ? `<${n.kind}> ` : '';
+    let mark;
+    if (n.to != null) mark = seen.length ? `✓ seen by ${n.to}` : `⧗ ${n.to} hasn't read it yet`;
+    else if (!recipients.length) mark = '(no live peer to receive)';
+    else if (seen.length === recipients.length) mark = `✓ seen by all ${recipients.length}`;
+    else mark = `${seen.length}/${recipients.length} seen · missing: ${recipients.filter((r) => !seen.includes(r)).join(', ')}`;
+    return `    #${n.seq} → ${n.to || 'all'}  ${kind}${mark}`;
+  });
+  return `\n  your recent sent (receipts — no ack needed):\n${rows.join('\n')}`;
+}
+
 // ---- arc:notes ----------------------------------------------------------------
 function requestNotes(session, arg, cwd) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
@@ -564,7 +594,7 @@ function requestNotes(session, arg, cwd) {
   const u = R.unreadFor(board, me);
   if (!u.count) {
     return { ok: true, plain: true, message:
-      `${head}\n  you are "${me}" · peers: ${peers(board, me)}\n  nothing new on the board (${u.total} note(s) total)` };
+      `${head}\n  you are "${me}" · peers: ${peers(board, me)}\n  nothing new on the board (${u.total} note(s) total)${receiptBlock(board, me)}` };
   }
   const allU = R.allNotes(board);   // the WHOLE ledger: a reply may point at a note already read
   const supU = R.supersededMap(board);
@@ -578,10 +608,12 @@ function requestNotes(session, arg, cwd) {
       (n.refs ? `\n        refs: ${JSON.stringify(n.refs)}` : '');
   });
   const mine = R.openRequests(board, me).filter((n) => n.from === me);
-  const openLine = mine.length ? `\n  ⧗ ${mine.length} of YOUR request(s) still unanswered: ${mine.map((n) => '#' + n.seq).join(', ')}` : '';
+  const openLine = mine.length ? `\n  ⧗ ${mine.length} of YOUR request(s) still unanswered: ` +
+    mine.map((n) => `#${n.seq} (→${n.to || 'all'}, ${R.seenBy(board, n, allU).seen.length ? 'seen' : 'not yet seen'})`).join(', ') : '';
+  const receipts = receiptBlock(board, me, allU);
   R.markRead(board, me);   // rd()-only: the note stays, only YOUR cursor advances
   return { ok: true, plain: true, message:
-    `${head}\n  you are "${me}" · ${u.count} new from ${u.senders.join(', ')}\n${rows.join('\n')}${openLine}\n` +
+    `${head}\n  you are "${me}" · ${u.count} new from ${u.senders.join(', ')}\n${rows.join('\n')}${openLine}${receipts}\n` +
     `  (marked read — the notes stay on the board for everyone else)` };
 }
 
