@@ -82,13 +82,31 @@ function adoptIntoShared(link, target, accId, name) {
 // Sync arc's hooks + statusLine + permissions into the profile's settings.json
 // WITHOUT clobbering any per-account settings the user set via /config. Merges
 // only the arc-owned keys.
+//
+// `permissions` is UNION-MERGED, never replaced: /permissions inside a PROFILED session
+// writes to the profile's own settings.json, so a wholesale `next[k] = master[k]` would
+// silently delete every rule the human added there on the next launch — ensureProfile
+// runs every launch, so "next launch" is always soon. Root stays the master for arc's
+// own allowlist (new BOARD_COMMANDS verbs propagate); the human's per-profile grants
+// survive alongside. Deny/ask lists get the same union for the same reason.
 function syncSettings(dir) {
   const src = path.join(C.CLAUDE_DIR, 'settings.json');
   let master; try { master = JSON.parse(fs.readFileSync(src, 'utf8')); } catch { return; }
   const dst = path.join(dir, 'settings.json');
   let cur = {}; try { cur = JSON.parse(fs.readFileSync(dst, 'utf8')); } catch {}
   const next = { ...cur };
-  for (const k of ARC_SETTINGS_KEYS) if (master[k] !== undefined) next[k] = master[k];
+  for (const k of ARC_SETTINGS_KEYS) {
+    if (master[k] === undefined) continue;
+    if (k !== 'permissions') { next[k] = master[k]; continue; }
+    const mp = master.permissions || {}, cp = (cur.permissions && typeof cur.permissions === 'object') ? cur.permissions : {};
+    const merged = { ...mp, ...cp };                     // profile-local scalars (defaultMode) win
+    for (const list of ['allow', 'deny', 'ask']) {
+      const a = Array.isArray(mp[list]) ? mp[list] : [];
+      const b = Array.isArray(cp[list]) ? cp[list] : [];
+      if (a.length || b.length) merged[list] = [...new Set([...a, ...b])];
+    }
+    next.permissions = merged;
+  }
   try {
     if (JSON.stringify(next) !== JSON.stringify(cur)) fs.writeFileSync(dst, JSON.stringify(next, null, 2));
   } catch {}

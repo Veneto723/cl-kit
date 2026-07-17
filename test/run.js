@@ -304,6 +304,23 @@ try {
     fs.readFileSync(P.credsPath('acctB'), 'utf8').includes('tok-OTHER'));
   ok('ensureProfile is idempotent', P.ensureProfile('acctA') === dirA);
 
+  // THE CLOBBER REGRESSION: /permissions inside a PROFILED session writes to the profile's
+  // own settings.json; ensureProfile runs every launch and used to wholesale-replace the
+  // permissions key from root — silently deleting every rule the human added. Union, not
+  // replace: the human's grants survive, arc's new verbs still arrive, local scalars win.
+  const profSettings = path.join(dirA, 'settings.json');
+  const withUser = JSON.parse(fs.readFileSync(profSettings, 'utf8'));
+  withUser.permissions = { allow: ['Bash(git commit:*)', 'Bash(git add:*)'], defaultMode: 'auto' };
+  fs.writeFileSync(profSettings, JSON.stringify(withUser, null, 2));
+  writeJSON(path.join(CLAUDE, 'settings.json'),
+    { hooks: { Stop: [] }, statusLine: { type: 'command', command: 'x' }, permissions: { allow: ['Bash(arc close:*)'], defaultMode: 'plan' } });
+  P.ensureProfile('acctA');
+  const merged = JSON.parse(fs.readFileSync(profSettings, 'utf8')).permissions;
+  ok('sync UNION-merges permissions: the human\'s profile-local rules SURVIVE a launch',
+    merged.allow.includes('Bash(git commit:*)') && merged.allow.includes('Bash(git add:*)'));
+  ok('...while arc\'s new root verbs still arrive', merged.allow.includes('Bash(arc close:*)'));
+  ok('...and profile-local scalars win (defaultMode stays the profile\'s)', merged.defaultMode === 'auto');
+
   // removeProfile: account removal must QUARANTINE the profile dir (recoverable),
   // never abandon it in place — that abandonment is what stranded MAX/work.
   const dirB = P.profileDir('acctB');
