@@ -1,0 +1,48 @@
+[04:30:09] === ESSENTIAL RUN START — 15 caller trials ===
+[04:30:09] keeper self = pid 16468
+[04:30:09] keeper deleg = pid 18224
+[04:30:09] --- SELF N=1 [retry] trial 1 ---
+[04:31:29]   [self] N=1 [retry] oracles {"retry":true} ALL PASS — DONE @ 2026-07-16T04:31:27.525Z (wall 76.7s)
+[04:31:29]   SCORED wall=76.7s delegated=false owner_edits=0 load[claude_max=6 cpu_mean=35]
+[04:31:36] --- WARM N=1 [retry] trial 1 ---
+[04:36:41]   [deleg] N=1 [retry] oracles {"retry":true} ALL PASS — DONE @ 2026-07-16T04:36:39.102Z (wall 250.2s)
+[04:36:41]   SCORED wall=250.2s delegated=true owner_edits=1 load[claude_max=7 cpu_mean=13.4]
+[04:36:51] --- COLD N=1 [retry] trial 1 ---
+[04:43:28]   CAP HIT (6min) — no all-pass; scoring as censored
+[04:43:28]   SCORED wall=nulls delegated=false owner_edits=0 load[claude_max=7 cpu_mean=16.5]
+[04:43:33] --- COLD N=1 [money] trial 2 ---
+[04:44:59]   [deleg] N=1 [money] oracles {"money":true} ALL PASS — DONE @ 2026-07-16T04:44:58.125Z (wall 84.5s)
+[04:44:59]   SCORED wall=84.5s delegated=false owner_edits=0 load[claude_max=6 cpu_mean=10.8]
+[04:45:05] --- SELF N=1 [money] trial 2 ---
+[04:45:57]   [self] N=1 [money] oracles {"money":true} ALL PASS — DONE @ 2026-07-16T04:45:56.101Z (wall 50.6s)
+[04:45:57]   SCORED wall=50.6s delegated=false owner_edits=0 load[claude_max=6 cpu_mean=6.3]
+[04:46:02] --- WARM N=1 [money] trial 2 ---
+[04:48:29]   [deleg] N=1 [money] oracles {"money":true} ALL PASS — DONE @ 2026-07-16T04:48:27.382Z (wall 103.9s)
+[04:48:29]   SCORED wall=103.9s delegated=true owner_edits=1 load[claude_max=7 cpu_mean=21.7]
+[04:48:34] --- WARM N=1 [parse] trial 3 ---
+[04:51:34]   [deleg] N=1 [parse] oracles {"parse":true} ALL PASS — DONE @ 2026-07-16T04:51:32.570Z (wall 133.0s)
+[04:51:34]   SCORED wall=133s delegated=true owner_edits=1 load[claude_max=7 cpu_mean=20.6]
+[04:51:40] --- COLD N=1 [parse] trial 3 ---
+[04:58:06]   CAP HIT (6min) — no all-pass; scoring as censored
+[04:58:06]   SCORED wall=nulls delegated=false owner_edits=0 load[claude_max=6 cpu_mean=8]
+[04:58:11] --- SELF N=1 [parse] trial 3 ---
+[04:59:27]   [self] N=1 [parse] oracles {"parse":true} ALL PASS — DONE @ 2026-07-16T04:59:26.346Z (wall 74.6s)
+[04:59:28]   SCORED wall=74.6s delegated=false owner_edits=0 load[claude_max=6 cpu_mean=10]
+[04:59:33] --- SELF N=3 [retry,money,parse] trial 4 ---
+[05:00:42]   [self] N=3 [retry,money,parse] oracles {"retry":true,"money":true,"parse":true} ALL PASS — DONE @ 2026-07-16T05:00:41.186Z (wall 67.6s)
+[05:00:42]   SCORED wall=67.6s delegated=false owner_edits=0 load[claude_max=6 cpu_mean=12.8]
+[05:00:47] --- WARM N=3 [retry,money,parse] trial 4 ---
+[05:02:39]   VOID at spawn: [deleg] !! worker chair NEVER FILLED — VOID VOID(exit3)
+[05:02:44] --- SELF N=3 [retry,money,parse] trial 5 ---
+[05:04:00]   [self] N=3 [retry,money,parse] oracles {"retry":true,"money":true,"parse":true} ALL PASS — DONE @ 2026-07-16T05:03:58.376Z (wall 73.7s)
+[05:04:00]   SCORED wall=73.7s delegated=false owner_edits=0 load[claude_max=7 cpu_mean=18.8]
+[05:04:05] --- WARM N=3 [retry,money,parse] trial 5 ---
+[05:07:34]   [deleg] N=3 [retry,money,parse] oracles {"retry":true,"money":true,"parse":true} ALL PASS — DONE @ 2026-07-16T05:07:32.849Z (wall 161.6s)
+[05:07:34]   SCORED wall=161.6s delegated=true owner_edits=4 load[claude_max=10 cpu_mean=23.4]
+[05:07:41] --- WARM N=3 [retry,money,parse] trial 6 ---
+[05:12:24]   [deleg] N=3 [retry,money,parse] oracles {"retry":true,"money":true,"parse":true} ALL PASS — DONE @ 2026-07-16T05:12:22.933Z (wall 217.2s)
+[05:12:24]   SCORED wall=217.2s delegated=true owner_edits=3 load[claude_max=10 cpu_mean=26.4]
+[05:12:32] --- SELF N=3 [retry,money,parse] trial 6 ---
+[05:13:55]   [self] N=3 [retry,money,parse] oracles {"retry":true,"money":true,"parse":true} ALL PASS — DONE @ 2026-07-16T05:13:54.295Z (wall 81.7s)
+[05:13:56]   SCORED wall=81.7s delegated=false owner_edits=0 load[claude_max=7 cpu_mean=10.3]
+[05:14:00] === RUN COMPLETE — 15 trials, 3 void/censored ===
