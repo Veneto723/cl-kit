@@ -365,10 +365,13 @@ doesn't touch it. You never poll, and you never decide to listen.
 When you're about to stop, arc may say:
 
 ```
-  run in the BACKGROUND (run_in_background: true)  →  arc join research
+  →  arc join research      (run_in_background: true — that IS the backgrounding)
 ```
 
-**Do it, then finish your turn normally.** That's the whole ask. It blocks for free until a note
+**Do it, then finish your turn normally.** That's the whole ask. Run the command **exactly** — `arc
+join <role>`, via `run_in_background: true`, with **no `&` and no redirects**. A shell `&` or `>`
+breaks the permission allowlist (so it prompts you instead of just running) *and* doesn't create a
+wakeable listener — only a `run_in_background` task re-invokes your session on its exit. It blocks for free until a note
 lands, then **exits** — and that exit is what re-invokes you. It's not a chore you can skip: an
 idle session is genuinely unreachable without it. Notes arrive on a *turn*, and nothing outside
 your session can start one. arc won't ask again while it's listening.

@@ -186,7 +186,9 @@ function run(raw) {
             + `to stand by"): arc said it, not them. Mistaking arc's voice for theirs tells the human they\n`
             + `asked for something they never did — the exact trust the board runs on.\n\n`
             + `Your job this turn — nothing else:\n`
-            + `  1. run in the BACKGROUND (run_in_background: true)  →  arc join ${r.role}\n`
+            + `  1. run EXACTLY "arc join ${r.role}" via run_in_background: true (that IS the backgrounding) —\n`
+            + `     add NO & and NO redirects: a shell &/> breaks the permission allowlist (it will prompt) and\n`
+            + `     a shell-backgrounded process cannot wake you; only a run_in_background task re-invokes you.\n`
             + (r.duty
               ? `  2. READ ${r.duty.path} — that is this role's charter, written before you and\n`
                 + `     already true. ADOPT it; do not rewrite it from memory. It is what peers read\n`

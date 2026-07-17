@@ -280,7 +280,8 @@ function requestRole(session, arg, cwd) {
         `      you asked as : ${session}\n` +
         `      the holder is: ${claim.holder.sessionId || '(unrecorded)'}\n` +
         `  You already hold this role — nothing to re-claim. The listener is what needs re-arming:\n` +
-        `      arc join ${role}      ← run it in the BACKGROUND, reading ARC_SESSION fresh\n` +
+        `      arc join ${role}      ← run EXACTLY this via run_in_background: true (no & / redirects; they\n` +
+        `                        break the permission allowlist and won't wake you), reading ARC_SESSION fresh\n` +
         `  ROOT CAUSE: you CACHED ARC_SESSION. Never do that — it is ambient and it changes on a\n` +
         `  respawn. Read it from the environment on every call.` };
     }
@@ -301,7 +302,7 @@ function requestRole(session, arg, cwd) {
   const listen = !armNeeded
     ? '  listener: ✓ already armed — you are reachable while idle'
     : (waiting ? `  listener: armed for your OLD role "${waiting.role}" — it will not hear "${role}".\n` : '  listener: not armed yet.\n') +
-      `            arm it now, in the background:  arc join ${role}`;
+      `            arm it now:  arc join ${role}   (via run_in_background: true — no & or redirects, they break the allowlist and won't wake you)`;
   // The DUTY of the role you just claimed. Two different jobs depending on whether it exists:
   // if this repo already declares it, you are INHERITING a charter — adopt it, don't reinvent it.
   // If it doesn't, you are the first, so write it: the next session to hold this role (and every

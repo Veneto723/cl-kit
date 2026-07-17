@@ -1128,6 +1128,11 @@ try {
     !fresh.decision && /claim is DONE/.test(ctx) && /you are "research"/.test(ctx));
   ok('...and the turn has exactly one job: run `arc join research` in the background',
     /run_in_background: true/.test(ctx) && /arc join research/.test(ctx));
+  // The arm command must be run CLEAN: a shell & / redirect breaks the permission allowlist (so it
+  // prompts) AND is not a wakeable listener. audit mis-armed with `arc join audit >/dev/null 2>&1 &`
+  // and stayed deaf — the guidance now forbids decoration explicitly.
+  ok('...and it forbids shell decoration on the arm (no & / redirects — the mis-arm that kept audit deaf)',
+    /no &/i.test(ctx) && /redirect/i.test(ctx) && /allowlist/i.test(ctx));
   ok('...and it forbids inventing work ("do not start work nobody asked for")',
     /Do not start work nobody asked for/i.test(ctx));
 

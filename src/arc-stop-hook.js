@@ -133,7 +133,10 @@ function run(raw) {
       reason: `[arc] ${open.notes.length} request(s) you asked a peer are STILL UNANSWERED:\n  ${asked}\n${deadLine}\n`
         + `They answer on their own schedule, and nothing can wake an idle session from outside. `
         + `If you want the answer, arm the waker before you stop:\n`
-        + `  run it in the BACKGROUND (run_in_background: true), in whichever shell you use  →  arc join ${open.role}\n\n`
+        + `  →  arc join ${open.role}   — run it via run_in_background: true (that IS the backgrounding); add\n`
+        + `     NO & and NO redirects. A shell &/>/2>&1 breaks the permission allowlist (so it prompts you\n`
+        + `     instead of just running), AND a shell-backgrounded process is not a wakeable listener —\n`
+        + `     only a run_in_background task re-invokes this session. The command must be EXACTLY "arc join ${open.role}".\n\n`
         + `It exits the moment they reply, and that exit re-invokes YOU with it. If the answer `
         + `isn't worth waiting on, just say so and stop — you won't be asked about these again.`,
     });
