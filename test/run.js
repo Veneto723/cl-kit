@@ -646,6 +646,35 @@ try {
     ok('...and the local board is untouched by the refusal',
       fs.readFileSync(path.join(bA.planDir, 'notes.jsonl'), 'utf8') === before.replace('legacy one', 'REWRITTEN HISTORY'));
 
+    // IMPORT 5 — THE LANDING GATE (audit #236 defect 1): a transcript BLOCKED from landing
+    // (live-protected) must take its claim down with it AT THAT ROOT. The old gate answered
+    // "in the archive, or anywhere on disk?" — both true here — and minted a ghost pointer
+    // a revive from the new root could not honour.
+    fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-convlock-${cidA}.json`), J({ pid: process.pid }));
+    const destOuter2 = path.join(base, 'dest2');
+    fs.mkdirSync(path.join(destOuter2, path.basename(bA.root), '.git'), { recursive: true });
+    const im5 = sync.doImport('brd-sess', `"${tgz}" --dest "${destOuter2}"`);
+    const bC = RM.resolveBoard(path.join(destOuter2, path.basename(bA.root)));
+    ok('a claim whose transcript could NOT land is DROPPED at that root (the ghost gate, live-protected case)',
+      /skipped:.*open in a live session/.test(im5.message)
+      && !fs.existsSync(path.join(bC.planDir, 'claim-alpha.json'))
+      && /claim alpha: dropped — its conversation is not reachable/.test(im5.message), im5.message);
+    ok('...and its cursor/seen go with it (no inherited blindness at a root with no session)',
+      !fs.existsSync(path.join(bC.planDir, 'cursor-alpha.json')) && !fs.existsSync(path.join(bC.planDir, 'seen-alpha.json')));
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-convlock-${cidA}.json`)); } catch {}
+
+    // IMPORT 6 — DRY-RUN PREVIEWS THE REAL DECISION (audit #236 defect 2): a HELD chair must
+    // read "would keep", never "would carry" — the old branch answered before the guard ran,
+    // promising the exact mutation the real run then refused.
+    fs.writeFileSync(path.join(bA.planDir, 'notes.jsonl'), led(noid1, noid2, idA, idB, idC));   // heal the divergence from import 4
+    fs.writeFileSync(path.join(CLAUDE, 'cache', 'arc-state-brd-live.json'), J({ pid: process.pid, cwd: repoA }));
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', pid: process.pid, sessionId: 'brd-live', convId: cidA, at: Date.now() }));
+    const im6 = sync.doImport('brd-sess', `"${tgz}" --dry-run`);
+    const heldAfterDry = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('--dry-run previews the HELD guard ("would keep"), never a mutation the real run refuses',
+      /claim alpha: would keep — chair is HELD/.test(im6.message) && !/claim alpha: would carry/.test(im6.message), im6.message);
+    ok('...and a dry run writes nothing (the live claim is untouched)', heldAfterDry.pid === process.pid);
+
     try { fs.unlinkSync(path.join(CLAUDE, 'cache', 'arc-state-brd-live.json')); } catch {}
     fs.rmSync(base, { recursive: true, force: true });
   } else {
@@ -2991,14 +3020,14 @@ try {
   ok('...but a MISSING BINARY (ENOENT) stays fatal — nothing can start without it',
     badEnoent.ok === false && /ENOENT/.test(badEnoent.message));
 
-  // The peer's tab must be identifiable. Claude Code sets the terminal title from the project
-  // folder, so without --suppressApplicationTitle both tabs read "arc" and you cannot tell the
-  // caller from the peer it spawned.
+  // The peer's tab STARTS named by its role (--title). It is no longer pinned there with
+  // --suppressApplicationTitle: that flag suppressed Claude Code's own title AND its green
+  // working-icon (one OSC channel), leaving a spawned tab looking dead beside a hand-launched
+  // one. The human chose the live icon over the pinned label (2026-07-17) — Claude Code
+  // retitles the tab from the project folder, same as every other session.
   I.staffRole(VS, 'titled', NOHIST);
-  // The bare role, no "arc: " badge — the human reads tabs by role, and the prefix pushed the
-  // one word that matters off a narrow tab (their call, 2026-07-16).
-  ok('the peer tab is titled by ROLE and keeps it (--suppressApplicationTitle)',
-    /--title 'titled' --suppressApplicationTitle/.test(psOf()));
+  ok('the peer tab STARTS titled by role (--title), and no longer suppresses the app title/icon',
+    /--title 'titled' -d /.test(psOf()) && !/--suppressApplicationTitle/.test(psOf()));
 
   // ---- the trust dialog: the invited tab has NO HUMAN to answer it -------------------
   // Claude Code asks "Do you trust the files in this folder?" per PROJECT PATH, per account

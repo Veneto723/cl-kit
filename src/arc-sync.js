@@ -511,7 +511,7 @@ function doImport(session, argStr) {
   const added = [], updated = [], skipped = [];
   let backedUp = false;
   const boardStages = [];        // staged boards found at the archive root — processed after sessions
-  const archiveIds = new Set();  // every session id the archive carries (the cursor/claim gate needs it)
+  const landed = new Set();      // "<dest-project-dir>|<convId>" present after import — the claim gate's truth
 
   // walk extracted <proj>/<id>.jsonl
   let projs = []; try { projs = fs.readdirSync(tmp); } catch {}
@@ -551,16 +551,29 @@ function doImport(session, argStr) {
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
       const id = f.slice(0, -6);
-      archiveIds.add(id);
       const srcJsonl = path.join(pdir, f);
       const srcSide = path.join(pdir, id);
       const dstDir = path.join(PROJECTS, destProjName);
       const dstJsonl = path.join(dstDir, f);
       const dstSide = path.join(dstDir, id);
 
-      if (protectedIds.has(id)) { skipped.push(`${id.slice(0, 8)} (open in a live session — protected)`); continue; }
+      // LANDED = "present at THIS destination project dir once the import finishes" — the
+      // fact the board's claim gate needs. "In the archive" and "on this disk somewhere"
+      // are different facts (audit #236 measured the gap live: three live-protected
+      // transcripts skipped under --dest, their claims landed at the new root anyway —
+      // ghost pointers a revive could not honour). Every skip path below records the
+      // truth: a skip-because-it-exists still lands; a skip-that-leaves-nothing does not.
+      // Key on the REAL dir name (no lowercasing): canRevive sniffs it back through
+      // sniffLaunchCwd, which matches encodeProject(cwd) exactly and would miss a mangled key.
+      const landKey = `${destProjName}|${id}`;
+
+      if (protectedIds.has(id)) {
+        if (fs.existsSync(dstJsonl)) landed.add(landKey);   // protected AND already here — reachable
+        skipped.push(`${id.slice(0, 8)} (open in a live session — protected)`); continue;
+      }
 
       const exists = fs.existsSync(dstJsonl);
+      if (exists) landed.add(landKey);                       // whatever branch runs, a copy remains
       let action = 'add';
       if (exists) {
         if (flags['skip-existing']) { skipped.push(`${id.slice(0, 8)} (exists)`); continue; }
@@ -571,7 +584,7 @@ function doImport(session, argStr) {
         action = 'update';
       }
 
-      if (flags['dry-run']) { (action === 'add' ? added : updated).push(`${id.slice(0, 8)} (${destProjName})`); continue; }
+      if (flags['dry-run']) { landed.add(landKey); (action === 'add' ? added : updated).push(`${id.slice(0, 8)} (${destProjName})`); continue; }
 
       try {
         fs.mkdirSync(dstDir, { recursive: true });
@@ -587,6 +600,7 @@ function doImport(session, argStr) {
         if (remapFrom) copyRemappingCwd(srcJsonl, dstJsonl, remapFrom, remapTo);
         else fs.copyFileSync(srcJsonl, dstJsonl);
         if (fs.existsSync(srcSide)) fs.cpSync(srcSide, dstSide, { recursive: true });
+        landed.add(landKey);
         (action === 'add' ? added : updated).push(`${id.slice(0, 8)} (${destProjName})`);
       } catch (e) {
         skipped.push(`${id.slice(0, 8)} (error: ${e.message})`);
@@ -594,13 +608,14 @@ function doImport(session, argStr) {
     }
   }
 
-  // boards ride AFTER the sessions — the claim/cursor gate asks "is this conversation
-  // available HERE now?", and that answer includes the transcripts just imported.
+  // boards ride AFTER the sessions, and their gate asks the REVIVE's question: "is this
+  // conversation reachable from THIS board's root?" — i.e. landed (or already present) at
+  // the project dir a `claude --resume` from that root would search. Not "in the archive",
+  // not "anywhere on disk" (audit #236: both of those mint ghost pointers under --dest).
   const boardLines = [];
-  const availableConv = (id) => archiveIds.has(id) || !!findTranscriptFile(id);
   for (const stage of boardStages) {
     try {
-      importBoard(stage, { destRoot, dryRun: !!flags['dry-run'], availableConv, backupDir, lines: boardLines, markBackedUp: () => { backedUp = true; } });
+      importBoard(stage, { destRoot, dryRun: !!flags['dry-run'], landed, backupDir, lines: boardLines, markBackedUp: () => { backedUp = true; } });
     } catch (e) { boardLines.push(`  board: FAILED — ${e.message} (local board untouched)`); }
   }
   rm(tmp);
@@ -626,11 +641,16 @@ function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {
 
 // ---- board import ------------------------------------------------------------
 // Lands one staged board into its repo. The rules that are NOT obvious from the code:
-//   * a claim whose conversation is not available here is DROPPED — importing it would
-//     promise a revive arc cannot perform (the "scout" orphan, found live on ALYCE:
-//     a chair pointing at a transcript that existed on NEITHER machine). The gate is
-//     transcript-presence ONLY: charterlessness is a roster concern, and gating on it
-//     would also destroy WORKING pointers of undeclared roles (audit #232).
+//   * a claim whose conversation is not REACHABLE FROM THIS BOARD'S ROOT is DROPPED —
+//     importing it would promise a revive arc cannot perform (the "scout" orphan, found
+//     live on ALYCE: a chair pointing at a transcript that existed on NEITHER machine).
+//     Reachable means: at the project dir a `claude --resume` launched from this root
+//     would search — the landed set, plus whatever that dir already held. NOT "in the
+//     archive" and NOT "anywhere on disk": audit #236 measured both minting ghosts under
+//     --dest (live-protected transcripts skipped the copy; their claims landed at the new
+//     root pointing at conversations no revive from there could see). The gate is
+//     reachability ONLY: charterlessness is a roster concern, and gating on it would
+//     also destroy WORKING pointers of undeclared roles (audit #232).
 //   * a claim whose chair is HELD here is never touched. Writing the archive's tombstone
 //     over a live claim flips isHolder to VACANT — a second session gets staffed into an
 //     occupied chair, and the live peer's convId is replaced by a stale one. Same lock
@@ -639,7 +659,7 @@ function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {
 //   * a cursor/seen whose session did NOT travel is dropped: a fresh session inheriting a
 //     read cursor would see zero unread and start BLIND — worse than any re-read (#227).
 function importBoard(stageDir, ctx) {
-  const { destRoot, dryRun, availableConv, backupDir, lines, markBackedUp } = ctx;
+  const { destRoot, dryRun, landed, backupDir, lines, markBackedUp } = ctx;
   let meta;
   try { meta = JSON.parse(fs.readFileSync(path.join(stageDir, 'board.json'), 'utf8')); }
   catch { lines.push('  board: SKIPPED — stage carries no readable board.json'); return; }
@@ -657,6 +677,29 @@ function importBoard(stageDir, ctx) {
   const board = B.resolveBoard(root);          // honours a legacy planDir if the destination still has one
   if (!dryRun) B.ensureBoard(board);           // migrates + creates; mutates board.planDir — must precede any path use
   const peerSrc = path.join(stageDir, 'peer');
+  // THE REVIVE'S OWN QUESTION: a `claude --resume <id>` from this board's root succeeds
+  // iff a transcript for <id> lives in a project dir that BELONGS to this repo. Deciding
+  // that by DIR NAME is the trap audit #238 caught: a project dir is named for the LITERAL
+  // cwd Claude recorded (C--Users-ADMINI-1-…), while board.root is realpath-canonical
+  // (…-administrator-…, lowercased) — the SAME repo, two encodings, and comparing names
+  // drops every legitimate claim on a short-named / junctioned / case-variant path. So:
+  // fast-path on the encoded names (the common no-gap case, no file read), then fall back
+  // to GROUND TRUTH — the cwd stored inside the transcript, canonicalised the same way
+  // board.root was. Two resolutions that used to disagree now reduce to one.
+  const rootCanon = board.root;                                            // resolveBoard already canonicalised it
+  const rootNames = new Set([encodeProject(root), encodeProject(rootCanon)].map((s) => s.toLowerCase()));
+  const canRevive = (id) => {
+    if (!id) return false;
+    const projs = new Set();
+    for (const key of landed) { const c = key.indexOf('|'); if (key.slice(c + 1) === id) projs.add(key.slice(0, c)); }
+    for (const proj of listDir(PROJECTS)) { if (fs.existsSync(path.join(PROJECTS, proj, `${id}.jsonl`))) projs.add(proj); }
+    for (const proj of projs) if (rootNames.has(proj.toLowerCase())) return true;   // name matches — done, no read
+    for (const proj of projs) {                                            // names differ (realpath gap): resolve the cwd
+      const cwd = sniffLaunchCwd(path.join(PROJECTS, proj, `${id}.jsonl`), proj);
+      try { if (cwd && B.canonical(cwd) === rootCanon) return true; } catch {}
+    }
+    return false;
+  };
   const boardBackup = () => {
     const d = path.join(backupDir, 'board-' + encodeProject(board.root));
     fs.mkdirSync(d, { recursive: true });
@@ -696,23 +739,38 @@ function importBoard(stageDir, ctx) {
     let c; try { c = JSON.parse(fs.readFileSync(path.join(peerSrc, f), 'utf8')); } catch { continue; }
     const tomb = { role: c.role || role, sessionId: c.sessionId || null, convId: c.convId || null, at: c.at || 0 };
     archClaims.set(role, tomb);
-    if (!tomb.convId || !availableConv(tomb.convId)) {
-      lines.push(`    claim ${role}: dropped — its conversation is not available here (a revive pointer arc could not honour)`);
+    if (!tomb.convId || !canRevive(tomb.convId)) {
+      lines.push(`    claim ${role}: dropped — its conversation is not reachable from this board's root (a revive pointer arc could not honour)`);
       continue;
     }
-    if (dryRun) { lines.push(`    claim ${role}: would carry the revive pointer -> ${tomb.convId.slice(0, 8)}`); continue; }
+    // ONE decision function for both modes: --dry-run used to answer BEFORE the HELD guard
+    // ran, promising "would carry" for chairs the real run then kept — the preview
+    // contradicted the one protection an operator dry-runs to check (audit #236). The dry
+    // run now evaluates the same guards read-only; only the write is withheld (and the lock
+    // — a preview must not contend with a live claim in flight).
+    //
+    // The tiebreak reads the claim RAW: roleClaim is genuineness-filtered, so a local
+    // TOMBSTONE reads as null through it and would be clobbered unconditionally — a week of
+    // work on this machine losing its revive pointer to a stale archive (audit #234, proved
+    // with a maximally-newer tombstone). And the local side passes the SAME reachability
+    // gate as the archive side: a newer pointer at a conversation this machine cannot
+    // revive loses to an older one it can.
+    const decide = () => {
+      if (B.roleClaim(board, role)) return `chair is HELD by a live session here — kept (never tombstone a live peer)`;
+      const raw = B.readClaimFile(board, role);
+      const localOk = raw && raw.convId && canRevive(raw.convId);
+      if (localOk && (raw.at || 0) >= (tomb.at || 0)) return `local revive pointer is newer — kept`;
+      return null;   // null = the tombstone lands
+    };
+    if (dryRun) {
+      const kept = decide();
+      lines.push(`    claim ${role}: ${kept ? `would keep — ${kept}` : `would carry the revive pointer -> ${tomb.convId.slice(0, 8)}`}`);
+      continue;
+    }
     try {
       B.withLock(board, `role-${role}`, () => {
-        if (B.roleClaim(board, role)) { lines.push(`    claim ${role}: chair is HELD by a live session here — kept (never tombstone a live peer)`); return; }
-        // The tiebreak must read the claim RAW: roleClaim is genuineness-filtered, so a local
-        // TOMBSTONE reads as null through it and would be clobbered unconditionally — a week of
-        // work on this machine losing its revive pointer to a stale archive (audit #234, proved
-        // with a maximally-newer tombstone). And the local side passes the SAME availability
-        // gate as the archive side: a newer pointer at a conversation this machine cannot
-        // revive loses to an older one it can.
-        const raw = B.readClaimFile(board, role);
-        const localOk = raw && raw.convId && availableConv(raw.convId);
-        if (localOk && (raw.at || 0) >= (tomb.at || 0)) { lines.push(`    claim ${role}: local revive pointer is newer — kept`); return; }
+        const kept = decide();
+        if (kept) { lines.push(`    claim ${role}: ${kept}`); return; }
         B.atomicWriteJson(path.join(board.planDir, f), tomb);
         lines.push(`    claim ${role}: revivable here as ${tomb.convId.slice(0, 8)}`);
       });
@@ -726,8 +784,8 @@ function importBoard(stageDir, ctx) {
     const km = /^(cursor|seen)-(.+)\.json$/.exec(f); if (!km) continue;
     const kind = km[1], who = km[2];
     const tomb = archClaims.get(who);
-    if (!tomb || !tomb.convId || !availableConv(tomb.convId)) {
-      lines.push(`    ${kind} ${who}: dropped — its session did not travel (a fresh session must re-read, not inherit blindness)`);
+    if (!tomb || !tomb.convId || !canRevive(tomb.convId)) {
+      lines.push(`    ${kind} ${who}: dropped — its session is not reachable here (a fresh session must re-read, not inherit blindness)`);
       continue;
     }
     let arch; try { arch = JSON.parse(fs.readFileSync(path.join(peerSrc, f), 'utf8')); } catch { continue; }
