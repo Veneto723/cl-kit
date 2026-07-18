@@ -62,6 +62,39 @@ function readUsageCache() {
   catch { return null; }
 }
 
+// Roadmap #10: the usage payload's limits[] carries what the top-line 5h/7d numbers
+// cannot — PER-MODEL weeklies and a server-authoritative severity. Field map measured
+// live (research board #257, CORRECTED by #264): per-model data lives ONLY in
+// limits[] entries with kind:"weekly_scoped" + scope.model.display_name — the
+// top-level seven_day_opus/seven_day_sonnet fields are NULL on subscription accounts,
+// and `percent` is a whole-number percent. Defensive throughout: absent or malformed
+// limits[] returns [] and the caller renders exactly as before this existed.
+function scopedLimits(data) {
+  const out = [];
+  const ls = data && Array.isArray(data.limits) ? data.limits : [];
+  for (const l of ls) {
+    if (!l || typeof l !== 'object' || l.kind !== 'weekly_scoped') continue;
+    const model = l.scope && l.scope.model && l.scope.model.display_name;
+    if (!model) continue;
+    out.push({
+      label: `7d · ${model}`,
+      percent: typeof l.percent === 'number' ? l.percent : null,
+      severity: typeof l.severity === 'string' ? l.severity : null,
+      resets_at: l.resets_at || null,
+    });
+  }
+  return out;
+}
+// Severity → glyph, display only. Escalated values were never OBSERVED (research #264
+// inferred the escalation from the field's presence), so nothing here wires color
+// semantics to guesses: any non-normal value renders ⚠, with ⛔ reserved for the one
+// name whose meaning is unambiguous. Unknown strings are treated as warnings — a
+// server saying anything other than "normal" deserves a glance, whatever the word.
+function sevGlyph(s) {
+  if (!s || s === 'normal') return '';
+  return s === 'critical' ? ' ⛔' : ' ⚠';
+}
+
 // /arc-peek is an explicit "show me current usage" — it must NOT show stale data.
 // Unlike the statusline (which paints instantly and refreshes DETACHED for next
 // time), peek SYNCHRONOUSLY refreshes the cache first (subscription + gateways),
@@ -247,7 +280,11 @@ function buildPeek(session) {
   if (!cache) lines.push('  (no usage cache yet — the statusline populates it every few minutes; try again shortly)');
 
   for (const a of cfg.accounts) {
-    const mark = a.id === current ? '   ← current' : '';
+    // The CURRENT account is marked by COLOR, not an arrow suffix (human's call,
+    // 2026-07-18): bold cyan — arc's neutral-highlight — on the account's lines.
+    // Applied PER LINE (the host re-emits display rows across soft-wraps and drops
+    // color mid-wrap — same reason clBlock paints per line). Everyone else plain.
+    const tint = (s) => (a.id === current ? `\x1b[1;96m${s}\x1b[0m` : s);
     const label = a.label || a.id;
     if (a.type === 'oauth') {
       const slice = oauthUsageSlice(a, cache, cfg); // THIS account's numbers, not whoever refreshed last
@@ -256,9 +293,18 @@ function buildPeek(session) {
         const sd = d.seven_day || {};                    // partial cache may lack seven_day
         const reset = fmtReset(d.five_hour.resets_at) || fmtReset(sd.resets_at);
         const rp = reset ? `  (resets ${reset})` : '';
-        lines.push(`  ${label} [subscription]   5h ${pct(d.five_hour.utilization).trim()}%  ·  7d ${pct(sd.utilization).trim()}%${rp}   ${ageStr(slice.fetchedAt)}${mark}`);
+        lines.push(tint(`  ${label} [sub]   5h ${pct(d.five_hour.utilization).trim()}%  ·  7d ${pct(sd.utilization).trim()}%${rp}   ${ageStr(slice.fetchedAt)}`));
+        // Roadmap #10 enrichment: ONE extra line, only when the payload carries
+        // per-model weeklies — and only the facts the line above does not already
+        // say. Guarded: enrichment must never break peek.
+        try {
+          const scoped = scopedLimits(d);
+          if (scoped.length) {
+            lines.push(tint(`      ${scoped.map((l) => `${l.label} ${l.percent == null ? '?' : Math.round(l.percent)}%${sevGlyph(l.severity)}`).join('  ·  ')}`));
+          }
+        } catch { /* never */ }
       } else {
-        lines.push(`  ${label} [subscription]   (no usage data)${mark}`);
+        lines.push(tint(`  ${label} [sub]   (no usage data)`));
       }
     } else if (a.type === 'api') {
       const gw = cache && cache.gwUsage && cache.gwUsage[a.id];
@@ -268,28 +314,28 @@ function buildPeek(session) {
         try {
           const GW = require('./gw-usage');
           const s = GW.summarizeGatewayUsage(gw.data);
-          lines.push(`  ${label} [gateway]        ${GW.gatewayUsageLine(gw.data, { withReq: true }) || '(usage)'}   ${ageStr(gw.fetchedAt)}${mark}`);
+          lines.push(tint(`  ${label} [gw]    ${GW.gatewayUsageLine(gw.data, { withReq: true }) || '(usage)'}   ${ageStr(gw.fetchedAt)}`));
           for (const m of ((s && s.models) || []).slice(0, 4)) {
             lines.push(`      ${String(m.model || '?').replace(/^claude-/, '').slice(0, 12).padEnd(12)}  ${GW.fmtTokens(m.tokens)} tok${m.cost != null ? ` · ${GW.fmtCost(m.cost, s.unit)}` : ''}`);
           }
-        } catch { lines.push(`  ${label} [gateway]        (usage unavailable)${mark}`); }
+        } catch { lines.push(tint(`  ${label} [gw]    (usage unavailable)`)); }
       } else if (cache && cache.pool && Array.isArray(cache.pool.rows) && cache.pool.rows.length) {
         // Legacy poolDb metrics (per-backing-account 5h/7d).
         const rows = cache.pool.rows;
         const active = rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited').length;
         const fhs = rows.map((r) => r.fh).filter((v) => v != null);
         const minFh = fhs.length ? Math.round(Math.min(...fhs)) : null;
-        lines.push(`  ${label} [gateway]        ${active}/${rows.length} active${minFh != null ? `  ·  5h from ${minFh}%` : ''}   ${ageStr(cache.pool.fetchedAt)}${mark}`);
+        lines.push(tint(`  ${label} [gw]    ${active}/${rows.length} active${minFh != null ? `  ·  5h from ${minFh}%` : ''}   ${ageStr(cache.pool.fetchedAt)}`));
         for (const r of rows) {
           const nm = String(r.label || r.email || '?').split('@')[0].slice(0, 10).padEnd(10);
           const st = r.reason_code === 'rate_limited' ? 'cooldown' : (r.status || '?');
           lines.push(`      ${nm}  5h ${pct(r.fh)}%  ·  7d ${pct(r.sd)}%   ${st}`);
         }
       } else {
-        lines.push(`  ${label} [gateway]        (no usage data yet)${mark}`);
+        lines.push(tint(`  ${label} [gw]    (no usage data yet)`));
       }
     } else {
-      lines.push(`  ${label} [${a.type}]${mark}`);
+      lines.push(tint(`  ${label} [${a.type}]`));
     }
   }
 
@@ -1050,4 +1096,4 @@ function requestTrash(session, argStr) {
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestModePicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, nextClaudexPort, gatewayTranslatesMessages, probeGatewayGptModels, CACHE_DIR };
+module.exports = { scopedLimits, sevGlyph, requestSwitch, requestRestart, requestPicker, requestModePicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, nextClaudexPort, gatewayTranslatesMessages, probeGatewayGptModels, CACHE_DIR };

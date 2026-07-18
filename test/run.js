@@ -688,6 +688,62 @@ try {
   const core = require(path.join(SRC, 'arc-switch-core.js'));
   const peek = core.buildPeek('no-session');
   ok('buildPeek returns a message (never throws)', peek && typeof peek.message === 'string' && peek.message.length > 0);
+
+  // Roadmap #10 — per-model weeklies from limits[]. Field map measured live (research
+  // #257, CORRECTED #264): weekly_scoped + scope.model.display_name is the ONLY true
+  // source; the top-level seven_day_opus/sonnet fields are null on subscriptions.
+  const FX = { limits: [
+    { kind: 'session', percent: 12, severity: 'normal' },
+    { kind: 'weekly_all', percent: 29, severity: 'normal' },
+    { kind: 'weekly_scoped', percent: 23, severity: 'normal', resets_at: '2026-07-24T00:00:00Z', scope: { model: { display_name: 'Fable' } } },
+    { kind: 'weekly_scoped', percent: 88, severity: 'warning', scope: { model: { display_name: 'Opus' } } },
+    null, { kind: 'weekly_scoped', scope: {} },
+  ] };
+  const sc = core.scopedLimits(FX);
+  ok('scopedLimits extracts ONLY weekly_scoped entries with a model name',
+    sc.length === 2 && sc[0].label === '7d · Fable' && sc[0].percent === 23 && sc[1].label === '7d · Opus');
+  ok('...and carries severity through (glyph: normal silent, non-normal ⚠, critical ⛔)',
+    core.sevGlyph(sc[0].severity) === '' && core.sevGlyph('warning') === ' ⚠'
+    && core.sevGlyph('critical') === ' ⛔' && core.sevGlyph('someday-new-value') === ' ⚠');
+  ok('...and every malformed shape yields [] (enrichment can never break peek)',
+    core.scopedLimits({}).length === 0 && core.scopedLimits(null).length === 0
+    && core.scopedLimits({ limits: 'junk' }).length === 0);
+
+  // End-to-end through buildPeek: fixture config + cache in the hermetic HOME. The
+  // enrichment line renders only when scoped data exists; a plain payload renders
+  // exactly the pre-#10 shape (no extra line).
+  // Save-write-test-RESTORE, so the e2e runs regardless of what earlier tests left in
+  // the hermetic HOME (a skip guard here silently skipped on the first run — the exact
+  // "green light wired to nothing" this suite keeps hunting in others).
+  const cfgPath = path.join(CLAUDE, 'arc-config.json');
+  const cachePath = path.join(CLAUDE, 'cache', 'usage-monitor-cache.json');
+  const savedCfg = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath) : null;
+  const savedCache = fs.existsSync(cachePath) ? fs.readFileSync(cachePath) : null;
+  try {
+    fs.writeFileSync(cfgPath, JSON.stringify({ version: 1, defaultAccount: 'fx', accounts: [{ id: 'fx', type: 'oauth', label: 'fx' }] }));
+    fs.mkdirSync(path.join(CLAUDE, 'cache'), { recursive: true });
+    fs.writeFileSync(cachePath, JSON.stringify({
+      usageByAccount: { fx: { fetchedAt: Date.now(), data: {
+        five_hour: { utilization: 12, resets_at: '2026-07-18T15:00:00Z' },
+        seven_day: { utilization: 29, resets_at: '2026-07-24T00:00:00Z' },
+        ...FX,
+      } } },
+    }));
+    const rich = core.buildPeek('no-session');
+    ok('peek renders the per-model line from limits[] (with the ⚠ glyph)',
+      /7d · Fable 23%/.test(rich.message) && /7d · Opus 88% ⚠/.test(rich.message));
+    fs.writeFileSync(cachePath, JSON.stringify({
+      usageByAccount: { fx: { fetchedAt: Date.now(), data: {
+        five_hour: { utilization: 12, resets_at: null }, seven_day: { utilization: 29, resets_at: null },
+      } } },
+    }));
+    const plain = core.buildPeek('no-session');
+    ok('...and a payload WITHOUT limits[] renders exactly the pre-enrichment shape',
+      /5h 12%/.test(plain.message) && !/7d · /.test(plain.message));
+  } finally {
+    if (savedCfg != null) fs.writeFileSync(cfgPath, savedCfg); else fs.rmSync(cfgPath, { force: true });
+    if (savedCache != null) fs.writeFileSync(cachePath, savedCache); else fs.rmSync(cachePath, { force: true });
+  }
   const tr = core.requestTrash('no-session', '');
   ok('requestTrash list renders', tr && typeof tr.message === 'string');
   const del = core.requestDelete('', '');
