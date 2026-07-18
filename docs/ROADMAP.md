@@ -54,6 +54,16 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
+## 3. A respawn with no following turn leaves a role-holder deaf until the human types · **REAL, architectural** · confirmed 2026-07-18
+
+**Confirmed by the deafness-hunt (2026-07-18), two verifiers, and it is NOT a hook bug — no hook body runs to be fixed.** Every listener is a background task tied to the claude process; `/arc-restart` and `/arc-switch` re-exec and kill it, and the re-adoption of the role at relaunch happens *without a model turn* (it can be a UserPromptSubmit block at zero tokens). No turn ⇒ no Stop hook ⇒ no arm-offer and no delivery to ride the nudge. The session sits idle, role held, listener dead, and is unreachable until the human types something (which finally spends a turn whose end re-arms it). Every code-level re-arm path this session added — the scoped guard, the delivery-nudge, the role-aware/genuine checks — is downstream of *a turn happening*; this gap is upstream of all of them.
+
+**Why it resists the obvious fix:** arc **cannot arm the listener itself** — the wake channel is "a background task the SESSION started, whose exit re-invokes the model," and a hook-spawned process is invisible to the harness, so its exit wakes nobody (the constraint the whole listener design is built around). So "just re-arm at launch" is not available; only the model can arm, and the model needs a turn.
+
+**The shape of a real fix (needs design, not a patch):** either the relaunch injects a genuine minimal turn whose only job is to re-arm (costs tokens on every switch/restart — weigh against the deafness), or arc gains a pull-model delivery that does not depend on a session-started listener at all (the same horizon operator-visibility item 1 gestures at). **Owner of the next move:** the human, to say whether a per-respawn re-arm turn is worth its token cost, or whether this waits for a pull-model host.
+
+---
+
 ## Parked elsewhere — pointers, not entries
 
 These are live threads owned by other chairs or blocked on a call. They are **not** roadmap items; recorded here only so this file is not mistaken for the whole picture.

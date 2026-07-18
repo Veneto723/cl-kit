@@ -40,7 +40,9 @@
 // only the model can make — a hook can't see it.
 //
 // Safety (a Stop hook that misfires wedges a session, so all three are load-bearing):
-//   • stop_hook_active → return immediately. We NEVER chain a block onto our own block.
+//   • stop_hook_active → deliveries chain (provably terminating) and MARKER-BOUNDED offers may
+//     fire once; only the unmarked spawns-leak nag returns immediately. (The old blanket bail
+//     here is what left a fed-then-idle session deaf — see the guard comment below.)
 //   • We only ever block when there is genuinely something to say (a note, or an
 //     un-armed unanswered request) — never speculatively.
 //   • Any throw exits 0 silently. A coordination nicety must never trap a session.
@@ -91,19 +93,54 @@ function run(raw) {
   const inj = require('./arc-notes').injection(session, cwd);
   if (inj) {
     const more = inj.count > inj.shown;   // a capped batch — the rest arrives on the next stop
+    // FOLD THE ARM-NUDGE INTO THE DELIVERY (measured fix, 2026-07-18). A role-holder that is not
+    // listening is deaf the moment it idles — and the standalone offer below is UNREACHABLE for a
+    // busy session, because this delivery block returns first on every turn that has a note. That
+    // is exactly how audit stayed deaf all day: it was revived with a request every time, so every
+    // turn ended in a delivery, the standalone offer never fired, and the one time it did (a quiet
+    // continuation) audit was mid-verdict and ignored it — after which the once-per-cycle marker
+    // suppressed it forever. Reproduced cold: a role-holder fed a note each turn NEVER armed.
+    // So ride the interruption the session is already taking — append the nudge to the note it is
+    // already reading. This is the ONE place a deaf-but-busy session is guaranteed to be looking,
+    // and it costs no extra block (zero added nagging — it is text on a delivery that was
+    // happening anyway). Guarded on holding a role and NOT already listening, so an armed session
+    // sees nothing extra. The standalone offer below still covers a QUIET role-holder (no
+    // deliveries to ride), which is the case it was always for.
+    let armTail = '';
+    try {
+      const A = require('./arc-await');
+      const N = require('./arc-notes');
+      const R = require('./arc-board');
+      const role = N.getRole(session, R.resolveBoard(N.resolveCwd(session, cwd)));
+      // isWaitingAs, NOT isWaiting: a listener armed for an OLD role is deaf on this one, so a
+      // role-blind check would call a genuinely-deaf session "reachable" and suppress the nudge.
+      if (role && !A.isWaitingAs(session, role, { genuine: true })) {
+        armTail = `\n\n⚠ You hold "${role}" but have NO listener armed — the moment this turn ends you are `
+          + `unreachable again (a note would sit unseen until a human types). After you handle the above, `
+          + `arm it so the NEXT reply reaches you without anyone typing:\n`
+          + `  run EXACTLY "arc join ${role}" via run_in_background: true (no & / no redirects).`;
+      }
+    } catch { /* a nudge must never wedge a delivery */ }
     out({
       decision: 'block',
       reason: `${inj.text}\n\n(arc delivered this at the END of your turn — the user typed nothing. `
         + `Act on it if it needs acting on, then tell the user what came back.`
         + (more ? ' More is still unread; arc will hand you the next batch when this turn ends.' : '')
-        + `)`,
+        + `)${armTail}`,
     });
     return 'notes';
   }
 
-  // Past here we only ever OFFER something. An offer must never chain onto our own block, or a
-  // session mid-continuation gets nagged on every stop.
-  if (hook.stop_hook_active) return null;
+  // Past here we only ever OFFER something. Which offers may follow OUR OWN block is decided by
+  // whether the offer is SELF-BOUNDED — this used to be a blanket `stop_hook_active -> return`,
+  // and that hole put audit deaf TWICE in one day (2026-07-18): a woken session's turn ends in a
+  // chain — Stop -> deliver a note (block) -> reply -> Stop with stop_hook_active — so the
+  // blanket bail silenced the listener offer on exactly the turn shape a busy board produces:
+  // wake, answer, idle, DEAF until a human typed. The request offer (marked per seq) and the
+  // listener offer (marked once per cycle) are bounded by their own markers — at most one extra
+  // block each, then the marker holds — so they now run even mid-continuation. Only the
+  // spawns-leak nag has no marker (it re-fires as long as the leak exists), so it alone keeps
+  // the hard stop_hook_active guard, at its own site below.
 
   // 2. A QUESTION you asked a PEER that nobody has answered yet. You asked, so you want the
   //    answer — but a peer replies on THEIR schedule, and if you go idle first, nothing wakes
@@ -116,7 +153,13 @@ function run(raw) {
     N.markRequestsArmed(session, open.notes.map((n) => n.seq));
     // A live listener already guarantees the wake — the reply will exit it and re-invoke us.
     // Telling the agent to arm what is armed is exactly the nag this hook promises not to be.
-    if (require('./arc-await').isWaiting(session)) return null;
+    // isWaitingAs(open.role), NOT isWaiting: the reply lands addressed to open.role, so a listener
+    // armed for an OLD role will NEVER see it (it polls unreadFor(board, oldRole)). A role-blind
+    // check here would call a genuinely-deaf session "reachable" and arm no waiter for the role
+    // that is actually owed the answer — the silent-drop this case exists to prevent. (Adversarial
+    // deafness-hunt, 2026-07-18: this was the ONE re-arm site left role-blind after case 1/case 3
+    // were converted — two independent verifiers convicted it.)
+    if (require('./arc-await').isWaitingAs(session, open.role, { genuine: true })) return null;
     const asked = open.notes.map((n) => `#${n.seq} → ${n.to || 'everyone'}${n.toLive === false ? ' [EMPTY CHAIR]' : ''}: "${String(n.body).replace(/\s+/g, ' ').slice(0, 60)}"`).join('\n  ');
     // A request whose target is GONE cannot be answered — and the peer may have closed AFTER the
     // ask, so nothing warned at post time. Telling this agent to arm a listener would be telling
@@ -173,7 +216,9 @@ function run(raw) {
   //     — a temp worker, the one thing the doctrine says should barely exist. A chartered peer is a
   //     teammate; it is never listed. Only ones that OWE NOTHING are candidates; a peer mid-answer
   //     is working.
-  try {
+  //     THE SPAWNS-LEAK NAG ALONE KEEPS THE HARD GUARD: it has no once-per-cycle marker, so
+  //     chained onto our own block it would re-fire on every stop while the leak exists.
+  if (!hook.stop_hook_active) try {
     const R = require('./arc-board');
     const N = require('./arc-notes');
     const D = require('./arc-duty');
@@ -242,7 +287,9 @@ function run(raw) {
   //    work. Muting the ear would not make it more passive, just deaf.
   const A = require('./arc-await');
   if (!open.role) return null;                       // no role = nobody can address you = nothing to hear
-  if (A.isWaiting(session)) { A.clearOffered(session); return null; }  // listening: quiet, and re-offer next cycle
+  // isWaitingAs(open.role), NOT isWaiting: a listener armed for an OLD role hears nothing on this
+  // one, so a role-blind check would leave a role-changed session silently deaf (the misfile shape).
+  if (A.isWaitingAs(session, open.role, { genuine: true })) { A.clearOffered(session); return null; }  // listening AS THIS ROLE: quiet, re-offer next cycle
   if (A.wasOffered(session)) return null;            // already asked this cycle — never nag
   A.markOffered(session);
   out({

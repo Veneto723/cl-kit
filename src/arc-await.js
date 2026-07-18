@@ -83,17 +83,44 @@ function clearOffered(session) {
 // a marker whose pid died is swept so the session re-arms instead of staying deaf forever.
 // The role matters to callers: a listener armed for your OLD role hears nothing on your new
 // one, so "waiting" without "waiting-as-whom" would report a deaf session as reachable.
-function waitingFor(session) {
+//
+// opts.genuine — ALSO verify the pid is the one that WROTE the marker, not a recycle. A listener's
+// pid dies on respawn; if a new process is later recycled onto that exact pid, isAlive is true and
+// a bare check reports the session "reachable" while its real listener is gone (deafness-hunt,
+// 2026-07-18, same class as isHolder). The guard mirrors isHolder: genuine iff the process started
+// BEFORE the marker was written (markWaiting stamps `at` right after the arc-join process starts,
+// so a recycled pid always starts AFTER). Uses a FRESH probe (procStarts {fresh:true}), NOT the
+// warm 30s cache — because the warm cache can serve a DEAD predecessor's start and so keep the
+// exact <=30s recycle window this guard exists to close (audit #295). arming is not the hot path,
+// so it pays for certainty; the delegate path made the identical call with {fresh}. COST: a
+// live-pid fresh probe (~270ms) at the Stop hook's arming decision only — never the statusline
+// badge (a briefly-wrong badge is cosmetic; a wrong arming decision is real deafness). Fail-open on
+// every uncertainty (OS unaskable, unreadable start, legacy marker with no `at`): trust isAlive.
+const LISTEN_SKEW_MS = 2000;
+function waitingFor(session, opts) {
   try {
     const m = JSON.parse(fs.readFileSync(awaitFile(String(session)), 'utf8'));
-    if (m && m.pid && R.isAlive(m.pid)) return m;
-    clearWaiting(session);          // stale: the waiter died. Re-arm.
-    return null;
+    if (!(m && m.pid && R.isAlive(m.pid))) { clearWaiting(session); return null; }  // dead/absent: re-arm
+    if (opts && opts.genuine && m.at) {
+      const starts = R.procStarts([m.pid], { fresh: true });   // fresh, not warm: close the <=30s recycle window
+      const t = starts ? starts[m.pid] : undefined;            // null = OS unaskable -> fail open (trust isAlive)
+      if (t != null && m.at < t - LISTEN_SKEW_MS) { clearWaiting(session); return null; }  // recycled pid — not our listener
+    }
+    return m;
   } catch { return null; }
 }
 
 // Is a waiter ALREADY listening for this session? Used by the Stop hook to stay quiet.
-function isWaiting(session) { return waitingFor(session) !== null; }
+// ROLE-BLIND on purpose for the "any live listener" question; but a caller that knows the role
+// the session holds NOW must ask isWaitingAs — a listener armed for an OLD role hears nothing on
+// the new one, so treating it as "reachable" leaves the session silently deaf on its current role
+// (the exact shape of the 2026-07-18 role-misfile). Pass the role whenever you have it. Pass
+// {genuine:true} where a false "reachable" costs real deafness (the Stop hook's arming decision).
+function isWaiting(session, opts) { return waitingFor(session, opts) !== null; }
+function isWaitingAs(session, role, opts) {
+  const w = waitingFor(session, opts);
+  return !!w && (!role || w.role === role);
+}
 
 // Resolve the role to wait on: an explicit arg, else this session's own claimed role.
 function resolveRole(roleArg, session, board) {
@@ -203,7 +230,7 @@ function awaitOnce(roleArg, cwd, opts) {
   });
 }
 
-module.exports = { awaitOnce, resolveRole, isWaiting, waitingFor, markWaiting, clearWaiting, awaitFile,
+module.exports = { awaitOnce, resolveRole, isWaiting, isWaitingAs, waitingFor, markWaiting, clearWaiting, awaitFile,
   markOffered, wasOffered, offeredAt, clearOffered, offerFile };
 
 if (require.main === module) {

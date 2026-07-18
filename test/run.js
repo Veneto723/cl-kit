@@ -3260,6 +3260,31 @@ try {
   ok('a live waiter marks the session as already listening (no duplicate arm per turn)',
     A.isWaiting(WS) === true);
 
+  // ROLE-AWARE reachability (deafness-hunt, 2026-07-18): a listener armed for role X does not hear
+  // role Y, so a session that changed roles is DEAF on the new one even though a listener is alive.
+  ok('isWaitingAs distinguishes the role the listener is armed FOR (X-listener != reachable as Y)',
+    A.isWaitingAs(WS, 'research') === true && A.isWaitingAs(WS, 'other-role') === false);
+
+  // GENUINENESS (opt-in {genuine:true}): a marker whose pid was RECYCLED onto a new process reads
+  // alive but is not our listener. Genuine iff the process started BEFORE the marker was written;
+  // a recycled pid started after. Forge the recycle: our own live pid, but a marker timestamped
+  // LONG BEFORE this process could have started (at: 1000 = 1970) — a genuine arm stamps `at` after
+  // the process starts, so at<<start means "not the process that armed this."
+  fs.writeFileSync(A.awaitFile(WS), JSON.stringify({ pid: process.pid, role: 'research', at: 1000 }));
+  ok('a bare (cheap) check still trusts isAlive — the statusline badge pays no probe',
+    A.isWaiting(WS) === true);
+  ok('...but {genuine:true} CONVICTS a recycled pid (marker predates the live process) and sweeps it',
+    A.isWaiting(WS, { genuine: true }) === false && !fs.existsSync(A.awaitFile(WS)));
+  // ...while a GENUINE live listener (marker stamped at arm time, after start) survives {genuine:true}.
+  A.markWaiting(WS, 'research', process.pid);            // markWaiting stamps at = now (after our start)
+  ok('...and a genuine live listener survives the genuineness guard',
+    A.isWaitingAs(WS, 'research', { genuine: true }) === true);
+  // The genuine probe must be FRESH, not warm (audit #295): the 30s warm cache can serve a dead
+  // predecessor's start and so KEEP the <=30s recycle window this guard exists to close. Source-
+  // pinned (a warm/fresh contrast needs cache gymnastics in a child; the wiring is what matters).
+  ok('...and it uses a FRESH probe (procStarts {fresh}), closing the warm-cache recycle window',
+    /procStarts\(\[m\.pid\], \{ fresh: true \}\)/.test(fs.readFileSync(path.join(SRC, 'arc-await.js'), 'utf8')));
+
   // THE property that decides whether a crash makes a session permanently deaf: the test is
   // LIVENESS, not existence. A stale marker left by a dead waiter must re-arm — otherwise the
   // session never hears another note and nothing ever tells it why.
@@ -4834,6 +4859,46 @@ try {
   ok('a note that lands MID-TURN is fed to the model at turn end — no human keystroke',
     fed.decision === 'block' && /ANSWER: the flake is a tar bug/.test(fed.reason) && /END of your turn/.test(fed.reason));
 
+  // THE ARM-NUDGE RIDES THE DELIVERY (measured fix, 2026-07-18). This session holds a role and is
+  // NOT armed, so the delivery it is already getting must ALSO tell it to arm — otherwise a busy
+  // session (one that always has a note pending) reaches the standalone offer NEVER, because the
+  // delivery block returns first. That is exactly how audit stayed deaf all day (reproduced cold).
+  ok('a delivery to an UNARMED role-holder folds in the arm-nudge (the busy-session deaf fix)',
+    /NO listener armed/.test(fed.reason) && /arc join code/.test(fed.reason));
+  // ...but an ARMED role-holder sees NOTHING extra — the nudge is for the deaf, never a nag.
+  {
+    const A9 = require(path.join(SRC, 'arc-await.js'));
+    A9.markWaiting(SESSION, 'code', process.pid);   // now listening
+    RM.appendNote(board, { from: 'research', to: 'code', body: 'second note while armed', priority: 'normal' });
+    const armedFed = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('...while an ARMED role-holder gets the note with NO arm-nudge appended (never a nag)',
+      /second note while armed/.test(armedFed.reason) && !/NO listener armed/.test(armedFed.reason));
+    A9.clearWaiting(SESSION);
+    RM.markRead(board, 'code');
+
+    // ARMED FOR THE WRONG ROLE is DEAF, not reachable (robustness — the role-blind isWaiting hole
+    // the code's own comment warned about, and the exact shape of the 2026-07-18 role-misfile).
+    // A listener for role X does not hear role Y, so a session that changed roles must STILL be
+    // nudged/offered. isWaitingAs(role) is the fix; a bare isWaiting would call it reachable.
+    ok('(setup) isWaitingAs distinguishes the role a listener is armed FOR',
+      A9.isWaitingAs === undefined ? false : (() => { A9.markWaiting(SESSION, 'OTHER', process.pid);
+        const wrong = A9.isWaitingAs(SESSION, 'code'); const right = A9.isWaitingAs(SESSION, 'OTHER');
+        A9.clearWaiting(SESSION); return wrong === false && right === true; })());
+    A9.clearOffered(SESSION);                          // a fresh cycle, so the offer can fire
+    A9.markWaiting(SESSION, 'OLDROLE', process.pid);   // live listener, but for a role we no longer hold
+    const misOffer = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('a session armed for the WRONG role is still OFFERED (a stale-role listener is deaf, not reachable)',
+      misOffer.decision === 'block' && /hold the role "code"/.test(misOffer.reason || ''));
+    RM.appendNote(board, { from: 'research', to: 'code', body: 'note while mis-armed', priority: 'normal' });
+    A9.markWaiting(SESSION, 'OLDROLE', process.pid);   // re-plant (the offer above may have cleared markers)
+    const misFed = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('...and a delivery to a wrong-role-armed holder STILL folds in the nudge',
+      /note while mis-armed/.test(misFed.reason || '') && /NO listener armed/.test(misFed.reason || ''));
+    // Restore the linear flow's state for the tests that follow: no listener, notes read, and the
+    // offer marker SET (the original flow has been "already offered" since the first fire above).
+    A9.clearWaiting(SESSION); A9.markOffered(SESSION); RM.markRead(board, 'code');
+  }
+
   // idempotent: injection() advanced the cursor, so the SAME note cannot block twice
   ok('the same note can never block twice (cursor advanced -> no Stop loop)',
     !fire({ hook_event_name: 'Stop', cwd: sboard }).decision);
@@ -4850,9 +4915,29 @@ try {
     /second answer/.test(fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true }).reason || ''));
   ok('...and it still cannot block twice — the cursor advanced, so the chain TERMINATES',
     !fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true }).decision);
-  // The offers are advice, not a queue that drains — they must never nag mid-continuation.
-  ok('an OFFER never chains onto our own block (advice has no terminating property)',
+  // The offers are bounded by their MARKERS, not by a blanket guard — this fire stays silent
+  // because the listener offer was already made this cycle (the marker holds), NOT because
+  // stop_hook_active suppressed it.
+  ok('an already-made OFFER stays silent mid-continuation (the marker bounds it, no nag loop)',
     !fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true }).decision);
+
+  // THE DEAF-AFTER-DELIVERY HOLE (fired live TWICE in one day, 2026-07-18 — audit went deaf both
+  // times): a woken session's turn ends in a chain — Stop -> deliver a note (block) -> reply ->
+  // Stop with stop_hook_active — and the old blanket guard silenced EVERY offer there. So the
+  // listener arm was never offered on exactly the turn shape a busy board produces: wake, answer,
+  // idle, DEAF until a human typed. A fresh cycle (as after a wake consumed the listener) must
+  // get the offer even mid-continuation; the once-per-cycle marker is what bounds it, not the flag.
+  const A9 = require(path.join(SRC, 'arc-await.js'));
+  A9.clearOffered(SESSION);
+  const armAfterFeed = fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true });
+  ok('a FRESH cycle gets the listener offer even mid-continuation (the deaf-after-delivery fix)',
+    armAfterFeed.decision === 'block' && /arc join code/.test(armAfterFeed.reason || ''));
+  ok('...exactly once — the offer marker bounds the chain, never a nag loop',
+    !fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true }).decision);
+  // The one offer WITHOUT a marker keeps the hard guard — source-pinned so it cannot drift.
+  const shSrc = fs.readFileSync(HOOK, 'utf8');
+  ok('the spawns-leak nag (unmarked, would re-fire forever) alone keeps the hard guard',
+    /if \(!hook\.stop_hook_active\) try \{/.test(shSrc) && !/^\s*if \(hook\.stop_hook_active\) return null;/m.test(shSrc));
 
   // a non-arc session (no ARC_SESSION) must be left completely alone
   const bare = spawnSync(process.execPath, [HOOK], {
@@ -4872,6 +4957,22 @@ try {
     && /why is the import flaky/.test(asked.reason));
   ok('...and it is offered ONCE, never nagged every turn',
     !fire({ hook_event_name: 'Stop', cwd: sboard }).decision);
+
+  // CASE 2 MUST ALSO BE ROLE-AWARE (deafness-hunt, 2026-07-18: the ONE re-arm site left on the
+  // role-blind isWaiting after case 1 and case 3 were converted). A session that asked a peer,
+  // then holds a listener armed for a DIFFERENT role, is DEAF to the reply (that listener polls
+  // the old role's notes) — so the request offer MUST still fire. A role-blind check would call it
+  // "already listening" and silently drop the answer it is owed.
+  {
+    const A2 = require(path.join(SRC, 'arc-await.js'));
+    RM.markRead(board, 'code');                          // clear the delivered reply so case 1 is empty
+    RM.appendNote(board, { from: 'code', to: 'research', kind: 'request', body: 'second question, still open' });
+    A2.markWaiting(SESSION, 'SOME-OLD-ROLE', process.pid);   // a live listener, but for the wrong role
+    const misAsk = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('case 2: a wrong-role listener does NOT count as reachable — the request offer STILL fires',
+      misAsk.decision === 'block' && /STILL UNANSWERED/.test(misAsk.reason || ''));
+    A2.clearWaiting(SESSION); A2.clearOffered(SESSION); RM.markRead(board, 'code');
+  }
   // once a peer REPLIES, it is no longer open — and the reply itself is delivered as a note
   RM.appendNote(board, { from: 'research', to: 'code', replyTo: askSeq, body: 'DONE — tar --force-local' });
   const replied = fire({ hook_event_name: 'Stop', cwd: sboard });

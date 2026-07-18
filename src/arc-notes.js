@@ -800,7 +800,10 @@ function badge(session, cwd) {
     let deaf = false;
     try {
       const A = require('./arc-await');
-      if (!A.isWaiting(session)) {
+      // isWaitingAs(role), NOT isWaiting: a listener armed for an OLD role hears nothing on this
+      // one, so a role-blind check would SUPPRESS the DEAF badge for a genuinely-deaf role-changed
+      // session — hiding exactly the state the operator needs to see (deafness-hunt, 2026-07-18).
+      if (!A.isWaitingAs(session, role)) {
         const now = Date.now();
         const offAt = A.offeredAt(session);
         const offerStale = offAt != null && now - offAt > DEAF_STALE_MS;
