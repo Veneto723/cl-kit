@@ -2276,6 +2276,43 @@ try {
   ok('...including --name, so a switched/restarted peer stays findable in the picker',
     relaunch.includes('--name') && relaunch.includes('scout'));
 
+  // RE-ARM ON RESPAWN (roadmap #3): a /restart|/switch re-execs and leaves a reachable peer deaf
+  // until its next turn (a restart-then-walk-away takes none). arc cannot self-arm, so on a respawn
+  // it injects the revive's own `/arc-role <role>` — but ONLY if the session WAS armed (a surviving
+  // await marker), so a never-armed session is never forced to spend a turn. THE LIVE TEST'S LESSON
+  // (2026-07-18): a restart does NOT kill the listener — it spawnSyncs the new runner so the OLD
+  // runner stays alive as its parent, and the listener's owner-check keys on that runner, so the old
+  // listener LINGERS as an ORPHAN with a LIVE marker. That orphan can wake nobody (its claude is
+  // dead), so ANY pre-respawn marker is stale: re-arm AND clear it (else the hook's armNeeded reads
+  // the orphan as "already listening" and refuses to arm — the exact deafness this closes).
+  {
+    const A5 = require(path.join(SRC, 'arc-await.js'));
+    const RS = 'rearm-sess-' + process.pid;
+    fs.writeFileSync(path.join(cache, `arc-state-${RS}.json`), JSON.stringify({ pid: process.pid, cwd: frepo, convId: 'rearm-conv' }));
+    F5.requestRole(RS, 'rearmer', frepo);       // a role of its own (scout is held by the fixture's live session)
+    const opts = { respawning: true, convId: 'rearm-conv', userManagesConv: false, cwd: frepo };
+    A5.clearWaiting(RS);
+    ok('re-arm: a NEVER-armed role-holder is NOT forced to arm on respawn (no marker = pays nothing)',
+      RUN.reArmPromptOnRespawn(RS, opts) === null);
+    fs.writeFileSync(A5.awaitFile(RS), JSON.stringify({ pid: DEAD_PID, role: 'rearmer', at: Date.now() }));
+    ok('re-arm: a KILLED listener (dead-pid marker) re-arms AND the stale marker is cleared',
+      RUN.reArmPromptOnRespawn(RS, opts) === '/arc-role rearmer' && !fs.existsSync(A5.awaitFile(RS)));
+    // THE ORPHAN CASE the live test found: a marker whose pid is ALIVE is STILL stale after a
+    // respawn (the lingering old listener wakes nobody). It must re-arm and clear, not be trusted.
+    A5.markWaiting(RS, 'rearmer', process.pid);   // a LIVE-pid marker == the orphaned old listener
+    ok('re-arm: a LIVE orphan marker STILL re-arms and is cleared (a restart orphans, not kills)',
+      RUN.reArmPromptOnRespawn(RS, opts) === '/arc-role rearmer' && !fs.existsSync(A5.awaitFile(RS)));
+    // guards decline WITHOUT clearing the marker (a non-respawn / user-managed launch touches nothing).
+    fs.writeFileSync(A5.awaitFile(RS), JSON.stringify({ pid: DEAD_PID, role: 'rearmer', at: Date.now() }));
+    ok('re-arm: NOT on a fresh launch, and the marker is left intact (no listener to restore)',
+      RUN.reArmPromptOnRespawn(RS, { ...opts, respawning: false }) === null && fs.existsSync(A5.awaitFile(RS)));
+    ok('re-arm: NOT on a user-managed resume — that path passes args through untouched',
+      RUN.reArmPromptOnRespawn(RS, { ...opts, userManagesConv: true }) === null && fs.existsSync(A5.awaitFile(RS)));
+    A5.clearWaiting(RS);
+    try { fs.unlinkSync(path.join(cache, `arc-state-${RS}.json`)); } catch {}
+    try { fs.unlinkSync(path.join(cache, `arc-role-${RS}.json`)); } catch {}
+  }
+
   fs.rmSync(frepo, { recursive: true, force: true });
   for (const f of [`arc-state-${FS_}.json`, `arc-active-${FS_}.json`, `arc-role-${FS_}.json`]) {
     try { fs.unlinkSync(path.join(cache, f)); } catch {}

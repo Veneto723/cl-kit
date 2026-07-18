@@ -475,6 +475,52 @@ function explicitConvId(args) {
   return null;
 }
 
+// RE-ARM A LISTENER ACROSS A RESPAWN (roadmap #3). A /restart or /switch re-execs the runner and
+// KILLS the session's background listener, but that leaves the session idle-and-DEAF until it next
+// takes a turn — and a bare restart-then-walk-away takes none, so a peer that WAS reachable goes
+// silently unreachable. arc cannot re-arm the listener itself (only a model-started background task
+// wakes the session), so the graceful fix is the revive's own mechanism: inject `/arc-role <role>`
+// as the relaunch's initial prompt. The hook MATCH is zero tokens, but this then hands the model a
+// small "arm and stand by" turn — a couple of tool calls, not free (audit #304). Manufacturing that
+// one turn is the whole point: the hook layer is downstream of a turn and a bare respawn has none,
+// so the fix lives one layer UP, in the launch.
+//
+// GATED so it is graceful, not blunt — it fires ONLY when the session WAS armed before the respawn,
+// never forcing a turn on a session that never wanted a listener. The signal is a surviving await
+// marker: it is keyed by ARC_SESSION (preserved across a respawn) and the launch-time sweeper is
+// skipped on a respawn, so the marker SURVIVES the re-exec. A marker EXISTS == was armed; no marker
+// == never armed == do nothing. Returns the prompt to append, or null. Side effect: CLEARS the
+// marker (see below). Unit-tested.
+//
+// WHY MARKER-EXISTS, NOT DEAD-PID (the live test's correction, 2026-07-18). The first cut gated on a
+// DEAD pid, assuming the respawn KILLS the listener. It does NOT: `/restart` spawnSyncs the new
+// runner, so the OLD runner stays ALIVE as its parent, and the listener's orphan-check keys on that
+// runner pid — so the old listener LINGERS, alive, an ORPHAN that belongs to the dead pre-respawn
+// claude and can wake nobody. Its live marker then fooled BOTH this gate (skipped) AND the hook's
+// armNeeded ("already listening") — leaving the session deaf behind a listener that looked alive.
+// The truth is simpler: on a respawn, NO pre-respawn listener can serve the resumed claude (a new
+// process), so ANY marker is stale. So: if a marker exists, INVALIDATE it (clearWaiting) — which
+// makes the hook's armNeeded read "not listening" and actually arm — and inject the re-arm prompt.
+// The orphan process self-cleans: once the new listener writes its marker, the orphan's next poll
+// sees a different pid and supersedes (exits 0). CLEARED-not-killed on purpose: we do not hold the
+// orphan's pid liveness against it (a recycle is irrelevant now), and killing a stranger on a
+// recycled pid is the bug isHolder exists to avoid.
+function reArmPromptOnRespawn(session, opts) {
+  const o = opts || {};
+  if (!o.respawning || !o.convId || o.userManagesConv) return null;   // only a MANAGED respawn re-arms
+  try {
+    const N = require('./arc-notes');
+    const RB = require('./arc-board');
+    const A = require('./arc-await');
+    const role = N.getRole(session, RB.resolveBoard(o.cwd || process.cwd()));
+    if (!role) return null;                                            // no role to listen as
+    let m; try { m = JSON.parse(fs.readFileSync(A.awaitFile(session), 'utf8')); } catch { return null; }
+    if (!(m && m.pid)) return null;                                    // no marker = never armed = leave it alone
+    A.clearWaiting(session);                                           // the old listener can't serve the resumed claude; clear so the re-arm is not blocked
+    return `/arc-role ${role}`;
+  } catch { return null; }
+}
+
 // Map a full model id to a cross-account alias (opus/sonnet/haiku/fable) so the
 // flag works on every account (gateways map aliases via modelMap env vars).
 function modelAlias(id) {
@@ -1678,6 +1724,12 @@ async function main() {
   }
   logLine(`launch account=${account} conv=${guardConv || '(picker/new)'} cwd=${process.cwd()}${forceDup ? ' [FORCED DUP]' : ''}`);
 
+  // RE-ARM ON RESPAWN (roadmap #3): computed ONCE, here, not per loop-iteration — it has a side
+  // effect (it clears the stale marker), so running it every relaunch would keep clobbering a
+  // freshly-armed listener. If this session was reachable before the /restart|/switch, this is the
+  // `/arc-role <role>` to inject into the FIRST relaunch's args so it re-arms in one small turn.
+  let pendingReArm = reArmPromptOnRespawn(SESSION_ID, { respawning, convId, userManagesConv, cwd: process.cwd() });
+
   for (;;) {
     // Build claude args, pinning THIS terminal's conversation by UUID so parallel
     // arc sessions never resume each other's chat (the --continue footgun).
@@ -1724,6 +1776,12 @@ async function main() {
       claudeArgs = canResume
         ? [...a, '--resume', convId, ...preservedFlags(convId), ...effFlag]
         : [...a, '--session-id', convId, ...effFlag];
+      // RE-ARM ON RESPAWN (roadmap #3): inject the `/arc-role <role>` computed ONCE above, on the
+      // FIRST relaunch only (then null it, so a later in-runner relaunch does not re-inject).
+      // Appended LAST — claude reads a trailing positional as the initial prompt; stripConvArgs
+      // removes it on the NEXT respawn, which re-decides. `a` already had the birth prompt stripped,
+      // so this is the only positional. Otherwise a restart-then-idle leaves a reachable peer deaf.
+      if (pendingReArm) { claudeArgs = [...claudeArgs, pendingReArm]; logLine(`re-arm on respawn: ${pendingReArm} (pre-respawn listener is stale)`); pendingReArm = null; }
     }
 
     writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
@@ -1947,7 +2005,7 @@ async function main() {
 // it silently ate an invited peer's conversation (a surviving --fork-session re-forked the
 // session on every relaunch) and nothing could unit-test it, because requiring this file used to
 // LAUNCH CLAUDE. A function that decides how a conversation is re-opened has to be testable.
-module.exports = { stripConvArgs, explicitConvId, preservedFlags, SWEEP_RX, sweepStaleStates };
+module.exports = { stripConvArgs, explicitConvId, preservedFlags, SWEEP_RX, sweepStaleStates, reArmPromptOnRespawn };
 
 if (require.main === module) {
   main().catch((e) => {
