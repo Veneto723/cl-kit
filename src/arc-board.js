@@ -598,7 +598,13 @@ let pidStartMemo = null;                 // per-process memo, so one hook run pa
 
 // pid -> start time (epoch ms), null if no such process. Returns null ENTIRELY if the OS cannot
 // be asked — the caller must then FAIL OPEN, never invent a verdict.
-function procStarts(pids) {
+// opts.fresh — re-probe the asked pids even when their cache entries are warm. The warm cache is
+// itself one of isHolder's two fail-open windows (a dead predecessor's start served for ≤30s), so
+// a caller for whom a false "live" is expensive (the delegate path) passes fresh to bypass exactly
+// the thing being doubted. The fresh answer still writes through to the memo + disk cache, so
+// every later check in the same flow agrees with it.
+function procStarts(pids, opts) {
+  const fresh = !!(opts && opts.fresh);
   const want = [...new Set(pids.map(Number).filter(Boolean))];
   if (!want.length) return {};
   if (!pidStartMemo) {
@@ -606,6 +612,7 @@ function procStarts(pids) {
   }
   const now = Date.now();
   const need = want.filter((p) => {
+    if (fresh) return true;
     const e = pidStartMemo[p];
     return !e || typeof e.at !== 'number' || now - e.at > PIDSTART_TTL;
   });
@@ -685,8 +692,10 @@ function isHolder(claim, starts) {
   // direction). a0c93bb closed the COLD-cache door (a protected pid probes to null → vacant); this
   // warm-cache door is left open on purpose — Windows does not recycle a pid onto a chosen number
   // within 30s, so the probability is low and the outcome transient. If pid-reuse ever gets faster
-  // or PIDSTART_TTL grows, this window grows with it — re-probe for an isAlive-but-cache-fresh pid
-  // in the impostor path if that ever changes.
+  // or PIDSTART_TTL grows, this window grows with it. The DELEGATE path — where a false "live"
+  // costs the most (a packet posted to a dead chair, reported as handled) — already closes it:
+  // requestDelegate passes procStarts(..., {fresh: true}) results in as `starts`. Do the same
+  // elsewhere if the window ever matters on another path.
   return claim.at >= t - CLAIM_SKEW_MS;
 }
 

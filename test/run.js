@@ -3576,6 +3576,48 @@ try {
   ok('a LEGACY claim with no timestamp still resolves (no flag day, no orphaned peers)',
     R.isHolder({ role: 'old', pid: process.pid }) === true);
   for (const f of ['claim-genuine.json', 'claim-impostor.json']) fs.unlinkSync(path.join(rTop.planDir, f));
+
+  // ---- the FALSE-LIVE edge and its fresh-probe cure (audit #259) ------------------------------
+  // isHolder's warm pid-start cache can serve a DEAD predecessor's start for ≤30s: a recycled pid
+  // then reads as the genuine holder, and `arc delegate` posts a packet into a dead chair while
+  // telling the delegator it was handled. procStarts({fresh:true}) is the cure — it bypasses
+  // exactly the cache being doubted. Proven here in a FRESH child process (the suite's own memo
+  // already holds our real start, so the lie must be planted before arc-board ever loads):
+  // the child seeds the disk cache with a fabricated start (epoch 1000) for THIS suite's pid,
+  // builds a claim written BEFORE our process really started (at: 1500 — an impostor's shape),
+  // and asserts the warm path believes it while the fresh path convicts it.
+  const falseLiveJs = `const fs=require('fs'),os=require('os'),path=require('path');
+    const cachePath=path.join(os.homedir(),'.claude','cache','arc-pidstart.json');
+    fs.mkdirSync(path.dirname(cachePath),{recursive:true});
+    fs.writeFileSync(cachePath,JSON.stringify({${process.pid}:{start:1000,at:Date.now()}}));
+    const R=require(${JSON.stringify(path.join(SRC, 'arc-board.js'))});
+    const claim={role:'x',pid:${process.pid},sessionId:'s',at:1500};
+    const warmSaysLive=R.isHolder(claim);
+    const fresh=R.procStarts([${process.pid}],{fresh:true});
+    const freshStart=fresh&&fresh[${process.pid}];
+    const freshSaysLive=fresh?R.isHolder(claim,fresh):null;
+    const warmAfter=R.procStarts([${process.pid}]);
+    process.stdout.write(JSON.stringify({warmSaysLive,freshSaysLive,
+      freshIsReal:typeof freshStart==='number'&&freshStart>1000000000000,
+      wroteThrough:!!warmAfter&&warmAfter[${process.pid}]===freshStart}));`;
+  let fl = {};
+  try { fl = JSON.parse(spawnSync(process.execPath, ['-e', falseLiveJs], { encoding: 'utf8' }).stdout || '{}'); } catch {}
+  ok('the warm cache BELIEVES a fabricated predecessor start (that is the documented ≤30s window)',
+    fl.warmSaysLive === true, '(if this fails the fixture is broken, not the code)');
+  ok('...a FRESH probe bypasses the warm lie and reads the real start',
+    fl.freshIsReal === true);
+  ok('...and isHolder with fresh starts CONVICTS the impostor the warm cache admitted',
+    fl.freshSaysLive === false);
+  ok('...and the fresh answer writes through, so later warm checks in the same flow agree',
+    fl.wroteThrough === true);
+  // The cure must actually be WIRED where false-live costs the most — the delegate paths.
+  const invSrc2 = fs.readFileSync(path.join(SRC, 'arc-invite.js'), 'utf8');
+  ok('requestDelegate fresh-probes before believing "live" (single-role path)',
+    /procStarts\(\[rawClaim\.pid\], \{ fresh: true \}\)/.test(invSrc2));
+  ok('...and delegateMany batch-probes its targets the same way',
+    /procStarts\(alivePids, \{ fresh: true \}\)/.test(invSrc2));
+  ok('...and an unaskable OS is reported as "could not verify", never asserted as live',
+    /could not VERIFY/.test(invSrc2) && /liveness UNVERIFIED/.test(invSrc2));
 } catch (e) { ok('arc-board works', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- arc-notes (the board commands over the ledger) ---------------------------

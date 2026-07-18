@@ -842,17 +842,29 @@ function delegateMany(session, firstToken, packet, cwd, o) {
 
   // Staff each role that is not already live. One snapshot up front: staffing X makes X live, but the
   // targets are distinct, so a single roster read is correct and cheaper than re-querying per role.
-  const liveSet = new Set(R.liveRoles(board).map((l) => l.role));
+  // Same false-live edge as the single-role path (audit #259), batched: ONE fresh probe covers every
+  // target's claim pid — a powershell spawn costs its startup, not its batch size.
+  const claims = new Map(targets.map((r) => [r, R.readClaimFile(board, r)]));
+  const alivePids = [...claims.values()].filter((c) => c && c.pid && R.isAlive(c.pid)).map((c) => c.pid);
+  const freshStarts = alivePids.length ? R.procStarts(alivePids, { fresh: true }) : {};
+  const liveSet = new Set(), unverifiedSet = new Set();
+  for (const [r, c] of claims) {
+    if (!(c && c.pid && R.isAlive(c.pid))) continue;
+    if (!freshStarts) { liveSet.add(r); unverifiedSet.add(r); }   // OS unaskable: never spawn into a possibly-occupied chair, but say so
+    else if (R.isHolder(c, freshStarts)) liveSet.add(r);
+  }
   const done = [];
   for (const role of targets) {
-    if (liveSet.has(role)) { done.push({ role, how: 'live' }); continue; }
+    if (liveSet.has(role)) { done.push({ role, how: unverifiedSet.has(role) ? 'unverified' : 'live' }); continue; }
     const staffed = staffRole(session, role, o);
     if (!staffed.ok) return { ok: false, message:
       `staffing "${role}" failed — ${staffed.message}\n` +
       `  (already staffed before this: ${done.filter((x) => x.how !== 'live').map((x) => x.role).join(', ') || 'none'} — they are idle peers, harmless)` };
     done.push({ role, how: staffed.revived ? 'revived' : 'staffed' });
   }
-  const mark = (x) => x.how === 'live' ? `✉ ${x.role} (live)` : x.how === 'revived' ? `↺ ${x.role} — REVIVED as itself` : `⤴ ${x.role} — STAFFED from your context`;
+  const mark = (x) => x.how === 'live' ? `✉ ${x.role} (live)`
+    : x.how === 'unverified' ? `✉ ${x.role} (⚠ liveness UNVERIFIED — probe unavailable; note posted, check with: arc role)`
+      : x.how === 'revived' ? `↺ ${x.role} — REVIVED as itself` : `⤴ ${x.role} — STAFFED from your context`;
   const summary = done.map(mark).join('\n  ');
 
   if (!packet) return { ok: true, roles: targets, message:
@@ -887,7 +899,6 @@ function requestDelegate(session, arg, cwd, opts) {
   if (!N.VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
 
   const board = R.resolveBoard(N.resolveCwd(session, null));
-  const live = R.liveRoles(board).some((l) => l.role === role);
 
   // CHECK BEFORE YOU SPAWN. A note is posted BY a role — that is what the reply is addressed back
   // to — so a caller holding no role cannot delegate work, only staff an empty chair. Verifying
@@ -902,6 +913,24 @@ function requestDelegate(session, arg, cwd, opts) {
       `  claim yours first:  arc role <yours>    then delegate again (nothing was started).` };
   }
 
+  // THE FALSE-LIVE EDGE (audit #259). The delegate path is where a false "live" costs the most:
+  // the packet lands in a dead chair and the delegator is told "its listener will wake it within
+  // seconds" — a request nobody answers, reported as handled. isHolder's two fail-open windows
+  // (the ≤30s warm pid-start cache serving a dead predecessor's start; the probe-unavailable
+  // path) are the RIGHT default everywhere else — reading a live peer as dead invites a second
+  // session into an occupied chair, the worse direction — so the default is untouched and THIS
+  // path pays ~270ms for a FRESH probe before believing "live". The fresh answer writes through
+  // to the shared cache, so the staffRole check just below cannot disagree with the verdict here.
+  // When the OS cannot be asked at all, spawning is still the dangerous direction, so the note is
+  // posted — but the receipt says "could not verify", never asserts liveness it does not have.
+  const rawClaim = R.readClaimFile(board, role);
+  let live = false, unverified = false;
+  if (rawClaim && rawClaim.pid && R.isAlive(rawClaim.pid)) {
+    const starts = R.procStarts([rawClaim.pid], { fresh: true });
+    if (!starts) { live = true; unverified = true; }
+    else live = R.isHolder(rawClaim, starts);
+  }
+
   // Not live -> STAFF first, so the work lands in a chair that has someone in it. (The note would
   // survive an empty chair anyway — the cursor is per-role — but "delegate" means someone is on
   // it, not that it is filed.)
@@ -910,7 +939,11 @@ function requestDelegate(session, arg, cwd, opts) {
     staffed = staffRole(session, role, o);
     if (!staffed.ok) return staffed;
   }
-  if (!packet) return staffed || { ok: true, message: `"${role}" is already live — nothing to staff. Give it a job:  arc delegate ${role} "<packet>"` };
+  if (!packet) {
+    if (staffed) return staffed;
+    if (unverified) return { ok: true, message: `"${role}" LOOKS held, but its liveness could not be verified (the OS pid probe was unavailable) — nothing staffed, nothing posted. Check the chair:  arc role` };
+    return { ok: true, message: `"${role}" is already live — nothing to staff. Give it a job:  arc delegate ${role} "<packet>"` };
+  }
 
   // Then the work. Always a request: a delegation is a question you are owed an answer to, and
   // that is what makes it tracked and what wakes you when they reply.
@@ -922,7 +955,9 @@ function requestDelegate(session, arg, cwd, opts) {
     (staffed ? staffed.message + '\n' : '') +
     note.message +
     (staffed ? `\n  the note is waiting in ${role}'s inbox — it reads it on arrival.`
-             : `\n  ${role} is live: its listener will wake it within seconds.`) };
+      : unverified
+        ? `\n  ⚠ could not VERIFY "${role}" is live (the OS pid probe was unavailable) — the note is\n    posted either way; if no reply lands, check the chair:  arc role`
+        : `\n  ${role} is live: its listener will wake it within seconds.`) };
 }
 
 // ---- arc close <role> — the counterpart to delegate -------------------------------------------
