@@ -1900,8 +1900,11 @@ try {
 
   // The roster is what `arc role` shows — one line per role, full charter one Read away.
   const q = F8.requestRole(AS, '', drepo);
-  ok('`arc role` renders the roster with live/closed marks and the owns: summary',
-    /roster:/.test(q.message) && /● research/.test(q.message)
+  // The live row's lead glyph is the peer's STANCE (statusline alphabet: ○◐●), with the
+  // word beside it — the old presence-dot alphabet collided with the stance dial and a
+  // human read "● research" as ACTIVE while research sat in balanced (2026-07-18).
+  ok('`arc role` renders the roster with the stance glyph + live/closed state and the owns: summary',
+    /roster:/.test(q.message) && /◐ research/.test(q.message) && /live · balanced/.test(q.message)
     && /investigation and docs/.test(q.message));
 
   // The Stop hook must not tell you to wait for an answer that cannot come.
@@ -4047,6 +4050,16 @@ try {
     !!(ask('/arc-delete confirm').reason || '').length);
   ok('..."/arc-delete this section about X" is prose and passes through',
     !ask('/arc-delete this section about X').decision);
+  // TOKEN-ARG verbs (field report 2026-07-18): "/arc-role Besides this function has
+  // an error..." ate the human's message as an invalid role name. An arg that cannot
+  // be the argument is prose — fail open.
+  ok('/arc-role + prose passes through (a sentence is not a role name)',
+    !ask('/arc-role Besides this function has an error to label').decision);
+  ok('...but a role-shaped token still dispatches: "/arc-role" bare blocks with the roster',
+    !!(ask('/arc-role').reason || '').length);
+  ok('/arc-mode + prose passes through; only passive|balanced|active dispatch',
+    !ask('/arc-mode I think balanced fits best').decision
+    && !ask('/arc-switch to whichever account has headroom').decision);
 
   // ORDERING TRAP (documented in arc-slash.js): delete-account must not misfire as a
   // conversation delete. Same-handler equality proves the routing.

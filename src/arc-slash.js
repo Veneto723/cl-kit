@@ -79,12 +79,28 @@ const EXCLUDED = ['delegate']; // matched only so it can never leak to the model
 // prose, not a command": FAIL OPEN, let the model see it.
 const NO_ARG = new Set(['restart', 'peek', 'usage', 'help', 'arc']);
 const CONFIRM_ARG_RX = /^(confirm|--confirm|yes|--yes|y)$/i;
+// Verbs whose argument is a SINGLE token (a role name, an account, a stance): prose
+// after them means the human kept typing past the autocomplete — "/arc-role Besides
+// this function has an error..." ATE that message as an invalid role name and showed
+// the roster instead (field report 2026-07-18). Shape-gate them: an arg that cannot
+// possibly be the argument is prose, and prose fails OPEN to the model.
+// (ROLE_SHAPE mirrors arc-notes VALID_ROLE, case-tolerant here — an exact-case
+// refusal downstream is a legitimate answer to a legitimate command attempt.)
+const ROLE_SHAPE = /^[a-z][a-z0-9_-]{0,23}$/i;
 function slashArgOk(verb, arg) {
   const v = String(verb || '').toLowerCase();
   const a = String(arg || '').trim();
   if (!a) return true;
   if (NO_ARG.has(v)) return false;
   if (v === 'delete') return CONFIRM_ARG_RX.test(a);
+  const tokens = a.split(/\s+/);
+  // A lone token that fails downstream validation still DISPATCHES ("/arc-mode nope"
+  // earns the helpful "unknown stance — pick one of..." refusal; a typo is a command
+  // attempt, not prose). Only an arg that cannot possibly be the argument — a
+  // sentence after a one-token verb — is prose.
+  if (v === 'role' || v === 'join') return tokens.length === 1 && ROLE_SHAPE.test(a);
+  if (v === 'mode' || v === 'stance' || v === 'switch') return tokens.length === 1;
+  if (v === 'rename') return tokens.length <= 2;
   return true;
 }
 

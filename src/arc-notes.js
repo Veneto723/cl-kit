@@ -180,11 +180,22 @@ function peers(board, meRole) {
 // the case an agent could not see before: it would either do that role's work itself, or spawn
 // a duplicate under a synonym. Now it can read the duty of an empty chair and choose.
 function rosterLines(board, meRole) {
-  let rows;
-  try { rows = require('./arc-duty').roster(board, R.liveRoles(board)); } catch { return null; }
+  let rows, liveList = [];
+  try {
+    liveList = R.liveRoles(board);
+    rows = require('./arc-duty').roster(board, liveList);
+  } catch { return null; }
   const others = rows.filter((r) => r.role !== meRole);
   if (!others.length) return null;
   const w = Math.max(...others.map((r) => r.role.length));
+  // A LIVE row's lead glyph is that peer's STANCE (○ passive · ◐ balanced · ● active) — the
+  // same alphabet the statusline dial uses, followed by the word so the glyph never has to be
+  // decoded alone. It used to be a PRESENCE dot (● live / ◑ revivable / ○ never) — the exact
+  // three glyphs the stance dial owns, with different meanings: a human read "● research" as
+  // "research is ACTIVE" while research sat in balanced (field report 2026-07-18). One
+  // alphabet, one meaning; presence is carried by the state word, which was always there.
+  const sess = new Map(liveList.map((l) => [l.role, l.sessionId]));
+  const STANCE_GLYPH = { passive: '○', balanced: '◐', active: '●' };
   return others.map((r) => {
     const what = r.summary ? ` — ${r.summary}`
       : r.declared ? '' : ` — (no duty declared: ${r.path})`;
@@ -198,11 +209,17 @@ function rosterLines(board, meRole) {
         revivable = !!(v && require('./arc-invite').hasTranscript(v.convId));
       } catch { /* a hint must never break the roster */ }
     }
-    const state = r.live ? 'live  ' : revivable ? 'closed' : 'closed';
+    let lead = '·', state = r.live ? 'live' : 'closed';
+    if (r.live) {
+      try {
+        const st = require('./arc-stance').getStance(sess.get(r.role));
+        if (STANCE_GLYPH[st]) { lead = STANCE_GLYPH[st]; state = `live · ${st}`; }
+      } catch { /* stance is a hint; presence must render without it */ }
+    }
     const hint = r.live ? ''
       : revivable ? `   ← was here; REVIVE as itself: arc delegate ${r.role} "<packet>"`
         : r.declared ? `   ← empty chair: arc delegate ${r.role} "<packet>"` : '';
-    return `    ${r.live ? '●' : revivable ? '◑' : '○'} ${r.role.padEnd(w)}  ${state}${what}${hint}`;
+    return `    ${lead} ${r.role.padEnd(w)}  ${state.padEnd(15)}${what}${hint}`;
   }).join('\n');
 }
 
