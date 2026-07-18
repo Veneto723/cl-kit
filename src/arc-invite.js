@@ -347,7 +347,17 @@ function spawnWindow() { return String(process.env.ARC_SPAWN_WINDOW || '').trim(
 // ARC_SPAWN_PROFILE=<name> opts in: wt applies that profile's icon/theme/font while our
 // commandline still overrides what actually runs (wt documents -p + commandline as exactly
 // this). A wrong name fails visibly, and only for the person who set it.
-function spawnProfile() { return String(process.env.ARC_SPAWN_PROFILE || '').trim(); }
+// The env var is a one-off override; the DURABLE home is arc-config.json's "spawnProfile"
+// key. An env var must exist in the CALLER's environment, and a session launched before a
+// `setx` never sees it — measured the same day this shipped: the fix was deployed, one
+// delegate ran without the var, and the peer tab came up generic again. Config is read
+// fresh from disk on every spawn, so it cannot be forgotten.
+function spawnProfile() {
+  const env = String(process.env.ARC_SPAWN_PROFILE || '').trim();
+  if (env) return env;
+  try { return String(require('./arc-config').loadConfig().spawnProfile || '').trim(); }
+  catch { return ''; }
+}
 
 function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, quiet, win) {
   const acct = account ? ` --account ${account}` : '';

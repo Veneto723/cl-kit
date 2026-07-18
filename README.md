@@ -312,7 +312,8 @@ Everything lives in `~/.claude/arc-config.json` (created by `arc setup`):
   ],
   "switchOrder": ["max", "mate"],
   "thresholds": { "warnSessionPct": 85, "warnWeekPct": 90, "switchSessionPct": 92, "switchWeekPct": 95 },
-  "features": { "autoBest": true }
+  "features": { "autoBest": true },
+  "spawnProfile": "PowerShell"   // optional — dress spawned peer tabs in this Windows Terminal profile
 }
 ```
 

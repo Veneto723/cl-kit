@@ -1916,6 +1916,20 @@ try {
     (() => { const prev = process.env.ARC_SPAWN_PROFILE; process.env.ARC_SPAWN_PROFILE = 'Power Shell';
       const line = winOf('0'); if (prev === undefined) delete process.env.ARC_SPAWN_PROFILE; else process.env.ARC_SPAWN_PROFILE = prev;
       return / new-tab -p 'Power Shell' --title /.test(line); })());
+  // The DURABLE home is config, not env: an env var must exist in the CALLER's environment,
+  // and a session launched before a `setx` never sees it — the day the env-only version
+  // shipped, one delegate ran without the var and the peer tab came up generic again.
+  ok('...and arc-config "spawnProfile" dresses the tab with NO env var to remember (env wins when both)',
+    (() => { const C9 = require(path.join(SRC, 'arc-config.js'));
+      const prev = process.env.ARC_SPAWN_PROFILE; delete process.env.ARC_SPAWN_PROFILE;
+      const hadCfg = fs.existsSync(C9.CONFIG_PATH) ? fs.readFileSync(C9.CONFIG_PATH, 'utf8') : null;
+      fs.writeFileSync(C9.CONFIG_PATH, JSON.stringify({ version: 1, accounts: [{ id: 'x', type: 'oauth' }], spawnProfile: 'Cfg Prof' }));
+      const fromCfg = / new-tab -p 'Cfg Prof' --title /.test(winOf('0'));
+      process.env.ARC_SPAWN_PROFILE = 'EnvWins';
+      const envWins = / new-tab -p 'EnvWins' --title /.test(winOf('0'));
+      if (hadCfg === null) fs.unlinkSync(C9.CONFIG_PATH); else fs.writeFileSync(C9.CONFIG_PATH, hadCfg);
+      if (prev === undefined) delete process.env.ARC_SPAWN_PROFILE; else process.env.ARC_SPAWN_PROFILE = prev;
+      return fromCfg && envWins; })());
 
   // ---- --board: the ONE hole in the filesystem isolation ----------------------------------
   // Built for an observed pain, not a hypothetical: a session dogfooding arc in ANOTHER repo
