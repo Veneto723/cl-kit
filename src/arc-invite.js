@@ -381,7 +381,13 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // BIRTH ONLY: a REVIVE restores the mode it was last in via arc-runner's preservedFlags, and
   // passing it here too would hand claude the flag twice.
   const mode = conv ? '' : ' --permission-mode auto';
-  const prompt = conv ? `arc:role ${role}` : birth;
+  // The revive prompt speaks the SLASH twin. It travels programmatically (prompt file →
+  // argv → claude), which bypasses the input-box gate that rejects typed stub-less
+  // /commands — measured 2026-07-18: `claude -p "/arc-peek"` reached the hook RAW and
+  // blocked at zero tokens. stripConvArgs strips both spellings on respawn, and if the
+  // hook were somehow absent the model receives a /arc-role line whose stub arm-body
+  // carries the full claim protocol — strictly more graceful than a naked sentinel.
+  const prompt = conv ? `/arc-role ${role}` : birth;
   // TWO SHAPES, and only one of them puts the prompt on a wire.
   //   PowerShell: fill the shipped template. Every value handed over is a token that CANNOT be
   //     mangled — an account id, a role name, a UUID — and the prompt goes as a file path. Both

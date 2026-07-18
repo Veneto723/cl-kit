@@ -1479,10 +1479,11 @@ try {
 } catch (e) { ok('cache sweeper', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- staffing a peer (new tab, revived-or-forked context, self-arming) -------------
-// invite adds a TAB, not a mechanism: the new tab runs `arc --account <caller's> --resume
-// <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
-// does the claiming + arming in the new session's first turn. These tests inject a spawn
-// recorder — nothing real opens.
+// invite adds a TAB, not a mechanism: a REVIVE runs `arc --name <role> --resume <its own
+// conv> "/arc-role <role>"` (the slash twin — programmatic prompts bypass the typed-command
+// gate, measured 2026-07-18) and a BIRTH forks the caller with a PROSE instruction; the
+// existing fresh-claim pass-through does the claiming + arming in the new session's first
+// turn. These tests inject a spawn recorder — nothing real opens.
 // ---- task baselines must not outlive their task --------------------------------------
 // A baseline is written at TaskCreated so a completion can be checked against git. It lived
 // forever: nothing in arc-done ever called unlink. Three leaks, none with a symptom — just
@@ -2285,12 +2286,16 @@ try {
   // means claude resumes the peer's conversation and immediately BRANCHES it into a new one —
   // abandoning everything the peer built. The user hit this the first time an invited peer ran out
   // of tokens and switched accounts, which is precisely when its history mattered most.
-  const born = ['--account', 'whale', '--name', 'scout', '--resume', 'caller-conv', '--fork-session', 'arc:role scout'];
+  // The revive prompt is the SLASH twin since 2026-07-18 (it travels programmatically,
+  // which bypasses the typed-command gate — measured); the strip must eat BOTH spellings.
+  const born = ['--account', 'whale', '--name', 'scout', '--resume', 'caller-conv', '--fork-session', '/arc-role scout'];
   const relaunch = RUN.stripConvArgs(born);
   ok('a relaunch NEVER re-forks: --fork-session is stripped (this is what ate a conversation)',
     !relaunch.includes('--fork-session'));
   ok('...and the birth prompt is not replayed forever (role re-adopts, listener re-arms on idle)',
-    !relaunch.some((a) => /^arc:/i.test(a)));
+    !relaunch.some((a) => /^arc:/i.test(a) || /^\/arc-/i.test(a)));
+  ok('...and the LEGACY colon spelling still strips (old argv, mixed-version respawns)',
+    !RUN.stripConvArgs(['--name', 'scout', 'arc:role scout']).some((a) => /^arc:/i.test(a)));
   // ...but it MUST survive the launch that creates the peer. This guard used to run
   // unconditionally, which was safe only because staffing passed an explicit --resume (that takes
   // the userManagesConv path, which strips nothing). The moment a peer was BORN instead of forked,
@@ -2298,7 +2303,7 @@ try {
   // the tab opened, titled itself `arc: research`, claimed NO role, and sat idle forever.
   // Once = birth. Twice = a prompt loop. The difference is `respawning`, not the args.
   ok('...but the BIRTH launch KEEPS it — stripping it there opens a tab that claims nothing',
-    RUN.stripConvArgs(born, { keepPrompt: true }).some((a) => /^arc:role scout$/i.test(a)));
+    RUN.stripConvArgs(born, { keepPrompt: true }).some((a) => /^\/arc-role scout$/i.test(a)));
   ok('...while still dropping --fork-session/--continue on birth (only the prompt is spared)',
     !RUN.stripConvArgs(born, { keepPrompt: true }).includes('--fork-session'));
   ok('...while the real flags survive untouched',
@@ -2636,7 +2641,7 @@ try {
   // staffing silently births a stranger. A peer that never has a real turn can never come back.
   ok('a BORN peer opens with a REAL prompt, not a blocked sentinel (a sentinel leaves no conversation)',
     !!bornPrompt && /You were BRANCHED from another session/.test(bornPrompt.text)
-    && !/^arc:role /.test(bornPrompt.text));
+    && !/^arc:role /.test(bornPrompt.text) && !/^\/arc-/.test(bornPrompt.text));
   // AND IT REACHES THE PEER AS A FILE, not as an argument. This is the property two live tabs were
   // spent learning: the prompt is prose, the chain re-parses it four times after we build it, and
   // every quoting form we tried arrived mangled or opened no tab at all. Nothing fragile may ride
@@ -4296,13 +4301,14 @@ try {
   ok('...through the shared overlay (profile wins; one policy, not a second copy)',
     /overlayMaps\(master\.skillOverrides,\s*cur\.skillOverrides\)/.test(profSrc));
 
-  // The machine-sender contract this feature must never disturb: the revive prompt
-  // is the COLON form and stripConvArgs strips /^arc:/ on respawn. If revive ever
-  // switched to the slash form, the prompt would stop being stripped and re-submit
-  // on every switch/restart forever.
+  // The machine-sender contract, updated 2026-07-18: the revive prompt is the SLASH
+  // twin (`/arc-role <role>`). Safe because it travels PROGRAMMATICALLY — measured:
+  // `claude -p "/arc-peek"` reached the hook raw and blocked; the typed-command gate
+  // only guards the input box. The strip covering both spellings (tested above) is
+  // what makes this safe against the respawn replay loop.
   const inviteSrc = fs.readFileSync(path.join(SRC, 'arc-invite.js'), 'utf8');
-  ok('the revive prompt stays the colon sentinel (arc:role), never the slash twin',
-    /`arc:role \$\{role\}`/.test(inviteSrc) && !/`\/arc-role/.test(inviteSrc));
+  ok('the revive prompt is the slash twin (/arc-role) — programmatic path, gate-immune',
+    /`\/arc-role \$\{role\}`/.test(inviteSrc) && !/`arc:role \$\{role\}`/.test(inviteSrc));
 } catch (e) { ok('/arc slash twins', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- receipts: a note reports whether it landed, so an ack is never needed ---
