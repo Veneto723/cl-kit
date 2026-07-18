@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// arc test suite — Windows 11. Pure Node built-ins, no dependencies, no
+// arc test suite — Windows. Pure Node built-ins, no dependencies, no
 // interactive `claude`, no GUI. Every test runs against a THROWAWAY HOME under the
 // temp dir (never the real ~/.claude); CI runs it on windows-latest. Section 7
 // exercises the real Windows key path (a DPAPI round-trip via powershell.exe).
@@ -703,7 +703,7 @@ try {
 } catch (e) { ok('gw-usage works', false, e.message); }
 
 // ---- 7. arc-platform + storeApiKey (Windows key path: DPAPI) -------------------
-// arc is Windows 11 only, so this asserts the real DPAPI round-trip (via
+// arc is Windows only, so this asserts the real DPAPI round-trip (via
 // powershell.exe). It also proves the PORTABLE key sources (apiKeyEnv / apiKeyFrom)
 // still resolve on Windows — only the POSIX OS-keychain source was dropped.
 section('arc-platform + storeApiKey (DPAPI + portable key sources)');

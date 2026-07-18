@@ -2,7 +2,7 @@
   "name": "arc",
   "version": "2.0.0",
   "private": true,
-  "description": "arc (Agent Runtime Coordinator) — Claude/Codex session wrapper and orchestrator for Windows 11",
+  "description": "arc (Agent Runtime Coordinator) — Claude/Codex session wrapper and orchestrator for Windows",
   "os": [
     "win32"
   ],

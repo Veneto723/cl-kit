@@ -1,4 +1,4 @@
-# arc installer (Windows 11). Deploys the arc account switcher into ~/.claude
+# arc installer (Windows). Deploys the arc account switcher into ~/.claude
 # and ~/.local/bin, wires hooks + statusline into settings.json (merging, never
 # clobbering), registers the arc-focus: toast-click protocol, and generates icons.
 # Re-runnable: existing files are overwritten from the kit, user settings merged.

@@ -1,6 +1,6 @@
 # arc
 
-**A Claude-first native-stdio wrapper that adds account switching, session tools, and a coordination layer for [Claude Code](https://claude.com/claude-code) sessions working in the same repo.** Windows 11.
+**A Claude-first native-stdio wrapper that adds account switching, session tools, and a coordination layer for [Claude Code](https://claude.com/claude-code) sessions working in the same repo.** Windows.
 
 `arc` launches Claude Code with `stdio: inherit` (claude owns the TTY, so its own
 slash menus and rendering are pixel-perfect — no PTY/ConPTY garble) and layers on
@@ -73,7 +73,7 @@ arc usage — peek
 
 ## Requirements
 
-- **Windows 11.** arc is Windows-only — DPAPI key encryption, WinRT toasts with
+- **Windows.** arc is Windows-only — DPAPI key encryption, WinRT toasts with
   click-to-focus, and directory junctions for per-account credential isolation all
   lean on Windows. (It used to be cross-platform; that was dropped as untested weight.)
 - **Node.js**
@@ -552,12 +552,12 @@ src/            wrapper + hooks, account switching, the board (notes/roles/claim
 mcp/            arc MCP server (account management + pool metrics tools)
 pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)
 test/           test suite (run.js; `npm test`) — Windows, incl. a real DPAPI round-trip
-install.ps1     Windows 11 installer (idempotent)
+install.ps1     Windows installer (idempotent)
 ```
 
 ## Notes & limitations
 
-- **Windows 11 only.** DPAPI key encryption, WinRT toasts with click-to-focus, and
+- **Windows only.** DPAPI key encryption, WinRT toasts with click-to-focus, and
   the directory junctions behind per-account credential isolation all lean on Windows.
   (It was tri-platform once; that support was untested weight and got removed.) Keys
   are a DPAPI `apiKeyEnc` blob by default, or `apiKeyEnv` / `apiKeyFrom`.
