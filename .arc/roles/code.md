@@ -12,6 +12,14 @@ paths: src/** test/** install.ps1 skills/** bundles/** mcp/** pool/**
 
 Notes for whoever sits here next:
 
+- **An audit verdict is NOT commit authorization.** audit certifies the DIFF is sound —
+  nothing more. Every `git commit` and every `git push` waits for the HUMAN's explicit
+  command, individually (human's order, 2026-07-18, after a session where verdicted
+  batches were committed on pipeline momentum). The pipeline is: build → suite → audit
+  verdict → **STOP and ask** → commit on their word → push only on a separate word.
+  Deploy-for-testing (copying to ~/.claude) is likewise theirs to trigger unless they
+  already asked for the test.
+
 - **Verify on the shipping surface, not the module.** The rule this repo learned the hard way:
   test the literal string a human or agent is told to type, resolved the way *they* resolve it.
   535 unit tests passed while `arc` was unrunnable from the agent's own Bash tool.

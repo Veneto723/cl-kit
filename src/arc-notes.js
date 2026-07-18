@@ -825,7 +825,7 @@ function badge(session, cwd) {
 // a path — the same way a large tool result is handled. So nothing would be lost by dumping. What
 // would be lost is the READING: the spill turns a note into a file the agent must choose to open,
 // and we MEASURED that choice — a referenced duty file was opened 5 times out of 8 (the paths-vs-
-// owns run, docs/review/paths-nudge-results-2026-07-15.md). An inline digest is seen every time.
+// owns run, 2026-07-15; its doc is retired, git history has it). An inline digest is seen every time.
 // So the clip does not defend the data; it defends the DELIVERY, which is the only thing a board
 // exists to do. The 60% is also why `--ref`-style pointers are for EVIDENCE, never for the ask.
 //

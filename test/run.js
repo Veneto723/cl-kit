@@ -1134,9 +1134,9 @@ try {
 
 // ---- audit regressions (board note #2: what the research peer found) ---------------
 // The first live board request was an audit for more 127-class bugs — commands arc TEACHES
-// that do not RUN. It came back with three (docs/audit/shipping-surface-2026-07-14.md); each
-// is pinned here so it cannot regrow. All are SHIPPING-SURFACE assertions: they test the
-// string a human or agent is told to type, not the module underneath.
+// that do not RUN. It came back with three (the 2026-07-14 shipping-surface audit; its doc is
+// retired, git history has it); each is pinned here so it cannot regrow. All are SHIPPING-
+// SURFACE assertions: they test the string a human or agent is told to type, not the module.
 section('audit regressions (taught commands must run)');
 try {
   // A3 — THE CATCH-22. A config that PARSES but normalizes to zero valid accounts used to

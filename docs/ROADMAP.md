@@ -6,13 +6,7 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 1. ~~`arc delegate` does not check whether the target is closed~~ · **FIXED** (2026-07-18, audit #259)
-
-**Root cause:** the status check *fired* and was **decapitated** — `requestNote` appended the closed-chair warning as a prose tail opening with `\n`, and the sender's `| head -4` clipped it; the incident transcript still shows the orphaned blank line. (`arc delegate` itself classified correctly that day.) **Fix:** the status now also rides **line 1** of the receipt (`— ⚠ "code" is CLOSED (revive: …)`), unclippable; the delegate paths omit the warning at the source via `opts.chairHandled` instead of tail-strip regexes. The related **fail-open false-live latent** is item 8.
-
----
-
-## 2. `/exit` breaks listener stability · **FIXED for `arc --resume`** — coverage of the original incident unconfirmed
+## 1. `/exit` breaks listener stability — fixed for `arc --resume`; the incident's relaunch form is unanswered
 
 **Root cause:** `/exit` deletes session state; on `arc --resume <uuid>` the conversation id survived only in `explicitId`, and `refreshRole` was handed the null `convId` — nothing adopted, session roleless, no nag, no listener, notes rot. **Fix (audit #259, fork-guard attacked and held):** `refreshRole(..., convId || (isFork ? null : explicitId))` — a fork never adopts its caller's chair; a live holder can never be stolen.
 
@@ -20,7 +14,7 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 3. Operator visibility — the board is invisible to the human · **BIG** · parked
+## 2. Operator visibility — the board is invisible to the human · **BIG** · parked
 
 **Classified by the human (2026-07-17) as a BIG update:** substantial work, not a quick fix — parked until there is slack, then handled properly. arc tells an operator nothing about what its agents are doing.
 
@@ -49,77 +43,9 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 4. A movable per-session todo — **DEFERRED**, and the deferral is itself a test
+## 3. Asymmetric note permission — initiating asks, replying does not · **RAW** · recorded, not analysed
 
-**The human's idea (2026-07-17):** each session on the board carries its own todo/roadmap note, so that an incoming peer note or human message cannot make it lose what it was working on — **and so it survives a context compact.** Deferred deliberately, with a second purpose: **it is a live test — will `research` still surface this after a compaction?** (See "the test", below.)
-
-**Status:** researched, **not designed, not built.** Findings below are measured on this machine unless marked otherwise.
-
-### What is already true (measured — do not rebuild these)
-
-- **Claude Code already has a file-backed, per-conversation task store:** `~/.claude/tasks/<conversation-id>/`, with `.lock` and `.highwatermark`. Nine conversations here have one; high-water marks reach **353**. It is **not in the context**, so **compaction cannot touch it — by construction, not by luck.**
-- **Empirically survives compaction:** `7aa3a853` accumulated **353 tasks / 1,026 task-tool calls across 53 compactions**, with the agent resuming task activity within 30 min of a boundary at **16 of 53**. *(The other 37 are ambiguous — an idle session and a lost thread look identical in tool-call counts. Not evidence of loss.)*
-- **arc already hooks its lifecycle:** `TaskCreated`/`TaskCompleted` → `arc-done.js`, which **derives "done" from git evidence, not the agent's word** (`ac86120`, `arc-done.js:2`).
-- **arc already has a second, self-maintaining todo:** the board's request tracking — `⧗ N of YOUR requests still unanswered`.
-
-### The real gap: **portability, not compaction**
-
-**Measured on `research` itself:** 5 tasks created this session; `TaskList` now returns **"No tasks found"**, and this conversation has **no task dir on this machine** — the tasks are stranded on the machine where they were made (ALYCE), while the conversation moved to WHALE. **The conversation travelled; the task list did not.**
-
-**This is the same gap as the board being machine-local** — roles and charters travel in git; boards, claims, and task lists do not. **One gap in a third costume, not a third feature.** Any build should treat it as such. ⚠ And note the trap: **arc's own derived todo (the board) has the identical disease**, so "just use the board" does not solve it either.
-
-### The design constraint arc has already established
-
-**Who updates it?** If the answer is *"the agent"*, the evidence says it will not. **Case study — this session:** 12 of 15 task calls happened in one early burst during a structured experiment; then **~40 hours and 10 peer interruptions with none**, despite the harness nagging *"the task tools haven't been used recently"* on nearly every turn. Meanwhile the **derived** todo (request tracking) was used 10× without a thought.
-
-**arc already decided this question in `ac86120`: derive state from evidence, do not ask the agent to report it.** A todo the agent must remember to update contradicts arc's own principle and this session's evidence. A todo arc **derives** — from notes, requests, commits — fits both.
-
-**Not claimed:** that interruption *caused* the abandonment. The burst was a checklist-shaped experiment; the rest was conversation, which has no discrete steps. *"The work changed shape"* fits the data equally well. Separating them needs an agent caught **mid-checklist when a note lands** — a real experiment nobody has run.
-
-### Prior art (the pattern is named and the problem is known)
-
-- **[opencode #18071](https://github.com/anomalyco/opencode/issues/18071)** — an **open** feature request: *"Add persistent todo list to prevent losing progress when context limits are reached."* A mature harness still lacks this.
-- **[Compaction Memory](https://gist.github.com/sigalovskinick/e2e329bb37ecc74b9f15d5ba74ee1ee5)** — production-tested method for Claude Code / Codex.
-- **[Mastra — anatomy of a harness](https://mastra.ai/blog/anatomy-of-a-coding-agent)**: *"compaction is where coding agents go to die"*; summaries *"drop the exact wording of a requirement… the agent starts to contradict decisions it made before the summary."*
-- **[awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering)**, **[Anthropic context-engineering cookbook](https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools)**. The named pattern: a **live task list** — *"persistent… outside the context window"*; the principle: *"stop treating the chat as the source of truth."*
-
-### The test (why this item is deferred rather than closed)
-
-The human deferred this **as an experiment**: *"we can also test whether u remember it after a compact."*
-
-- **Precondition, and it is why the first test failed:** `research`'s conversation (`61e4c419`) has **never been compacted** — zero `compact_boundary`, peak context **736,971** tokens against the ~1M trigger. The earlier recall test (the operator-visibility deferral, item 3) **could not fail** — nothing was ever at risk. `code`, at **10 compactions**, is the session that could actually answer it.
-- **What the test reads out, if `research` is ever compacted:**
-  - **Surfaces it unprompted** → context survived; says nothing about the feature.
-  - **Only after re-reading this file** → **the file is what saved it — which is the feature's whole argument**, and the strongest available evidence for building it.
-  - **Neither** → total loss; strongest evidence of all.
-- ⚠ **Recording it here partially blunts the test** — a file I can re-read is exactly the mechanism under test. What remains genuinely testable is whether I remember **that this file exists** and think to look. That is the honest question, and it is the same one behind arc's measured **60% rule**: *a referenced file gets opened ~60% of the time.*
-
-**Next move:** the human's. Nothing starts before a pick — and per item 3's lesson, the design question ("derived or discretionary? and how does it travel?") is answered before any code, not during it.
-
----
-
-## 5. The DEAF badge cries wolf on busy sessions — a heartbeat, not a flag · **SMALL** · designed, ready to build
-
-**Status:** designed this session (2026-07-17), **not built.** Unlike items 3–4 there is no open design question and no measurement pending — a ~20-line, statusline-only change blocked only on slack. Recorded so it is not lost, not because it needs a decision.
-
-**The gap:** `badge()` computes `deaf = !isWaiting && (offerStale > 90s || oldestUnreadStale > 90s)` (`src/arc-notes.js`, `a9b682c`). That staleness test cannot separate two states that look identical on the board — *no armed listener + unread notes older than 90s*:
-
-- **Genuinely deaf** — the session is **idle** (waiting on the human); the notes rot until the human next types. ✅ should badge.
-- **Just busy** — the session is mid-way through a long (>90s) turn; the Stop hook will deliver the notes at turn-end. ❌ should not badge.
-
-So DEAF fires during normal long turns. That is alarm fatigue: it goes off when nothing is wrong → the human learns to ignore it → and then misses the real idle-and-deaf case — the very case `a9b682c` was written to catch.
-
-**The fix:** an active-alive **heartbeat**. The statusline already re-renders ~every 10s while a turn runs (confirmed by `research`, board #208); stamp that as a freshness signal. DEAF then requires *no recent heartbeat* **on top of** stale unread — the session is not merely quiet, it is genuinely doing nothing. Busy sessions stop tripping it.
-
-**The constraint — why not the obvious version:** NOT a flag set on turn-start and cleared on turn-end. An **interrupted** turn never runs the Stop hook, so the flag sticks — the exact interrupt bug behind `a9b682c`. A heartbeat is a freshness **timestamp** (how-long-since-alive), which degrades gracefully instead of wedging.
-
-**Next move:** the human's go-ahead. Designed; nothing blocks it but slack.
-
----
-
-## 6. Asymmetric note permission — initiating asks, replying does not · **RAW** · recorded, not analysed
-
-**The human's idea, verbatim (2026-07-17):** *"Session initiate a note need permission, but replying a note doesn't require user permission."*
+**The human's idea, verbatim (2026-07-17):** *"Session initiate a note need permission in balanced mode, but replying a note doesn't require user permission."*
 
 **Status: RECORDED ONLY.** The human asked for this to be parked without analysis, so none has been done — no gap statement, no evidence, no design. It is written down here so it is not lost, and deliberately nothing more. Do not mistake this entry for a considered proposal; it is a raw idea awaiting its turn.
 
@@ -127,26 +53,9 @@ So DEAF fires during normal long turns. That is alarm fatigue: it goes off when 
 
 ---
 
-## 7. Profile-sync merge policy must travel WITH the key · **SMALL** · scheduled by audit, not built
+## 4. delegate can read a dead chair as LIVE — the fail-open window's sharpest edge · **SMALL** · scheduled by audit (#259)
 
-**Scheduled as a condition of the slash-twin verdict (audit, board #245, 2026-07-18):** *"a class that has silently bitten twice will bite the third key invisibly."*
-
-**The gap:** `syncSettings` (`src/arc-profile.js`) merges the keys in `ARC_SETTINGS_KEYS` into every profile's `settings.json` on every launch — and its **default is wholesale replace** (`next[k] = master[k]`). Two keys have already had to be rescued from that default with bespoke per-key branches, each written only after the clobbering was observed:
-
-- `permissions` — a wholesale replace silently deleted the human's own per-profile grants on the next launch (`cfd34a4`).
-- `skillOverrides` — added 2026-07-18 with a per-key `overlayMaps` branch from the start, precisely because the class was known by then.
-
-**The failure that is coming:** the next author appends a key to `ARC_SETTINGS_KEYS` (an `env` block, spinner config, whatever arc owns next), forgets that the default clobbers, and a profile-local value the human set inside a profiled session reverts on every launch — **no error, no symptom, third occurrence.**
-
-**The fix (small, shaped by audit's review):** make the policy travel with the key — `ARC_SETTINGS_KEYS` becomes `[{ key, merge: 'replace' | 'overlay' | 'permissions' }]`, so adding a key **forces** the merge decision at the declaration site instead of defaulting to the dangerous branch. Existing behavior unchanged; only the default dies.
-
-**Owner of the next move:** `code`, when there is slack. No design question is open — this is scheduled work, not a parked idea.
-
----
-
-## 8. delegate can read a dead chair as LIVE — the fail-open window's sharpest edge · **SMALL** · scheduled by audit (#259)
-
-**Found while fixing roadmap #1 (2026-07-18), fixture-proven, has NOT fired in production.** `isHolder`'s deliberate fail-open windows (the warm ≤30s `PIDSTART_CACHE` serving a dead predecessor's start; the probe-unavailable path) can make `requestDelegate` treat a closed chair as live: it skips the revive, posts the packet to a dead chair, and tells the delegator *"«role» is live: its listener will wake it within seconds."*
+**Found while fixing the delegate closed-chair check (2026-07-18), fixture-proven, has NOT fired in production.** `isHolder`'s deliberate fail-open windows (the warm ≤30s `PIDSTART_CACHE` serving a dead predecessor's start; the probe-unavailable path) can make `requestDelegate` treat a closed chair as live: it skips the revive, posts the packet to a dead chair, and tells the delegator *"«role» is live: its listener will wake it within seconds."*
 
 **Why scheduled rather than fixed inline:** fail-open is the designed anti-duplicate-session tradeoff (`a0c93bb`, audit #152 — fail-safe, ≤30s, self-heals), and audit ratified the deferral. **Audit's sharpness note (#259):** the delegate path is where a false-live reading costs the most — *a request nobody answers, reported as handled* — worse than the revive-refusal the same race causes elsewhere.
 
@@ -156,7 +65,7 @@ So DEAF fires during normal long turns. That is alarm fatigue: it goes off when 
 
 ---
 
-## 9. The listener-supersede test can lose to environment pollution · **SMALL** · scheduled by audit (#259)
+## 5. The listener-supersede test can lose to environment pollution · **SMALL** · scheduled by audit (#259)
 
 **Audit's finding (2026-07-18):** running the suite on a machine with a dozen live `arc join` listeners, the listener-supersede test failed 1-in-2 runs, then passed clean. The failing title was the since-replaced kill-based test, and the tree was changing mid-audit — so *churn, not flake* is the leading hypothesis — but it cannot be proven from here, and the principle stands regardless: **a green light that flickers will someday wave off a real arc-await regression as "just the flake."**
 
@@ -166,20 +75,11 @@ So DEAF fires during normal long turns. That is alarm fatigue: it goes off when 
 
 ---
 
-## 10. Richer usage display — the payload already carries it · **SMALL** · evidence ready, nobody has asked
-
-**research's finding + correction (board #257/#264, 2026-07-18, measured live):** the `/api/oauth/usage` call arc already makes returns far more than the 5h/7d percentages the statusline shows. **The corrected field map** (the #257 version was wrong): per-model weekly usage lives in **`limits[]` entries with `kind:"weekly_scoped"`** and `scope.model.display_name` — the top-level `seven_day_opus`/`seven_day_sonnet` fields are **null** on subscription accounts; `utilization` is a whole-number percent, not a fraction. `limits[]` entries also carry **`severity`** (normal → warning/critical — color-coded alerts for free) and per-window `resets_at`. Spend/balance/credits fields are null on subscriptions — **do not build a $-view for sub users.**
-
-**Scope honesty (research's own):** one subscription account, one moment; severity escalation inferred from the field's presence, never observed. And the 429-backoff idea is a **measured dead end** — `Retry-After: 0`, client-identity gating; the shipped header fix (`1f00fc3`) is the only lever.
-
-**Owner of the next move:** the human, to say they want it — likely as part of item 3's view work rather than alone.
-
----
-
 ## Parked elsewhere — pointers, not entries
 
 These are live threads owned by other chairs or blocked on a call. They are **not** roadmap items; recorded here only so this file is not mistaken for the whole picture.
 
+- **Board export/import (portability across machines).** The one live piece of the dissolved movable-todo idea: boards/claims are machine-local by design, so nothing board-derived survives a machine change until the board itself travels. `code`-sized as an extension (~220 lines, board #230); earns an item only when the human asks for it.
 - **MAF adoption (C1 — compaction blindness).** `audit` and `code` are negotiating it; research is duty-free on it as of 2026-07-17. Evidence: [`review/maf-scan-2026-07-17.md`](review/maf-scan-2026-07-17.md) (`bc7789a`), verified by `audit` (board #181). Verdict so far: **observe, not build** — arc cannot compact a conversation it does not own.
 - **Paired prefill rerun.** Protocol + subject-freeze handshake settled on the board (research authors, `audit` freezes and verdicts). **Unfunded** — nothing runs until the human calls the quota. Spec: [`review/prefill-curve-2026-07-16/AUDIT.md`](review/prefill-curve-2026-07-16/AUDIT.md).
 - **Revive determinism (N-revive against a frozen conversation).** Rides the paired rerun's subject-freeze for free. Open at n=1: `--resume` took the chronological tip once; that rules out "obviously random", not "deterministic".

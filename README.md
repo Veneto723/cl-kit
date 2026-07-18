@@ -58,16 +58,15 @@ account's live usage inline:
 
 ```text
 arc usage — peek
-  MAX  [subscription]   5h 31% · 7d 26%  (resets 8pm)   1m ago
-  MATE [gateway]        $118 today · 66.3M tok · 493 req · unlimited   2m ago
+  MAX  [sub]   5h 31%  ·  7d 26%  (resets 8pm)   1m ago
+      7d · Fable 23%
+  MATE [gw]    $118 today · 66.3M tok · 493 req · unlimited   2m ago
       opus-4-8   64.3M tok · $116
       haiku-4-5  1.5M tok · $1.73
 ```
 
-<!-- Replace the block above with a real recording once captured:
-     drop the file at docs/picker.gif and uncomment the next line.
-![account picker](docs/picker.gif)
--->
+(The account you are currently on is tinted in the live output; per-model weekly
+lines appear when the subscription's usage payload carries them.)
 
 ---
 
@@ -172,7 +171,8 @@ to run `arc join <role>` in the background: it blocks for free until a note land
 and that exit is what re-invokes the agent. This is the only wake channel there is (arc runs
 claude on a real terminal and holds no handle into it), which is why it must be the session's own
 command. Nothing to remember: arc asks, once, every time it would otherwise go deaf. If a
-role-holder never armed one, the statusline says `⚠ <role> · DEAF`.
+role-holder never armed one and sits genuinely idle, the statusline says `⚠ <role> · DEAF`
+(a busy mid-turn session is never badged — its transcript still beating is the proof of life).
 
 **Ask for a peer in prose; there is no command for you to type.** Say *"get research on this"* and
 the agent runs `arc delegate research "<packet>"` — **one verb**, whoever that peer is right now:
