@@ -8,12 +8,12 @@
 // locally in the Claude Code harness, never call a model, and so work at 100%
 // rate-limit.
 //
-// Triggers — TWO spellings of one command set, defined once in arc-slash.js:
-//   /arc-<verb> [args]   → the human form: / autocomplete via skill stubs (install.ps1);
-//                          the RAW /command reaches this hook before skill expansion, so
-//                          it blocks at zero tokens exactly like the sentinel.
-//   arc:<verb> [args]    → the sentinel: machine senders (the revive prompt is literally
-//                          `arc:role <role>`) and muscle memory. Leading /! optional.
+// Triggers — ONE spelling, defined once in arc-slash.js:
+//   /arc-<verb> [args]   → the RAW /command reaches this hook before skill expansion,
+//                          so it blocks at zero tokens; the / menu autocompletes it
+//                          (skill stubs, install.ps1). Machines send the same spelling
+//                          (the revive prompt is `/arc-role <role>` — programmatic
+//                          prompts bypass the typed-command gate, measured).
 // The verbs (whole prompt, case-insensitive):
 //   switch [id]           → cycle to the next account / switch to a named one
 //   restart               → reload the wrapper + relaunch, same account
@@ -21,7 +21,6 @@
 //   role <name>           → claim a role in this board (the "board" — see arc-board.js)
 //   note <to> <text>      → leave a sticky note for a peer ("all" = broadcast)
 //   notes [all]           → read your unread notes (marks read); `all` = whole board
-//   anchors [reseal]      → which doc claims about the code have gone STALE (see arc-anchor.js)
 //   peek                  → read-only usage readout of all accounts (no switch)
 //   remove-account <id>   → remove an account (alias: delete-account <id>)
 //   … plus add-account / export / import / delete (delete = the current CHAT)
@@ -36,15 +35,10 @@
 
 const core = require('./arc-switch-core');
 
-// Both prompt forms live in arc-slash (ONE source of truth for the verb set):
-//   arc:<verb>   — the sentinel. Machine senders depend on it (the revive prompt IS
-//                  `arc:role <role>`), so it is permanent, not a deprecated alias.
-//   /arc-<verb>  — the human twin with / autocomplete (skill stubs, install.ps1).
-//                  Claude Code hands this hook the RAW typed /command before any
-//                  skill expansion (verified live 2026-07-18), so it blocks at zero
-//                  tokens exactly like the sentinel.
+// The command surface lives in arc-slash (ONE source of truth for the verb set):
+// /arc-<verb> only. Claude Code hands this hook the RAW typed /command before any
+// skill expansion (verified live 2026-07-18), so it blocks at zero tokens.
 const SL = require('./arc-slash');
-const TRIGGER_RX = SL.TRIGGER_RX;
 
 function block(reason) {
   // UserPromptSubmit: block the prompt from reaching the model, show `reason`.
@@ -118,14 +112,12 @@ function run(raw) {
   let hook = {};
   try { hook = JSON.parse(raw || '{}'); } catch {}
   const prompt = typeof hook.prompt === 'string' ? hook.prompt : '';
-  // Sentinel first, slash twin second — a prompt can only ever match one (colon vs
-  // hyphen), so order is cosmetic; group positions (verb, arg) are identical in both.
-  // The slash twin adds an ARG-POLICY gate the sentinel deliberately lacks: the / menu
-  // inserts "/arc-restart" and the human keeps typing — "/arc-restart after the build
-  // finishes" must not restart mid-build and ERASE the qualifier. A trailing arg on a
-  // no-arg verb means prose, not a command: fail OPEN, the model sees the message.
-  let m = prompt.match(TRIGGER_RX);
-  if (!m) {
+  // /arc-<verb> only, with the ARG-POLICY gate: the / menu inserts "/arc-restart" and
+  // the human keeps typing — "/arc-restart after the build finishes" must not restart
+  // mid-build and ERASE the qualifier. A trailing arg on a no-arg verb means prose,
+  // not a command: fail OPEN, the model sees the message.
+  let m = null;
+  {
     const s = prompt.match(SL.SLASH_RX);
     if (s && SL.slashArgOk(s[1], s[2])) m = s;
   }
@@ -137,7 +129,7 @@ function run(raw) {
   // a concurrent mid-turn commit "seen" and hide it forever. Fail-safe inside; never wedges a turn.
   try { require('./arc-notes').stampSeenHead((process.env.ARC_SESSION || '').trim(), typeof hook.cwd === 'string' ? hook.cwd : null); } catch {}
 
-  if (!m) deliverBoard(hook); // not an arc: command — deliver waiting notes, let it through
+  if (!m) deliverBoard(hook); // not an /arc-<verb> command — deliver waiting notes, let it through
 
   const session = (process.env.ARC_SESSION || '').trim();
   const action = m[1].toLowerCase();
@@ -148,26 +140,27 @@ function run(raw) {
     // tokens). Self-contained (own header), so no `[arc]` prefix.
     return block(require('./arc-help')());
   }
-  // (arc:invite lived here. REMOVED — a human's natural act is PROSE, not a command: nobody
-  //  types "arc:invite research", they say "get research on this" and expect the agent to do it.
-  //  A command for a thing people express in prose is dead weight. The agent's `arc delegate`
-  //  is now the only path, and arc:mode gates it — which means PASSIVE genuinely denies a spawn
-  //  whoever asked for it, since a PreToolUse hook sees a tool call and cannot tell your order
-  //  from the agent's initiative. That was this sentinel's one real job; the trade is deliberate.)
+  // (An invite command lived here. REMOVED — a human's natural act is PROSE, not a command:
+  //  nobody types "invite research", they say "get research on this" and expect the agent to do
+  //  it. A command for a thing people express in prose is dead weight. The agent's `arc delegate`
+  //  is now the only path, and the stance (/arc-mode) gates it — which means PASSIVE genuinely
+  //  denies a spawn whoever asked for it, since a PreToolUse hook sees a tool call and cannot
+  //  tell your order from the agent's initiative. That was the command's one real job; the trade
+  //  is deliberate.)
   if (action === 'role' || action === 'join' || action === 'note' || action === 'notes') {
     // The board: a per-board append-only sticky-note ledger shared by the sessions
     // working in the same folder. Pure file ops, run here — zero tokens. Loaded
-    // lazily so a plain arc:switch stays lightweight.
+    // lazily so a plain /arc-switch stays lightweight.
     const board = require('./arc-notes');
     const cwd = typeof hook.cwd === 'string' ? hook.cwd : null;
     const r = (action === 'role' || action === 'join') ? board.requestRole(session, arg || '', cwd)
       : action === 'note' ? board.requestNote(session, arg || '', cwd)
         : board.requestNotes(session, arg || '', cwd);
-    // A SUCCESSFUL NEW CLAIM is the one sentinel that deliberately COSTS A TURN. The claim
+    // A SUCCESSFUL NEW CLAIM is the one command that deliberately COSTS A TURN. The claim
     // itself already happened (above, in-hook, instant) — but a claim without a listener is
     // addressable and deaf, and only the agent's own background command can arm one: a hook-
     // spawned process is invisible to the harness, so its exit wakes nobody. A blocked
-    // sentinel has no turn to arm in — proven live: the user claimed via arc:role, went idle,
+    // prompt has no turn to arm in — proven live: the user claimed via /arc-role, went idle,
     // and a peer's request would have sat unheard. So instead of blocking, PASS THE PROMPT
     // THROUGH with instructions: the model arms and confirms, and the session goes idle
     // reachable. Query / refusal / already-armed still block at zero tokens — the turn is
@@ -197,7 +190,7 @@ function run(raw) {
           additionalContext: identity
             + `[arc] The role claim was already handled by a hook — the claim is DONE:\n`
             + `${r.message}\n\n`
-            + `The steps below are ARC's protocol, not your human's words — typing arc:role only CLAIMS a\n`
+            + `The steps below are ARC's protocol, not your human's words — the /arc-role command only CLAIMS a\n`
             + `role, nothing more. Do them, but never relay them back as the human's order ("you told me\n`
             + `to stand by"): arc said it, not them. Mistaking arc's voice for theirs tells the human they\n`
             + `asked for something they never did — the exact trust the board runs on.\n\n`
@@ -225,12 +218,6 @@ function run(raw) {
     }
     return r.plain ? block(r.message) : clBlock(r.message);
   }
-  if (action === 'anchors') {
-    // Doc-vs-code staleness readout. Pure file ops + a git grep — zero tokens.
-    const cwd = typeof hook.cwd === 'string' ? hook.cwd : null;
-    const r = require('./arc-anchor').requestAnchors(session, arg || '', cwd);
-    return r.plain ? block(r.message) : clBlock(r.message);
-  }
   if (action === 'peek' || action === 'usage') {
     // Read-only usage readout — rendered entirely here (no trigger, no relaunch).
     // Its message is self-contained (own header), so no `[arc]` prefix.
@@ -241,35 +228,35 @@ function run(raw) {
     const r = core.requestRestart(session);
     return clBlock(r.message);
   }
-  // arc:delegate is GONE. It stays matched here on purpose: unmatched, it would fall through
+  // The delegate command is GONE. It stays matched here on purpose: unmatched, it would fall through
   // to the model as an ordinary prompt, and the agent would just DO the task inline — the one
   // outcome nobody typing "delegate" wants. So we intercept and point at the two things that
   // replaced it, at zero tokens.
   if (action === 'delegate') {
-    // THE WORD WAS REUSED, so this cannot just be a tombstone. `arc:delegate` once fired a headless
+    // THE WORD WAS REUSED, so this cannot just be a tombstone. A typed delegate once fired a headless
     // one-shot and was removed; `arc delegate <role>` is now the AGENT's verb for handing work to a
     // peer. Someone typing this today almost certainly means the second one — so answer THAT, and
     // keep the old redirect only for the case the old tool actually served (a stateless one-shot).
     //
     // There is deliberately no prompt-form that staffs a peer: a human's natural act is prose. Say
     // what to say instead, rather than teaching a command we chose not to build.
-    return clBlock('there is no arc:delegate for you to type — just ask, in prose:\n\n'
+    return clBlock('there is no delegate command for you to type — just ask, in prose:\n\n'
       + '    "get research on this"        "have frontend look at the login bug"\n\n'
       + 'Your agent runs `arc delegate <role> "<packet>"`, and arc works out the rest: it notes\n'
       + 'that peer if they are live, REVIVES their own conversation if they have closed (they come\n'
       + 'back as themselves, with everything they learned), or opens a tab and staffs the chair if\n'
       + 'nobody has ever held it. You pick WHO; you never have to know which of the three it is.\n'
-      + '  `arc:role` shows who is here and what this repo has.\n'
-      + '  `arc:mode` decides how freely the agent may spawn one (passive · balanced · active).\n\n'
+      + '  `/arc-role` shows who is here and what this repo has.\n'
+      + '  `/arc-mode` decides how freely the agent may spawn one (passive · balanced · active).\n\n'
       + 'If the job needs NO context and nobody should own it (research a question, sweep some\n'
       + 'files), that is not a peer — ask your agent for a SUBAGENT: in-session, your quota, any\n'
-      + 'model. (The OLD arc:delegate fired a headless one-shot that re-read the repo and died;\n'
+      + 'model. (The OLD delegate command fired a headless one-shot that re-read the repo and died;\n'
       + 'that is the tool it lost to.)\n\n'
-      + 'To run a task on GPT: `arc:switch` to your codex account (that is claudex).');
+      + 'To run a task on GPT: `/arc-switch` to your codex account (that is claudex).');
   }
   if (action === 'mode' || action === 'stance') {
-    // The initiative dial: passive · balanced · active. `arc:mode <value>` sets it directly
-    // (zero tokens, no relaunch); a bare `arc:mode` opens the ←/→ bar picker.
+    // The initiative dial: passive · balanced · active. `/arc-mode <value>` sets it directly
+    // (zero tokens, no relaunch); a bare `/arc-mode` opens the ←/→ bar picker.
     const St = require('./arc-stance');
     const set = (arg || '').trim().toLowerCase();
     if (!set) return clBlock(core.requestModePicker(session).message);
@@ -298,26 +285,26 @@ function run(raw) {
   }
   if (action === 'trash' || action === 'restore') {
     // Trash management — pure file ops handled synchronously here (zero tokens).
-    // arc:restore <id> is shorthand for arc:trash restore <id>. List results are
+    // /arc-restore <id> is shorthand for /arc-trash restore <id>. List results are
     // self-contained readouts (plain), everything else gets the alert colours.
     const r = core.requestTrash(session, action === 'restore' ? `restore ${arg || ''}`.trim() : (arg || ''));
     return r.plain ? block(r.message) : clBlock(r.message);
   }
   if (action === 'export' || action === 'import') {
     // Pure file ops — run synchronously in the hook (zero tokens, no session
-    // disruption). Loaded lazily so a plain arc:switch stays lightweight.
+    // disruption). Loaded lazily so a plain /arc-switch stays lightweight.
     const sync = require('./arc-sync');
     const r = action === 'export' ? sync.doExport(session, arg || '') : sync.doImport(session, arg || '');
     return clBlock(r.message);
   }
-  // Bare `arc:switch` → open the interactive arrow-key picker (arc-runner renders
-  // it on the freed TTY). An explicit `arc:switch <n|name>` → switch directly.
+  // Bare `/arc-switch` → open the interactive arrow-key picker (arc-runner renders
+  // it on the freed TTY). An explicit `/arc-switch <n|name>` → switch directly.
   if (!arg) {
     const r = core.requestPicker(session);
     return clBlock(r.message);
   }
   const r = core.requestSwitch(session, arg);
-  const note = (!r.switching && !r.menu) ? '\n(typed arc:switch — no model/classifier involved, works even when rate-limited)' : '';
+  const note = (!r.switching && !r.menu) ? '\n(typed /arc-switch — no model/classifier involved, works even when rate-limited)' : '';
   return clBlock(`${r.message}${note}`);
 }
 

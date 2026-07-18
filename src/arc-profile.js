@@ -22,7 +22,7 @@ const PROFILES_DIR = path.join(C.CLAUDE_DIR, 'arc-profiles');
 // `tasks` is Claude Code's TaskCreate/TaskUpdate list: <config>/tasks/<session-id>/<id>.json
 // plus a .lock. It belongs here for the same reason `sessions` and `todos` do — a
 // conversation resumed on another account is the SAME conversation and must keep its
-// task list. Without it, `arc:switch` silently showed an EMPTY task list, because the
+// task list. Without it, `/arc-switch` silently showed an EMPTY task list, because the
 // new profile had no tasks/<session-id>/ of its own. (Observed: session 6665bfca had 4
 // tasks under ~/.claude/tasks and an empty dir under arc-profiles/max/tasks.)
 const SHARED_DIRS = ['projects', 'sessions', 'commands', 'todos', 'tasks', 'skills', 'agents', 'plugins'];
@@ -31,7 +31,7 @@ const SHARED_DIRS = ['projects', 'sessions', 'commands', 'todos', 'tasks', 'skil
 // from the home one so a fresh profile still has the user's servers.
 const HOME_CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 // settings.json keys arc OWNS and must propagate into every profile so the zero-
-// token arc: hooks, the usage statusline, the user's permission allow-list, and the
+// token /arc- command hooks, the usage statusline, the user's permission allow-list, and the
 // /arc-* skill-menu overrides all work inside a profiled session. Everything else
 // (theme, model, per-account /config) is left to Claude Code / the user per profile.
 // PROVEN GAP this list closes: a root-only skillOverrides never reaches a profiled

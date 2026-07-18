@@ -65,7 +65,7 @@ function primaryOauth() {
   return cfg ? cfg.accounts.find((a) => a.type === 'oauth') || null : null;
 }
 
-// What arc:switch would move to — used to word the warning nudges.
+// What /arc-switch would move to — used to word the warning nudges.
 function switchTargetLabel(fromId) {
   if (!cfg) return null;
   const next = C.nextAccount(cfg, fromId, null);
@@ -137,7 +137,7 @@ function appendHistory(history, data) {
 // whose numbers it held. Fetched with whatever account was active, it was then read
 // back for ANY oauth account: right after a switch the still-TTL-fresh numbers of the
 // PREVIOUS account were painted under the new account's label (and, looking fresh,
-// suppressed the background refresh that would have corrected them), while arc:peek
+// suppressed the background refresh that would have corrected them), while /arc-peek
 // and auto-select scored every oauth account off that one blob.
 async function getUsageCachedFor(acc, force) {
   if (!acc) return null;
@@ -268,7 +268,7 @@ async function runRefresh(wantPool, force) {
   const apiAccts = accts.filter((a) => a.type === 'api' && GW.usageUrlFor(a));
   // allSettled, not all: one account's expired/absent token must not abort the
   // refresh of the others (each fetch already falls back to its own cached slice).
-  // Fetching EVERY oauth account — not just the active one — is what keeps arc:peek
+  // Fetching EVERY oauth account — not just the active one — is what keeps /arc-peek
   // and auto-select honest, exactly as each gateway is already refreshed.
   await Promise.allSettled([
     ...oauthAccts.map((a) => getUsageCachedFor(a, force)),
@@ -277,7 +277,7 @@ async function runRefresh(wantPool, force) {
   ]);
   // Forget accounts that no longer exist. Per-account slices otherwise accumulate
   // forever after a remove/rename, and a ghost's ancient timestamp would make
-  // arc:peek's "is the cache fresh?" check age off an account nobody has.
+  // /arc-peek's "is the cache fresh?" check age off an account nobody has.
   // Guarded on accts.length so an unreadable config can never empty the cache.
   try {
     if (accts.length) {
@@ -411,7 +411,7 @@ function poolExhausted(rows) {
 
 // The dead-end: on the pool, every pool account is in cooldown. If the oauth
 // subscription is also exhausted there's nothing to do but wait for its reset;
-// otherwise the escape is a manual arc:switch back. `data` = cached oauth usage.
+// otherwise the escape is a manual /arc-switch back. `data` = cached oauth usage.
 function bothExhaustedAlert(data) {
   const sub = primaryOauth();
   const subLabel = sub ? sub.label : 'subscription';
@@ -424,7 +424,7 @@ function bothExhaustedAlert(data) {
     return criticalAlert(`⛔ POOL + ${subLabel} both exhausted${reset}`);
   }
   const mx = Math.round(data.five_hour.utilization);
-  return criticalAlert(`⛔ POOL exhausted — arc:switch back to ${subLabel} (${mx}%)`);
+  return criticalAlert(`⛔ POOL exhausted — /arc-switch back to ${subLabel} (${mx}%)`);
 }
 
 // Projects minutes-to-limit from the observed rate of change of `key` over
@@ -514,7 +514,7 @@ const EFFORT_INITIAL_TAIL = 2_000_000; // bound the first scan of a long/resumed
 // { effort, offset }. Each render scans ONLY the new transcript bytes since last
 // time for the genuine /effort echo and remembers the value. This never loses the
 // setting to a fixed-window truncation. arc-runner SEEDS this file at each launch,
-// so a launch with no echo line (e.g. right after an arc:switch) is still known.
+// so a launch with no echo line (e.g. right after an account switch) is still known.
 function trackEffort() {
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
   if (!sid) return null;
@@ -622,7 +622,7 @@ function renderFull(data, sessionEta, weekEta, poolRows, acc, model, effort) {
   const target = switchTargetLabel(acc.id);
   const lines = [`Account: ${label(acc)}`];
   if ((over || nearSession) && target) {
-    lines.push('', blinkAlert(over ? `⚠ ${acc.label} limit reached — arc:switch to ${target} now` : `⚠ Nearing ${acc.label} limit — arc:switch to ${target}`));
+    lines.push('', blinkAlert(over ? `⚠ ${acc.label} limit reached — /arc-switch to ${target} now` : `⚠ Nearing ${acc.label} limit — /arc-switch to ${target}`));
   }
   const sReset = formatResetTime(session.resets_at);
   const wReset = formatResetTime(week.resets_at);
@@ -647,7 +647,7 @@ function boardSeg(f) {
   if (!f) return '';
   // Holding NO role means you receive nothing — so say it loudly rather than showing an
   // empty statusline while notes quietly pile up in the board.
-  if (f.noRole) return `\x1b[1;91m⚠ ${f.count} notes · no role — arc:role <name>\x1b[0m`;
+  if (f.noRole) return `\x1b[1;91m⚠ ${f.count} notes · no role — /arc-role <name>\x1b[0m`;
   // DEAF: you hold a role but never armed a listener, so every peer addressing you is talking to
   // an empty chair. The usual cause is an arming turn that could not run — a rate-limited account
   // still CLAIMS for free (the claim is handled in-hook, zero tokens) and then cannot take the
@@ -663,7 +663,7 @@ function boardSeg(f) {
   return deaf ? `${deaf} ${notes}` : notes;
 }
 
-// The initiative dial (arc:mode). The circle FILLS as the agent gets more proactive:
+// The initiative dial (/arc-mode). The circle FILLS as the agent gets more proactive:
 // ○ passive (dim) → ◐ balanced (cyan) → ● active (green). Always shown, so the dial stays
 // discoverable even when you have never touched it.
 //
@@ -674,7 +674,7 @@ function boardSeg(f) {
 // opposite of the injected directive's rule (only a deviation speaks). Weighed and kept on the
 // user's call — the dial is a persistent ambient readout, not a per-turn announcement, and a bar
 // that changes colour under you is worse than one you have to look at. Note the trade: a stance
-// set by a SENTINEL lands with no re-render (a blocked prompt is not a turn), so the bar can lag
+// set by /arc-mode lands with no re-render (a blocked prompt is not a turn), so the bar can lag
 // until the next real turn.
 function stanceSeg(stance) {
   if (stance === 'active') return '\x1b[1;92m● active\x1b[0m';
@@ -735,7 +735,7 @@ function renderCompact(data, sessionEta, poolRows, acc, model, effort, board, st
     // (5h window) or be stuck for days (weekly cap). See bindingResetLabel.
     const bindReset = bindingResetLabel(s, w, SWITCH_WEEK);
     const resetPart = bindReset ? ` (resets ${bindReset})` : '';
-    return withL2(blinkAlert(`⚠ ${acc.label} ${sv}%/${wv}% ${lbl}${resetPart} — arc:switch to ${target}`));
+    return withL2(blinkAlert(`⚠ ${acc.label} ${sv}%/${wv}% ${lbl}${resetPart} — /arc-switch to ${target}`));
   }
 
   const sEta = formatEta(sessionEta);
@@ -755,7 +755,7 @@ async function main() {
   const refresh = args.includes('--refresh');
 
   // Detached refresh worker: repopulate caches, then exit. `--force` bypasses the
-  // per-slice TTLs (used by arc:peek, which must show truly current data).
+  // per-slice TTLs (used by /arc-peek, which must show truly current data).
   if (refresh) {
     await runRefresh(args.includes('--with-pool') || args.includes('--apihub'), args.includes('--force')); // --apihub = legacy spelling
     return;
@@ -809,7 +809,7 @@ async function main() {
   // Keep the background refresh running (it maintains the ETA history and the
   // api-mode subscription numbers) whenever the cache is stale.
   // Refresh when the subscription usage is stale OR any gateway account's usage is
-  // stale (kept fresh even while on the subscription, so arc:peek isn't stale).
+  // stale (kept fresh even while on the subscription, so /arc-peek isn't stale).
   const anyGwStale = ((cfg && cfg.accounts) || []).some((a) => a.type === 'api' && GW.usageUrlFor(a) && !readCachedGwUsage(a.id).fresh);
   const needRefresh = !usage.fresh || (isApi && poolConfigured() && !pool.fresh) || anyGwStale;
   if (needRefresh) triggerBackgroundRefresh(isApi);

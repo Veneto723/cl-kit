@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // arc-invite: STAFF a role — put a session in an empty chair on this board.
 //
-// Reached only through `arc delegate <role>` (arc-runner). There is no `arc:invite` sentinel and
+// Reached only through `arc delegate <role>` (arc-runner). There is no invite command and
 // no bare `arc invite`: a human's natural act is PROSE ("get research on this"), not a command,
 // and an agent should never have to know whether a chair is occupied before asking for work to be
 // done in it. One verb; arc decides live-vs-closed-vs-new. See requestDelegate below.
@@ -33,8 +33,8 @@
 // not env — birthEnv cannot touch it. The birth prompt disavows it first, before the role, and the
 // `peers` skill catches the rest. Context is worth that; it is not worth pretending it is free.
 //
-// AND THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL. `arc:role <role>` is blocked at
-// UserPromptSubmit — that is the point of a sentinel, zero tokens — so it never reaches the model,
+// AND THE BIRTH PROMPT IS REAL PROSE, NOT A COMMAND. A `/arc-role <role>` prompt is eaten at
+// UserPromptSubmit — zero tokens, the point of the hook — so it never reaches the model,
 // and every later input arrives as a hook injection rather than a user message. A handful of
 // tokens buys a real turn, and a real turn is what a conversation is made of.
 //
@@ -159,7 +159,7 @@ function writeBirthPrompt(text, role) {
 // and a peer investigating it reproduced the symptom with plain claude and no arc — because IT was
 // spawned from an agent process too, and inherited the same poison. It concluded the mechanism was
 // Claude Code's. We both believed it. Eight theories died against it: --session-id, --name,
-// --permission-mode, the blocked sentinel, wt, cmd-vs-pwsh, /c-vs-/k, and the window itself. Every
+// --permission-mode, the blocked prompt, wt, cmd-vs-pwsh, /c-vs-/k, and the window itself. Every
 // one of those was a difference between MY spawns and a HUMAN typing the same command — and the
 // only difference that ever mattered was the ENVIRONMENT the human's terminal did not have.
 // PROOF: same wt, same cmd /k, same flags, env stripped -> 21701 bytes, written WHILE STILL LIVE.
@@ -268,7 +268,7 @@ function ensureTrusted(launchDir, opts) {
 //      over COM; a detached+unref'd spawner exits before the handoff completes and the
 //      request simply evaporates — status 0, no tab, nothing to debug. spawnSync waits the
 //      ~half-second the handoff needs; the session in the tab is independent after that.
-// The '"arc:role <role>"' nesting is deliberate: PS strips '…' → wt/cmd sees "arc:role X" →
+// The '"<prompt>"' nesting is deliberate: PS strips '…' → wt/cmd sees "/arc-role X" →
 // arc.cmd %* keeps the quotes → node receives ONE argv slot. Verified end-to-end.
 const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // `fork:false` = REVIVE: we are resuming the role's OWN conversation, so it must NOT be forked —
@@ -342,9 +342,9 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // With no caller conversation to fork (a session that never persisted one), birth still works —
   // the peer is simply born cold, which is what every peer was until now.
   const resume = conv ? ` --resume ${conv}` : (from ? ` --resume ${from} --fork-session` : '');
-  // THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL — and that is what makes the peer revivable.
-  // `arc:role <role>` was blocked at UserPromptSubmit (that is the point of a sentinel: zero
-  // tokens), so it never reached the model. Everything the newborn then received arrived as hook
+  // THE BIRTH PROMPT IS REAL PROSE, NOT A COMMAND — and that is what makes the peer revivable.
+  // A `/arc-role <role>` prompt is eaten at UserPromptSubmit (zero tokens, the point of the
+  // hook), so it never reaches the model. Everything the newborn then received arrived as hook
   // injections and Stop-block reasons — never a user message. Measured: such a session leaves NO
   // conversation on disk at all. `claude --resume <its id>` answers "No conversation found" even
   // after a graceful /exit, so there is nothing to revive and staffing silently births a stranger
@@ -381,12 +381,12 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // BIRTH ONLY: a REVIVE restores the mode it was last in via arc-runner's preservedFlags, and
   // passing it here too would hand claude the flag twice.
   const mode = conv ? '' : ' --permission-mode auto';
-  // The revive prompt speaks the SLASH twin. It travels programmatically (prompt file →
+  // The revive prompt is `/arc-role <role>`. It travels programmatically (prompt file →
   // argv → claude), which bypasses the input-box gate that rejects typed stub-less
   // /commands — measured 2026-07-18: `claude -p "/arc-peek"` reached the hook RAW and
-  // blocked at zero tokens. stripConvArgs strips both spellings on respawn, and if the
+  // blocked at zero tokens. stripConvArgs strips it on respawn, and if the
   // hook were somehow absent the model receives a /arc-role line whose stub arm-body
-  // carries the full claim protocol — strictly more graceful than a naked sentinel.
+  // carries the full claim protocol — a graceful degrade either way.
   const prompt = conv ? `/arc-role ${role}` : birth;
   // TWO SHAPES, and only one of them puts the prompt on a wire.
   //   PowerShell: fill the shipped template. Every value handed over is a token that CANNOT be
@@ -792,7 +792,7 @@ function staffRole(session, role, opts) {
 //
 // The work and the worker never merge into one act, though — they COMPOSE. A note is free and
 // reversible; staffing spawns a session with its own quota. So the note always posts, and the
-// spawn is gated by arc:mode (arc-pretool-hook, which checks liveness so the gate fires ONLY when
+// spawn is gated by the stance (/arc-mode; arc-pretool-hook checks liveness so the gate fires ONLY when
 // a session would actually be created).
 // arc delegate a,b "packet" — get a SUBSET on one job at once. Each role is handled by the same
 // rule as a single delegate: LIVE ones are noted, CLOSED ones REVIVED as themselves, never-held ones
@@ -807,7 +807,7 @@ function delegateMany(session, firstToken, packet, cwd, o) {
   const me = N.getRole(session, board);
   if (packet && !me) return { ok: false, message:
     `you hold no role on the "${board.name}" board, so there is no one for these roles to reply TO.\n` +
-    `  claim yours first:  arc:role <yours>    then delegate again (nothing was started).` };
+    `  claim yours first:  arc role <yours>    then delegate again (nothing was started).` };
   const targets = roles.filter((r) => r !== me);   // never delegate to yourself
   if (!targets.length) return { ok: false, message: `the only role in the list was yourself.` };
 
@@ -867,7 +867,7 @@ function requestDelegate(session, arg, cwd, opts) {
     return { ok: false, message:
       `you hold no role on the "${board.name}" board, so there is no one for "${role}" to reply TO —\n` +
       `a delegation is a question, and the answer has to come back to somebody.\n` +
-      `  claim yours first:  arc:role <yours>    then delegate again (nothing was started).` };
+      `  claim yours first:  arc role <yours>    then delegate again (nothing was started).` };
   }
 
   // Not live -> STAFF first, so the work lands in a chair that has someone in it. (The note would

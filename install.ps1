@@ -1,4 +1,4 @@
-﻿# arc installer (Windows 11). Deploys the arc account switcher into ~/.claude
+# arc installer (Windows 11). Deploys the arc account switcher into ~/.claude
 # and ~/.local/bin, wires hooks + statusline into settings.json (merging, never
 # clobbering), registers the arc-focus: toast-click protocol, and generates icons.
 # Re-runnable: existing files are overwritten from the kit, user settings merged.
@@ -122,12 +122,10 @@ if (($userPath -split ';') -notcontains $bin) {
 }
 
 # 3. every arc action is caught by the UserPromptSubmit hook at zero model tokens, in
-#    TWO spellings of one command set (src/arc-slash.js): the arc:<verb> sentinel
-#    (machine senders + muscle memory) and its /arc-<verb> slash twin, whose / menu
-#    autocomplete comes from the skill stubs copied below. Claude Code hands the hook
-#    the RAW typed /command before any skill expansion, so BOTH forms stay
-#    classifier-immune and rate-limit-proof — the original reason slash was dropped
-#    no longer applies, because these never reach a model.
+#    ONE spelling (src/arc-slash.js): /arc-<verb>, whose / menu autocomplete comes
+#    from the skill stubs copied below. Claude Code hands the hook the RAW typed
+#    /command before any skill expansion, so it stays classifier-immune and
+#    rate-limit-proof — these never reach a model.
 
 # 3b. core agent skills — capabilities any agent can discover + invoke.
 $skills = Join-Path $claudeDir 'skills'
@@ -207,14 +205,13 @@ Write-Host "  toast banners enabled for the PowerShell AppID"
 node "$($scripts -replace '\\','/')/arc-wire-settings.js" "$scripts"
 if ($LASTEXITCODE -ne 0) { throw 'settings.json wiring failed — nothing was changed.' }
 #   (arc-wire-settings writes UTF-8 WITHOUT a BOM: Node's JSON.parse rejects a BOM'd settings.json.)
-# (No Bash allow-rule: switching/restart use the zero-token arc:switch / arc:restart
-# sentinels — and their /arc-switch / /arc-restart twins — caught by the
-# UserPromptSubmit hook: no !-bash, no classifier. The OLD /switch /restart slash
-# commands were !-bash-backed and needed the allow-rule; the NEW /arc-* commands are
-# hook-eaten before any model runs, so the deadlock they were removed for cannot
-# recur. arc-wire-settings also writes skillOverrides ("user-invocable-only") for
-# every /arc-* stub, so the / menu shows them while the model's skill listing never
-# pays for them.)
+# (No Bash allow-rule: switching/restart use the zero-token /arc-switch /
+# /arc-restart commands, caught by the UserPromptSubmit hook: no !-bash, no
+# classifier. The OLD /switch /restart slash commands were !-bash-backed and
+# needed the allow-rule; the NEW /arc-* commands are hook-eaten before any model
+# runs, so the deadlock they were removed for cannot recur. arc-wire-settings
+# also writes skillOverrides ("user-invocable-only") for every /arc-* stub, so
+# the / menu shows them while the model's skill listing never pays for them.)
 
 Write-Host ""
 Write-Host "Done. Next:" -ForegroundColor Green

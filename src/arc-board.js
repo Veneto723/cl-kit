@@ -10,7 +10,7 @@
 // The board follows the session's CURRENT cwd, which Claude Code reports per prompt
 // and which can DRIFT. Moving around inside a repo is harmless (we walk up to the
 // git root), but `cd`-ing into a DIFFERENT repo genuinely changes boards — the role
-// claimed in the old board stops applying, and `arc:role` will say you have none.
+// claimed in the old board stops applying, and `/arc-role` will say you have none.
 // That is intended ("you moved flats"), but it is surprising, so: documented.
 //
 // Design notes (each one earned; see docs/research/agent-handoff/SUMMARY.md):
@@ -696,7 +696,7 @@ function roleClaim(board, role) {
 }
 
 // Returns {ok:true} if claimed, or {ok:false, holder} if a LIVE *other* session holds it.
-// IDENTITY IS THE SESSION, NOT THE PID: `arc:restart` re-execs arc-runner with a NEW pid
+// IDENTITY IS THE SESSION, NOT THE PID: `/arc-restart` re-execs arc-runner with a NEW pid
 // but the SAME ARC_SESSION, and must be able to reclaim its own role. The pid is only
 // a liveness probe. (Fall back to pid comparison for claims written without a session.)
 // The check and the write happen UNDER A LOCK: without it, two sessions claiming the same

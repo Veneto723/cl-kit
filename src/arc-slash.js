@@ -1,15 +1,15 @@
 'use strict';
-// arc-slash: the ONE source of truth for arc's prompt-command surface, in both forms:
+// arc-slash: the ONE source of truth for arc's prompt-command surface. ONE form:
 //
-//   arc:<verb>   — the sentinel. Typed by muscle memory, and SENT BY MACHINES: the revive
-//                  prompt (arc-invite.js) is literally `arc:role <role>`. Never remove it.
-//   /arc-<verb>  — the human-facing slash twin. Same verbs, same handlers, but the / menu
-//                  autocompletes it (skill stubs installed by install.ps1). Windows cannot
-//                  hold `:` in a directory name, so the slash form is hyphenated.
+//   /arc-<verb>  — matched by arc-switch-hook (UserPromptSubmit) BEFORE the model runs,
+//                  so it costs zero tokens; the / menu autocompletes it (skill stubs
+//                  installed by install.ps1). Windows cannot hold `:` in a directory
+//                  name, so the form is hyphenated. Machines send it too: the revive
+//                  prompt (arc-invite.js) is `/arc-role <role>` — programmatic prompts
+//                  reach the hook raw (measured: `claude -p "/arc-peek"` blocked).
 //
-// Both are matched by arc-switch-hook (UserPromptSubmit) BEFORE the model runs, so both
-// cost zero tokens. Claude Code hands the hook the RAW typed /command, not the expanded
-// skill body — verified live 2026-07-18 ("Original prompt: /arc-peek" on the block label;
+// Claude Code hands the hook the RAW typed /command, not the expanded skill body —
+// verified live 2026-07-18 ("Original prompt: /arc-peek" on the block label;
 // docs/review/zero-token-slash-command-2026-07-18.md). The skill stub bodies exist only
 // for the / menu and as a graceful fallback if the hook is ever not wired.
 //
@@ -22,12 +22,15 @@
 //     CONVERSATION delete. They route to remove-account.
 //   - `notes` MUST precede `note` (a plain alternation would try `note` first and only
 //     backtrack; being explicit costs nothing and documents the intent).
-const VERBS = 'switch|restart|delegate|mode|stance|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|join|anchors|help|arc';
+const VERBS = 'switch|restart|delegate|mode|stance|add-account|add|remove-account|rm-account|remove|delete-account|del-account|rename|export|import|delete|peek|usage|trash|restore|notes|note|role|join|help|arc';
 
-// The sentinel form. Leading / or ! optional (muscle memory tolerates `/arc:peek`).
-const TRIGGER_RX = new RegExp('^\\s*[/!]?\\s*arc:(' + VERBS + ')\\b\\s*(.*)$', 'i');
+// STRIP-ONLY (retired 2026-07-18): the dead `arc:<verb>` prompt shape, with its old
+// tolerances (leading /!, whitespace). Its one consumer is stripConvArgs, which DELETES
+// leftovers from older preserved argv so they cannot replay as prose on every respawn.
+// The hook must never match it.
+const LEGACY_RX = new RegExp('^\\s*[/!]?\\s*arc:(' + VERBS + ')\\b\\s*(.*)$', 'i');
 
-// The slash form — DELIBERATELY STRICTER than the sentinel, because a blocked prompt is
+// The slash form — DELIBERATELY STRICT, because a blocked prompt is
 // ERASED and a false positive here destroys the human's message outright (adversarial
 // review 2026-07-18 reproduced the erasure class the first draft allowed):
 //   COLUMN-0 anchor, no leading whitespace: Claude Code's own rule is that a slash
@@ -44,11 +47,11 @@ const TRIGGER_RX = new RegExp('^\\s*[/!]?\\s*arc:(' + VERBS + ')\\b\\s*(.*)$', '
 //     (fail-open); a lone trailing newline from a paste is still tolerated (\s*$).
 // Full alternation, not just the menu verbs — but NOT for typed aliases: a TYPED
 // stub-less /command never arrives (measured live 2026-07-18: typing /arc-usage gets
-// "Unknown command" client-side; the prompt never reaches UserPromptSubmit — hence
-// the docs say aliases are sentinel-only). The alias arm still earns its place for
-// the paths that BYPASS the input-box gate: a /command passed programmatically (argv,
-// `claude -p`, a prompt file) reaches the hook raw, and stripConvArgs asks this same
-// regex when deciding what to strip from respawn argv.
+// "Unknown command" client-side; the prompt never reaches UserPromptSubmit — aliases
+// have no typed spelling at all). The alias arm still
+// earns its place for the paths that BYPASS the input-box gate: a /command passed
+// programmatically (argv, `claude -p`, a prompt file) reaches the hook raw, and
+// stripConvArgs asks this same regex when deciding what to strip from respawn argv.
 const SLASH_RX = new RegExp('^/arc-(' + VERBS + ')(?=\\s|$)[^\\S\\n]*([^\\n]*)\\s*$', 'i');
 
 // The / menu: one stub per PRIMARY verb (aliases resolve in the regex, not the menu).
@@ -58,7 +61,7 @@ const SLASH_RX = new RegExp('^/arc-(' + VERBS + ')(?=\\s|$)[^\\S\\n]*([^\\n]*)\\
 //   'run'      — the verb has a terminal twin (`arc <verb>`, arc-runner) that is safe for
 //                the model to execute and relay: degraded (1 turn) but CORRECT.
 //   'sentinel' — stateful/destructive or hook-only; the body must NOT improvise. It points
-//                the human at the arc:<verb> sentinel and `arc doctor`.
+//                the human at a clean one-line /arc-<verb> and `arc doctor`.
 //   'arm'      — role only: the pass-through case. On a FRESH claim the hook deliberately
 //                lets the turn run (only the model can arm the listener), so the body is
 //                what the model reads — it defers to the injected [arc] context, with the
@@ -69,12 +72,11 @@ const SLASH_RX = new RegExp('^/arc-(' + VERBS + ')(?=\\s|$)[^\\S\\n]*([^\\n]*)\\
 const ALIASES = ['stance', 'add', 'rm-account', 'remove', 'delete-account', 'del-account', 'usage', 'restore', 'join', 'arc'];
 const EXCLUDED = ['delegate']; // matched only so it can never leak to the model
 
-// Slash-only arg policy. The sentinel is lax by long habit (`arc:peek whatever` blocks
-// and ignores the tail), but the SLASH form ships with autocomplete: the menu inserts
+// Arg policy. The slash form ships with autocomplete: the menu inserts
 // "/arc-restart" and the human keeps typing — "/arc-restart after the build finishes"
 // must NOT restart mid-build and erase the qualifier. For verbs whose handlers take no
 // arg (and delete, which takes only a confirm word), an unexpected arg means "this is
-// prose, not a command": FAIL OPEN, let the model see it. Sentinel behavior unchanged.
+// prose, not a command": FAIL OPEN, let the model see it.
 const NO_ARG = new Set(['restart', 'peek', 'usage', 'help', 'arc']);
 const CONFIRM_ARG_RX = /^(confirm|--confirm|yes|--yes|y)$/i;
 function slashArgOk(verb, arg) {
@@ -94,7 +96,6 @@ const MENU = [
   { verb: 'switch',         hint: '[account]',                       fallback: 'sentinel', desc: 'Switch account, keeping this conversation (bare opens the picker)' },
   { verb: 'restart',        hint: '',                                fallback: 'sentinel', desc: 'Reload the arc wrapper and relaunch this conversation, same account' },
   { verb: 'mode',           hint: '[passive|balanced|active]',       fallback: 'sentinel', desc: 'Set agent initiative — passive, balanced, or active (bare opens dial)' },
-  { verb: 'anchors',        hint: '[reseal]',                        fallback: 'sentinel', desc: 'Show which doc claims about the code went stale; "reseal" rebaselines' },
   { verb: 'export',         hint: '[all|global|project|id]',         fallback: 'sentinel', desc: 'Archive this conversation (or all / global / a project) to a .tgz' },
   { verb: 'import',         hint: '<archive> [dest]',                fallback: 'sentinel', desc: 'Merge exported sessions in, newer-wins; optional re-root under dest' },
   { verb: 'add-account',    hint: '[id] [--api --url <gateway>]',    fallback: 'sentinel', desc: 'Add an account — bare = wizard, id = browser login, --api = gateway' },
@@ -108,7 +109,7 @@ const MENU = [
 // at zero tokens):
 //   delegate — a tombstone that only redirects; a menu entry would advertise a command
 //              the design refuses to give a human form (see arc-switch-hook).
-//   join     — same code path as role, but the vocabulary split is deliberate: arc:role
+//   join     — same code path as role, but the vocabulary split is deliberate: /arc-role
 //              DECLARES (prompt), terminal `arc join` LISTENS. A menu entry blurs it.
 //   restore  — pure shorthand for `trash restore <id>`; folded into /arc-trash's hint.
 //   usage · add · remove · rm-account · del-account · delete-account · stance · arc —
@@ -154,12 +155,12 @@ function stubText(e) {
       + 'unsubstituted — bare `arc role` prints the role this session already holds; join as that.)\n';
   }
   // 'sentinel' — never improvise a stateful/destructive op from a stub.
-  return head + notWired + ' Do NOT improvise this operation, whichever cause applies. For (2) and'
-    + ` (3), tell the user the sentinel spelling \`arc:${e.verb}\` (typed as ONE clean line) does the`
-    + ' same thing — with `arc doctor` as the fix if the hook is genuinely unwired.\n';
+  return head + notWired + ' Do NOT improvise this operation, whichever cause applies. For (2),'
+    + ` tell the user to retype \`/arc-${e.verb}\` as ONE clean line; for (3), suggest`
+    + ' `arc doctor` to get the hook rewired.\n';
 }
 
-module.exports = { VERBS, TRIGGER_RX, SLASH_RX, MENU, ALIASES, EXCLUDED, slashArgOk, stubText };
+module.exports = { VERBS, LEGACY_RX, SLASH_RX, MENU, ALIASES, EXCLUDED, slashArgOk, stubText };
 
 // The regenerator the drift guard points at: `node src/arc-slash.js` rewrites every
 // stub from MENU. Without this, a red drift test names the stale verb but offers no

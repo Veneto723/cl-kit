@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // arc-stance: a per-session behavioural dial — how much INITIATIVE an agent takes with arc's
-// agent-facing tools (arc note / join / delegate). Set it like /effort: `arc:mode active`, or
-// slide a passive·balanced·active bar with `arc:mode` (see the picker in arc-runner).
+// agent-facing tools (arc note / join / delegate). Set it like /effort: `/arc-mode active`, or
+// slide a passive·balanced·active bar with a bare `/arc-mode` (see the picker in arc-runner).
 //
 // WHY a model-level STEER and not a CLI gate: "passive = act only on the USER's order" is a
 // distinction only the model can make — when you say "ask research about X", the agent runs
@@ -64,7 +64,7 @@ function setStance(session, stance) {
 // Only a DEVIATION from the default speaks: passive restricts, active grants, balanced is silent.
 function directive(stance) {
   if (stance === 'passive') {
-    return "[arc stance: PASSIVE] Do NOT self-initiate anything with arc's tools this turn — no notes to peers, no asking peers for help, and no spawning peer sessions (delegating to an EMPTY chair is REFUSED in passive, because it would start one; delegating to a LIVE peer is still just a note and is fine). Act only on the user's explicit order. (Listening is exempt and always on: if arc asks you to run `arc join`, do it, and if a peer's note wakes you, read it and tell the user. Passive means you don't START things, not that you go deaf.) They can lift this with `arc:mode balanced`.";
+    return "[arc stance: PASSIVE] Do NOT self-initiate anything with arc's tools this turn — no notes to peers, no asking peers for help, and no spawning peer sessions (delegating to an EMPTY chair is REFUSED in passive, because it would start one; delegating to a LIVE peer is still just a note and is fine). Act only on the user's explicit order. (Listening is exempt and always on: if arc asks you to run `arc join`, do it, and if a peer's note wakes you, read it and tell the user. Passive means you don't START things, not that you go deaf.) They can lift this with `/arc-mode balanced`.";
   }
   if (stance === 'active') {
     return "[arc stance: ACTIVE] Beyond noting peers, you MAY self-initiate the rest of the board when it clearly helps: when you're STUCK, hand the job to whoever owns that area — `arc delegate <role> \"<packet>\"` — instead of grinding alone. That ONE verb covers it whether they are live, closed, or have never existed here: arc notes a live peer, revives a closed one as itself, and staffs an empty chair from your context. Staffing is auto-approved in this mode (arc still asks once several peers are already live, since each burns its own quota). Still confirm anything irreversible or outward-facing before doing it.";

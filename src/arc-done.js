@@ -193,7 +193,7 @@ function verdict(evidence, gateMode) {
   return { post: true, block: false, proven: false };   // 'note': post it, flag it
 }
 
-// Compose the sticky note. Evidence goes in `refs`, which arc:notes and the turn-start
+// Compose the sticky note. Evidence goes in `refs`, which /arc-notes and the turn-start
 // injection already render.
 function buildNote(payload, evidence, proven, role) {
   const subject = payload.task_subject || `task ${payload.task_id}`;
@@ -268,13 +268,7 @@ function onTaskCompleted(payload, session) {
   const role = F.getRole(session, board);
   if (!v.post || !role) return { block: false };
   try { R.appendNote(board, buildNote(payload, evidence, v.proven, role)); } catch {}
-
-  // A completion is the moment the code most recently moved, so it is also the moment
-  // to ask whether the DOCS still describe it. Any anchor that just went stale becomes
-  // a [!] note, which the research session receives at the top of its next turn.
-  let stale = 0;
-  try { stale = require('./arc-anchor').checkAndNotify(board, role).posted || 0; } catch {}
-  return { block: false, posted: true, proven: v.proven, stale };
+  return { block: false, posted: true, proven: v.proven };
 }
 
 module.exports = { git, head, evidenceSince, recordBaseline, readBaseline, clearBaseline, sweepBaselines, verdict, buildNote, onTaskCreated, onTaskCompleted, mode, baselineFile };

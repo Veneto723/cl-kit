@@ -108,8 +108,8 @@ function shapeAccount(a, cfg) {
 }
 
 // Running arc sessions keep their launch-time config for env building, but
-// arc:switch RE-READS the config, so new/edited accounts are switchable at once.
-const LIVE_NOTE = 'Effective immediately for arc:switch and the statusline; sessions already running on an EDITED account pick up env changes on their next arc:switch or arc:restart.';
+// /arc-switch RE-READS the config, so new/edited accounts are switchable at once.
+const LIVE_NOTE = 'Effective immediately for /arc-switch and the statusline; sessions already running on an EDITED account pick up env changes on their next /arc-switch or /arc-restart.';
 
 // ---- account tools --------------------------------------------------------------
 
@@ -189,7 +189,7 @@ function toolAccountRemove(args) {
   const backup = writeRaw(raw);
 
   // Quarantine the per-account profile dir to recoverable trash — same as the
-  // arc:remove-account hook — so a removal never leaves an orphan in arc-profiles.
+  // /arc-remove-account hook — so a removal never leaves an orphan in arc-profiles.
   let profileTrash = null, profileInUse = false;
   if (P) { try { profileTrash = P.removeProfile(args.id); } catch (e) { profileInUse = true; } }
 
@@ -199,7 +199,7 @@ function toolAccountRemove(args) {
     remaining: (raw.accounts || []).map((a) => a.id),
     migratedLegacyConfig: migrated,
     backup,
-    note: LIVE_NOTE + ' Sessions currently RUNNING on the removed account keep working until they exit or arc:switch.',
+    note: LIVE_NOTE + ' Sessions currently RUNNING on the removed account keep working until they exit or /arc-switch.',
   };
   if (profileTrash) { out.profileTrash = profileTrash; out.note += ` Its profile (login + local data) was MOVED to recoverable trash (${profileTrash}) — move it back to restore.`; }
   if (profileInUse) out.note += ' Its profile dir was left in place (a live session is using it) — remove it after that session exits.';
@@ -388,12 +388,12 @@ const TOOLS = [
   },
   {
     name: 'account_add',
-    description: 'Add an account to the arc switcher. type "oauth" = a claude.ai subscription login (capture it later with `arc capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately switchable with arc:switch.',
+    description: 'Add an account to the arc switcher. type "oauth" = a claude.ai subscription login (capture it later with `arc capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately switchable with /arc-switch.',
     inputSchema: {
       type: 'object',
       required: ['id', 'type'],
       properties: {
-        id: { type: 'string', description: 'short id used in arc:switch <id> (alphanumeric, - _)' },
+        id: { type: 'string', description: 'short id used in /arc-switch <id> (alphanumeric, - _)' },
         type: { type: 'string', enum: ['oauth', 'api'] },
         label: { type: 'string', description: 'statusline label (default: ID uppercased)' },
         color: { type: 'string', description: 'statusline hex color, e.g. #2DD4BF' },
@@ -439,7 +439,7 @@ const TOOLS = [
   },
   {
     name: 'config_update',
-    description: 'Update arc switcher globals: defaultAccount (launch account), switchOrder (the arc:switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
+    description: 'Update arc switcher globals: defaultAccount (launch account), switchOrder (the /arc-switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
     inputSchema: {
       type: 'object',
       properties: {

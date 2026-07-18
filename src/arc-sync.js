@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 // arc-sync: discrete export / import of Claude Code chat sessions between machines.
 // Pure file operations (tar over ~/.claude/projects), so they run inside the
-// arc:export / arc:import hook — zero model tokens, no session disruption.
+// /arc-export / /arc-import hook — zero model tokens, no session disruption.
 //
-//   arc:export                → the CURRENT conversation only (fast)
-//   arc:export all            → every session in the CURRENT project folder
-//   arc:export global         → every session on this machine (bigger/slower; alias *)
-//   arc:export <project|id>   → one project's sessions, or one session (id prefix)
-//   arc:export --since <days> → sessions touched in the last N days
-//   arc:export ... --out <f>  → choose the archive path (default ~/arc-export-<ts>.tgz)
+//   /arc-export                → the CURRENT conversation only (fast)
+//   /arc-export all            → every session in the CURRENT project folder
+//   /arc-export global         → every session on this machine (bigger/slower; alias *)
+//   /arc-export <project|id>   → one project's sessions, or one session (id prefix)
+//   /arc-export --since <days> → sessions touched in the last N days
+//   /arc-export ... --out <f>  → choose the archive path (default ~/arc-export-<ts>.tgz)
 //
-//   arc:import <archive>      → extract + merge into ~/.claude/projects
-//                              (newer-wins; overwritten local copies are backed
-//                               up; a conversation OPEN in a live arc is never
-//                               touched; --dry-run / --force / --skip-existing)
-//   arc:import <a> <d>        → re-root every project in the bundle under OUTER
-//   arc:import <a> --dest <d>   folder <d> (the bare form and the flag are the same
-//                              thing), keeping each project's own name:
-//                              E:\whalephone → <d>\whalephone. Lets two machines
-//                              store projects at different roots (office E:\x,
-//                              home E:\whaletech\x) and still resume. Rewrites the
-//                              stored cwd so the relocated session is consistent.
+//   /arc-import <archive>      → extract + merge into ~/.claude/projects
+//                               (newer-wins; overwritten local copies are backed
+//                                up; a conversation OPEN in a live arc is never
+//                                touched; --dry-run / --force / --skip-existing)
+//   /arc-import <a> <d>        → re-root every project in the bundle under OUTER
+//   /arc-import <a> --dest <d>   folder <d> (the bare form and the flag are the same
+//                               thing), keeping each project's own name:
+//                               E:\whalephone → <d>\whalephone. Lets two machines
+//                               store projects at different roots (office E:\x,
+//                               home E:\whaletech\x) and still resume. Rewrites the
+//                               stored cwd so the relocated session is consistent.
 //
 // Resume note: `claude --resume <id>` is scoped to the cwd's project dir. Without
 // --dest the two machines must use the SAME project paths; --dest bridges that.
@@ -395,13 +395,13 @@ function doExport(session, argStr) {
   } else if (!sel || sel.toLowerCase() === 'current' || sel === '.') {
     const cur = currentConv(session);
     selected = all.filter((s) => s.id === cur); what = 'current conversation';
-    if (!selected.length) return { ok: false, message: 'no current conversation found — try `arc:export all` (this project) or `arc:export global`.' };
+    if (!selected.length) return { ok: false, message: 'no current conversation found — try `/arc-export all` (this project) or `/arc-export global`.' };
   } else if (sel.toLowerCase() === 'all') {
     // `all` = every session in THIS project folder (the common case). Everything on the
     // machine is `global` — an explicit word, because that archive can be huge.
     const proj = currentProject(session, all);
     if (!proj) {
-      return { ok: false, message: 'could not tell which project folder you are in — run `arc:export global`, or name a project dir (see ~/.claude/projects).' };
+      return { ok: false, message: 'could not tell which project folder you are in — run `/arc-export global`, or name a project dir (see ~/.claude/projects).' };
     }
     selected = all.filter((s) => s.project === proj);
     what = `all sessions in project "${proj}"`;
@@ -412,7 +412,7 @@ function doExport(session, argStr) {
     // project dir name, or session id / id-prefix
     selected = all.filter((s) => s.project === sel || s.id === sel || s.id.startsWith(sel));
     what = `"${sel}"`;
-    if (!selected.length) return { ok: false, message: `nothing matched "${sel}". Use \`arc:export all\` (this project), \`arc:export global\` (everything), a project dir name, or a session id.` };
+    if (!selected.length) return { ok: false, message: `nothing matched "${sel}". Use \`/arc-export all\` (this project), \`/arc-export global\` (everything), a project dir name, or a session id.` };
   }
 
   const totalBytes = selected.reduce((a, s) => a + s.size, 0);
@@ -464,7 +464,8 @@ function doExport(session, argStr) {
       `✓ exported ${selected.length} session(s) — ${what} (${human(totalBytes)} → ${human(archiveSize)} archive)\n` +
       boardLine +
       `  ${out}\n` +
-      `  copy that file to the other PC, then run:  arc:import "${out.split(path.sep).pop()}"  (from wherever you put it)`,
+      // The other PC runs this /arc-import line itself, so its arc must be new enough to know the /arc-* form — version skew is real there and only there.
+      `  copy that file to the other PC, then run:  /arc-import "${out.split(path.sep).pop()}"  (from wherever you put it)`,
   };
 }
 
@@ -473,7 +474,7 @@ function doExport(session, argStr) {
 function doImport(session, argStr) {
   const { flags, pos } = parseFlags(argStr);
   const archive = pos[0] ? path.resolve(pos[0]) : null;
-  if (!archive) return { ok: false, message: 'usage: arc:import <archive.tgz> [<dest> | --dest "E:\\outer\\folder"] [--dry-run] [--force] [--skip-existing]' };
+  if (!archive) return { ok: false, message: 'usage: /arc-import <archive.tgz> [<dest> | --dest "E:\\outer\\folder"] [--dry-run] [--force] [--skip-existing]' };
   if (!fs.existsSync(archive)) return { ok: false, message: `archive not found: ${archive}` };
 
   // --dest re-roots each imported project under an OUTER folder, KEEPING its own name:
@@ -482,7 +483,7 @@ function doImport(session, argStr) {
   // path. Requires an absolute path. Sessions whose source path can't be recovered are
   // skipped and reported rather than guessed.
   //
-  // A BARE second positional means the same thing: `arc:import <archive> E:` == `--dest E:`.
+  // A BARE second positional means the same thing: `/arc-import <archive> E:` == `--dest E:`.
   // The flagless form is what people actually type, and it used to be SILENTLY IGNORED —
   // the import ran with no re-rooting and landed in the archive's original project dir,
   // looking like --dest was broken. Nothing else ever read pos[1], so adopting it costs
@@ -490,7 +491,7 @@ function doImport(session, argStr) {
   const destArg = flags.dest !== undefined ? flags.dest : pos[1];
   const destRoot = destArg ? String(destArg).replace(/[\\/]+$/, '') : null;
   if (destRoot !== null && !path.win32.isAbsolute(destRoot + '\\')) {
-    return { ok: false, message: `the destination must be an ABSOLUTE folder path (got "${destArg}") — e.g. \`arc:import <archive> "E:\\whaletech"\` or \`--dest "E:\\whaletech"\`.` };
+    return { ok: false, message: `the destination must be an ABSOLUTE folder path (got "${destArg}") — e.g. \`/arc-import <archive> "E:\\whaletech"\` or \`--dest "E:\\whaletech"\`.` };
   }
   const remaps = []; // {name, from, to} for the report
   const destSeen = new Map(); // destProjName -> source proj (collision guard)
@@ -621,7 +622,7 @@ function doImport(session, argStr) {
   rm(tmp);
 
   const dry = flags['dry-run'] ? ' [DRY RUN — nothing changed]' : '';
-  const lines = [`arc:import${dry} — added ${added.length}, updated ${updated.length}, skipped ${skipped.length}`];
+  const lines = [`/arc-import${dry} — added ${added.length}, updated ${updated.length}, skipped ${skipped.length}`];
   lines.push(...boardLines);
   if (remaps.length) {
     lines.push(`  re-rooted under ${destRoot}:`);
@@ -867,9 +868,9 @@ function trashSession(convId) {
   return { trashDir, moved };
 }
 
-// ---- trash management (arc:trash) -------------------------------------------
+// ---- trash management (/arc-trash) -------------------------------------------
 // The trash is the arc-deleted-* dirs trashSession writes. Pure file ops, so
-// list / restore / empty all run inside the arc:trash hook — zero tokens. Only
+// list / restore / empty all run inside the /arc-trash hook — zero tokens. Only
 // arc-deleted-* is ever touched; other ~/.claude/backups content is not trash.
 
 // "arc-deleted-YYYYMMDD-HHMMSS" → "YYYY-MM-DD HH:MM" for display.
@@ -961,9 +962,9 @@ function listTrash() {
 // Restore ONE trashed conversation (unique id prefix) back into its project dir.
 function restoreSession(idPrefix) {
   const pre = String(idPrefix || '').trim().toLowerCase();
-  if (pre.length < 4) return { ok: false, message: 'give at least 4 chars of the conversation id — arc:trash lists them.' };
+  if (pre.length < 4) return { ok: false, message: 'give at least 4 chars of the conversation id — /arc-trash lists them.' };
   const hits = listTrash().filter((e) => e.convId.toLowerCase().startsWith(pre));
-  if (!hits.length) return { ok: false, message: `nothing in trash matches "${pre}" — arc:trash lists what's there.` };
+  if (!hits.length) return { ok: false, message: `nothing in trash matches "${pre}" — /arc-trash lists what's there.` };
   if (hits.length > 1) return { ok: false, message: `"${pre}" is ambiguous (${hits.map((h) => h.convId.slice(0, 8)).join(', ')}) — use more characters.` };
   const e = hits[0];
   const destDir = path.join(PROJECTS, e.proj);

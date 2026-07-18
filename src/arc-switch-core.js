@@ -1,10 +1,10 @@
 // arc-switch-core: the shared validate + drop-trigger logic for switching/
 // restarting an arc session. Entry point:
-//   - arc-switch-hook.js  (a UserPromptSubmit hook catching the zero-token arc:
-//                          sentinels — classifier-immune, works even when the
-//                          account is rate-limited)
-// (The old arc-signal.js / /switch / /restart slash-command path was removed; the
-// arc: hook is now the single way in.)
+//   - arc-switch-hook.js  (a UserPromptSubmit hook catching the zero-token
+//                          /arc-<verb> slash commands — classifier-immune,
+//                          works even when the account is rate-limited)
+// (The old arc-signal.js / /switch / /restart slash-command path was removed;
+// the UserPromptSubmit hook is now the single way in.)
 //
 // Keeping the logic in one module means there's one definition of what a valid
 // switch is and where the trigger file goes.
@@ -54,7 +54,7 @@ function liveSessionsOn(accountId) {
 }
 
 // ---- usage peek + shared launch-account decision ---------------------------
-// These back BOTH the launch-time auto-select (arc-runner) and the `arc:peek`
+// These back BOTH the launch-time auto-select (arc-runner) and the `/arc-peek`
 // readout, so the "would launch on X" line always matches what actually happens.
 
 function readUsageCache() {
@@ -62,7 +62,7 @@ function readUsageCache() {
   catch { return null; }
 }
 
-// arc:peek is an explicit "show me current usage" — it must NOT show stale data.
+// /arc-peek is an explicit "show me current usage" — it must NOT show stale data.
 // Unlike the statusline (which paints instantly and refreshes DETACHED for next
 // time), peek SYNCHRONOUSLY refreshes the cache first (subscription + gateways),
 // bounded so it never hangs, and skips the fetch when the cache is already fresh.
@@ -92,7 +92,7 @@ function refreshUsageForPeek(cfg) {
 }
 
 // A bounded, FORCED refresh of every account's usage. Called the moment the account
-// changes (arc:switch / the picker), when the caches still hold the old account's
+// changes (/arc-switch / the picker), when the caches still hold the old account's
 // numbers. A switch already kills and relaunches claude — a visible pause — so
 // spending ~a second here buys a first statusline render that is both correctly
 // attributed and fresh, instead of the new account's label over the old one's data.
@@ -321,7 +321,7 @@ function renderMenu(cfg, current, lead) {
     return `  ${i + 1}. ${a.id}${a.label && a.label !== a.id.toUpperCase() ? ` (${a.label})` : ''} [${a.type}]${mark}`;
   });
   return `${lead}\n${rows.join('\n')}\n` +
-    `Pick by number or name: \`arc:switch <n|name>\` — zero tokens, works even when rate-limited.`;
+    `Pick by number or name: \`/arc-switch <n|name>\` — zero tokens, works even when rate-limited.`;
 }
 
 // Resolve a target token to an account: a 1-based menu number, or an id/name.
@@ -503,7 +503,7 @@ function pickFamilyModel(models, family) {
   })[0];
 }
 
-// Flag-driven api add (arc:add-account <id> --api --url … / terminal). Thin wrapper
+// Flag-driven api add (/arc-add-account <id> --api --url … / terminal). Thin wrapper
 // that resolves the key from tokens, then delegates to addApiAccountResolved.
 function addApiAccount(tokens, id) {
   const { key, src, error } = readAddKey(tokens);
@@ -673,19 +673,20 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
     ok: true,
     message: `✓ added gateway account "${id}" (${acct.label}) → ${acct.baseUrl}\n` +
       `  key ${key.slice(0, 7)}…${key.slice(-4)} ${stored.note} (from ${keySrc}) · ${detail}${extraHdr}${modeNote}` +
-      `${makeDefault ? '\n  set as the default account' : ''}\n  use it: arc:switch ${id}`,
+      `${makeDefault ? '\n  set as the default account' : ''}\n  use it: /arc-switch ${id}`,
   };
 }
 
 // Add an account. `--api`/`--url` → a gateway/pool account, done inline here.
 // Otherwise an oauth subscription → drop a trigger so arc-runner runs the guided
-// browser login on the freed TTY. `argStr` is everything after `arc:add-account`.
+// browser login on the freed TTY. `argStr` is everything after the add-account
+// verb (/arc-add-account, or the `arc add-account` CLI).
 function requestAddAccount(session, argStr) {
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
-  // Bare `arc:add-account` (no id/flags) → open the interactive wizard (pick
-  // Subscription vs Gateway on an arc:switch-style screen, then guided prompts).
+  // Bare `/arc-add-account` (no id/flags) → open the interactive wizard (pick
+  // Subscription vs Gateway on an /arc-switch-style screen, then guided prompts).
   if (!tokens.length) {
-    if (!session) return { ok: false, message: 'launch `arc` first — then `arc:add-account` opens the add wizard.' };
+    if (!session) return { ok: false, message: 'launch `arc` first — then `/arc-add-account` opens the add wizard.' };
     try {
       fs.mkdirSync(CACHE_DIR, { recursive: true });
       fs.writeFileSync(path.join(CACHE_DIR, `arc-addacct-${session}.trigger`), JSON.stringify({ at: Date.now(), wizard: true }));
@@ -694,7 +695,7 @@ function requestAddAccount(session, argStr) {
   }
   const id = tokens.find((t) => !t.startsWith('-') && !/^sk-/.test(t)); // skip a bare key token
   if (!id) {
-    return { ok: false, message: 'usage: arc:add-account <id>  (subscription: browser login)  ·  or  arc:add-account <id> --api --url <gateway> [--label L] [--color #hex] [--default]  (gateway/pool; key from clipboard, or --file/--key)' };
+    return { ok: false, message: 'usage: /arc-add-account <id>  (subscription: browser login)  ·  or  /arc-add-account <id> --api --url <gateway> [--label L] [--color #hex] [--default]  (gateway/pool; key from clipboard, or --file/--key)' };
   }
   if (!/^[a-z][a-z0-9_-]*$/i.test(id)) {
     return { ok: false, message: `invalid id "${id}" — use letters/digits/dash/underscore, starting with a letter.` };
@@ -702,7 +703,7 @@ function requestAddAccount(session, argStr) {
   try {
     const C = require('./arc-config');
     if (C.findAccount(C.loadConfig(), id)) {
-      return { ok: false, message: `account "${id}" already exists — pick a different id (see arc:help or arc doctor).` };
+      return { ok: false, message: `account "${id}" already exists — pick a different id (see /arc-help or arc doctor).` };
     }
   } catch {}
 
@@ -711,7 +712,7 @@ function requestAddAccount(session, argStr) {
 
   // oauth subscription: needs the browser + terminal → hand off to arc-runner.
   if (!session) {
-    return { ok: false, message: 'adding a SUBSCRIPTION needs the arc wrapper (launch with `arc`). For a gateway/pool, use: arc:add-account ' + id + ' --api --url <gateway>.' };
+    return { ok: false, message: 'adding a SUBSCRIPTION needs the arc wrapper (launch with `arc`). For a gateway/pool, use: /arc-add-account ' + id + ' --api --url <gateway>.' };
   }
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -802,7 +803,7 @@ function requestRename(session, argStr) {
   catch (e) { return { ok: false, message: `arc config unreadable (${e.message}).` }; }
 
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return { ok: false, message: 'usage: arc:rename [<old>] <new>  — e.g. `arc:rename work` renames THIS session\'s account, or `arc:rename work personal`.' };
+  if (!tokens.length) return { ok: false, message: 'usage: /arc-rename [<old>] <new>  — e.g. `/arc-rename work` renames THIS session\'s account, or `/arc-rename work personal`.' };
   const current = currentAccount(C, cfg, session);
   const oldId = tokens.length >= 2 ? tokens[0] : current;
   const newId = tokens.length >= 2 ? tokens[1] : tokens[0];
@@ -827,7 +828,7 @@ function requestRename(session, argStr) {
     } catch (e) { return { ok: false, message: `rename signal FAILED — ${e.message}` }; }
   }
   if (live > 0) {
-    return { ok: false, message: `"${oldId}" has ${live} other live session(s) — its login folder is in use. Close them (or run \`arc:rename ${newId}\` from that session) first.` };
+    return { ok: false, message: `"${oldId}" has ${live} other live session(s) — its login folder is in use. Close them (or run \`/arc-rename ${newId}\` from that session) first.` };
   }
   // No live session on it → safe to rename right here.
   try {
@@ -848,7 +849,7 @@ function requestRemoveAccount(session, argStr) {
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
   const isConfirm = tokens.some((t) => CONFIRM_WORDS.has(t.toLowerCase()));
   const id = tokens.find((t) => !t.startsWith('-') && !CONFIRM_WORDS.has(t.toLowerCase()));
-  if (!id) return { ok: false, message: 'usage: arc:remove-account <id>   (then confirm) — an account id is required.' };
+  if (!id) return { ok: false, message: 'usage: /arc-remove-account <id>   (then confirm) — an account id is required.' };
 
   const acc = C.findAccount(cfg, id);
   if (!acc) return { ok: false, message: `no account "${id}". Configured: ${cfg.accounts.map((a) => a.id).join(', ')}.` };
@@ -868,7 +869,7 @@ function requestRemoveAccount(session, argStr) {
     ? `⚠ ${live} LIVE SESSION${live > 1 ? 'S' : ''} STILL ON "${acc.id.toUpperCase()}"\n`
       + `  ${Subj} ${keep} running (removal won't stop ${them}).\n`
       + `  ${Subj} ${drop} to "${newDefault}" on next switch/restart.\n`
-      + `  Move one off now: arc:switch ${newDefault} in it.\n`
+      + `  Move one off now: /arc-switch ${newDefault} in it.\n`
     : '';
 
   if (!isConfirm) {
@@ -882,7 +883,7 @@ function requestRemoveAccount(session, argStr) {
         ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + '\n' +
         `  • arc-config.json is backed up first; references (switch order / default) are auto-fixed\n` +
         `  • its profile (login + local data) is MOVED to recoverable trash (arc-profiles/.trash), never hard-deleted\n` +
-        `  CONFIRM within 2 min:  arc:remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
+        `  CONFIRM within 2 min:  /arc-remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
     };
   }
 
@@ -890,7 +891,7 @@ function requestRemoveAccount(session, argStr) {
   let pend = null;
   try { pend = JSON.parse(fs.readFileSync(pendingRmPath(session), 'utf8')); } catch {}
   if (!pend || pend.id !== acc.id || Date.now() - pend.at > 120_000) {
-    return { ok: false, message: `no pending confirmation for "${acc.id}" (or it expired) — run \`arc:remove-account ${acc.id}\` first to review what will be removed.` };
+    return { ok: false, message: `no pending confirmation for "${acc.id}" (or it expired) — run \`/arc-remove-account ${acc.id}\` first to review what will be removed.` };
   }
   let res;
   try { res = removeAccountFromConfig(C, acc.id); }
@@ -922,8 +923,8 @@ function sessionConvId(session) {
   return null;
 }
 
-// Two-step deletion of the CURRENT conversation. Step 1 (bare `arc:delete`) shows
-// the impact and arms a 2-min pending marker; step 2 (`arc:delete confirm`) drops
+// Two-step deletion of the CURRENT conversation. Step 1 (bare `/arc-delete`) shows
+// the impact and arms a 2-min pending marker; step 2 (`/arc-delete confirm`) drops
 // a delete trigger — arc-runner kills claude, moves the transcript to recoverable
 // trash, and starts a FRESH session. Returns { ok, pending?, deleting?, message }.
 function requestDelete(session, argStr) {
@@ -935,7 +936,7 @@ function requestDelete(session, argStr) {
   try { fp = require('./arc-sync').findTranscriptFile(convId); } catch {}
   if (!fp) {
     // No transcript = an EMPTY session (no messages saved yet) → nothing to trash.
-    // This is the usual "arc:delete did nothing" case: you delete a chat, a fresh
+    // This is the usual "/arc-delete did nothing" case: you delete a chat, a fresh
     // empty session starts, and deleting THAT finds nothing — so say so clearly
     // instead of arming a confirm that then reports "(not found)".
     return { ok: false, message: 'nothing to delete — this conversation has no saved messages yet. (An empty session leaves no transcript; just send a message first, or switch/exit.)' };
@@ -950,16 +951,16 @@ function requestDelete(session, argStr) {
       ok: true, pending: true,
       message:
         `DELETE the CURRENT conversation (${convId.slice(0, 8)}${sizeStr})?\n` +
-        `  • it is MOVED to recoverable trash, never hard-deleted (arc:trash to list/restore/purge)\n` +
+        `  • it is MOVED to recoverable trash, never hard-deleted (/arc-trash to list/restore/purge)\n` +
         `  • this conversation ENDS and a fresh empty session starts in its place\n` +
-        `  CONFIRM within 2 min:  arc:delete confirm     ·     or ignore this to cancel`,
+        `  CONFIRM within 2 min:  /arc-delete confirm     ·     or ignore this to cancel`,
     };
   }
 
   let pend = null;
   try { pend = JSON.parse(fs.readFileSync(pendingDelPath(session), 'utf8')); } catch {}
   if (!pend || pend.convId !== convId || Date.now() - pend.at > 120_000) {
-    return { ok: false, message: `no pending confirmation for this conversation (or it expired) — run \`arc:delete\` first to review.` };
+    return { ok: false, message: `no pending confirmation for this conversation (or it expired) — run \`/arc-delete\` first to review.` };
   }
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -983,10 +984,10 @@ function requestRestart(session) {
   }
 }
 
-// ---- arc:trash — list / restore / permanently empty the conversation trash --
-// (~/.claude/backups/arc-deleted-*, written by arc:delete). Pure file ops that run
+// ---- /arc-trash — list / restore / permanently empty the conversation trash --
+// (~/.claude/backups/arc-deleted-*, written by /arc-delete). Pure file ops that run
 // synchronously in the hook — zero tokens, no relaunch. `plain: true` results are
-// self-contained readouts (rendered uncolored, like arc:peek).
+// self-contained readouts (rendered uncolored, like /arc-peek).
 function pendingPurgePath(session) { return path.join(CACHE_DIR, `arc-purgepending-${session || 'terminal'}.json`); }
 
 function requestTrash(session, argStr) {
@@ -1008,27 +1009,27 @@ function requestTrash(session, argStr) {
         message:
           `EMPTY TRASH — PERMANENTLY delete ${entries.length} trashed conversation${entries.length > 1 ? 's' : ''} (${sync.human(bytes)})?\n` +
           `  ⚠ NOT recoverable: this deletes the recoverable copies themselves\n` +
-          `  CONFIRM within 2 min:  arc:trash empty confirm     ·     or ignore this to cancel`,
+          `  CONFIRM within 2 min:  /arc-trash empty confirm     ·     or ignore this to cancel`,
       };
     }
     let pend = null;
     try { pend = JSON.parse(fs.readFileSync(pendingPurgePath(session), 'utf8')); } catch {}
     if (!pend || Date.now() - pend.at > 120_000) {
-      return { ok: false, message: 'no pending confirmation (or it expired) — run `arc:trash empty` first to review what gets purged.' };
+      return { ok: false, message: 'no pending confirmation (or it expired) — run `/arc-trash empty` first to review what gets purged.' };
     }
     try { fs.unlinkSync(pendingPurgePath(session)); } catch {}
     const r = sync.emptyTrash();
     return r.ok
       ? { ok: true, message: `✓ trash emptied — permanently deleted ${r.count} conversation${r.count > 1 ? 's' : ''} (${sync.human(r.bytes)}).` }
-      : { ok: false, message: `purge INCOMPLETE — ${r.failed} trash folder(s) would not delete (file in use?). arc:trash shows what's left.` };
+      : { ok: false, message: `purge INCOMPLETE — ${r.failed} trash folder(s) would not delete (file in use?). /arc-trash shows what's left.` };
   }
 
   if (sub && sub !== 'list') {
-    return { ok: false, message: `unknown trash action "${toks[0]}" — use: arc:trash · arc:trash restore <id> · arc:trash empty` };
+    return { ok: false, message: `unknown trash action "${toks[0]}" — use: /arc-trash · /arc-trash restore <id> · /arc-trash empty` };
   }
 
   const entries = sync.listTrash();
-  if (!entries.length) return { ok: true, plain: true, message: 'trash — empty. (arc:delete moves conversations here; nothing is hard-deleted until arc:trash empty.)' };
+  if (!entries.length) return { ok: true, plain: true, message: 'trash — empty. (/arc-delete moves conversations here; nothing is hard-deleted until /arc-trash empty.)' };
   const bytes = entries.reduce((s, e) => s + e.bytes, 0);
   const lines = [`trash — ${entries.length} deleted conversation${entries.length > 1 ? 's' : ''}, ${sync.human(bytes)} total (newest deletion first)`, ''];
   for (const e of entries) {
@@ -1045,7 +1046,7 @@ function requestTrash(session, argStr) {
     lines.push(`  ${e.convId.slice(0, 8)}  ${title}`);
     lines.push(`            ${turns} · ${used} · ${sync.human(e.bytes)} · ${where}${e.sidecar ? ' · +files' : ''}`);
   }
-  lines.push('', '  restore one:  arc:trash restore <id>   (then: arc --resume <id>)        purge all:  arc:trash empty');
+  lines.push('', '  restore one:  /arc-trash restore <id>   (then: arc --resume <id>)        purge all:  /arc-trash empty');
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 

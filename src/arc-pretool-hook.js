@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// arc-pretool-hook: the stance (arc:mode) as an ENFORCED GATE, not just a steer.
+// arc-pretool-hook: the stance (/arc-mode) as an ENFORCED GATE, not just a steer.
 //
 // Everything else the stance governs is advice injected into the model's context — the right
 // shape for it, because "act only on the user's order" is a judgment only the model can make.
@@ -15,9 +15,9 @@
 //                         agent does. Prompting here would be pure noise.
 //   role EMPTY, passive → DENY   no session gets spawned in passive, whoever asked. A PreToolUse
 //                         hook sees a tool call and CANNOT tell the user's order from the agent's
-//                         own initiative — the `arc:invite` sentinel used to be the escape hatch
-//                         (a prompt is provably yours), and it was removed on purpose: a human's
-//                         natural act is prose, not a command. So passive costs you the spawn.
+//                         own initiative — and there is deliberately no prompt-command escape
+//                         hatch (a prompt would be provably the human's, but a human's natural
+//                         act is prose, not a command). So passive costs you the spawn.
 //   role EMPTY, balanced→ ASK    (the default) the permission prompt IS the confirmation.
 //   role EMPTY, active  → ALLOW  auto-approved: you asked for an agent that staffs its own peers.
 //
@@ -121,10 +121,10 @@ function run(raw) {
 
   if (stance === 'passive') {
     out('deny',
-      '[arc:mode passive] The agent may not spawn peer sessions in passive mode.',
+      '[/arc-mode passive] The agent may not spawn peer sessions in passive mode.',
       'arc: refused — nobody holds that role, so delegating to it would SPAWN a session, and you\n'
       + '  are in PASSIVE mode.\n'
-      + '  want it anyway?   arc:mode balanced   — then ask again; you will get a prompt.\n'
+      + '  want it anyway?   /arc-mode balanced   — then ask again; you will get a prompt.\n'
       + '  (a gate sees a TOOL CALL, so it cannot tell your order from the agent\'s own idea.\n'
       + '   passive therefore refuses the spawn whoever wanted it — that is the trade.)');
     return 'deny';
@@ -143,21 +143,21 @@ function run(raw) {
 
     if (peers >= MAX_PEERS_AUTO) {
       out('ask',
-        `[arc:mode active] ${peers} peers are already live — asking before spawning another.`,
+        `[/arc-mode active] ${peers} peers are already live — asking before spawning another.`,
         `arc: ACTIVE would auto-approve this, but ${peers} peers are already on the board.\n`
         + '  each one is a session burning its own quota, so this one needs your nod.');
       return 'ask-cap';
     }
-    out('allow', '[arc:mode active] auto-approved — you asked for an agent that starts its own peers.');
+    out('allow', '[/arc-mode active] auto-approved — you asked for an agent that starts its own peers.');
     return 'allow';
   }
 
   // balanced (the default): the agent may propose it; approving the prompt IS the confirmation.
   out('ask',
-    '[arc:mode balanced] Nobody holds that role, so this would spawn a session — the prompt is your confirmation.',
+    '[/arc-mode balanced] Nobody holds that role, so this would spawn a session — the prompt is your confirmation.',
     'arc: nobody holds that role, so the agent wants to put a session in the chair (new tab, its own\n'
     + '  quota) — reviving that peer\'s own conversation if it has one, else forking this context.\n'
-    + '  approve to allow it  ·  arc:mode active auto-approves  ·  arc:mode passive refuses outright');
+    + '  approve to allow it  ·  /arc-mode active auto-approves  ·  /arc-mode passive refuses outright');
   return 'ask';
 }
 

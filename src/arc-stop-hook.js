@@ -29,7 +29,7 @@
 //      peer existing (that check expires the instant you idle — a peer can join afterwards)
 //      nor on stance (listening is not acting).
 //
-// STANCE (arc:mode) does NOT gate any of this, on purpose. Every case here is conditioned on
+// STANCE (/arc-mode) does NOT gate any of this, on purpose. Every case here is conditioned on
 // something YOU ALREADY STARTED — an unread note addressed to you, a request you sent. That is
 // FOLLOW-THROUGH, not initiative. The stance gates the ASK, upstream:
 // under PASSIVE you'd only have asked because the user told you to, so muting the wake would

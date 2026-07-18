@@ -1,7 +1,9 @@
-// arc-notes: the zero-token `arc:` sentinels for the sticky-note ledger.
-//   arc:role <name>        claim a role in this board (research | coding | …)
-//   arc:note <to> <text>   leave a note for a role ("all" = broadcast)
-//   arc:notes [all]        read your unread notes (marks them read); `all` = whole board
+// arc-notes: the zero-token board commands over the sticky-note ledger.
+//   /arc-role <name>       claim a role in this board (research | coding | …)
+//   /arc-note <to> <text>  leave a note for a role ("all" = broadcast)
+//   /arc-notes [all]       read your unread notes (marks them read); `all` = whole board
+// (the /arc-* slash form is the human surface — the prompt hook dispatches it to the
+//  handlers here. Agents use the space form — `arc note …` — via the CLI.)
 //
 // The board is derived from the SESSION'S cwd (git repo root) — see arc-board.js.
 // Everything here runs inside the UserPromptSubmit hook: local, no model, zero tokens.
@@ -213,7 +215,7 @@ function myDuty(board, role) {
   } catch { return null; }
 }
 
-// ---- arc:role -----------------------------------------------------------------
+// ---- /arc-role ----------------------------------------------------------------
 function requestRole(session, arg, cwd) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const role = String(arg || '').trim().toLowerCase();
@@ -223,7 +225,7 @@ function requestRole(session, arg, cwd) {
     const ros = rosterLines(board, mine);
     return { ok: true, plain: true, message:
       `arc board "${board.name}"  (${board.root})\n` +
-      `  your role: ${mine ? mine + (myDuty(board, mine) || '') : '(none — set one: arc:role research)'}\n` +
+      `  your role: ${mine ? mine + (myDuty(board, mine) || '') : '(none — set one: /arc-role research)'}\n` +
       (ros ? `  roster:\n${ros}` : `  peers: (nobody else here yet)`) };
   }
   if (!VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
@@ -294,7 +296,7 @@ function requestRole(session, arg, cwd) {
   // The claim makes you ADDRESSABLE, not yet REACHABLE-while-idle: a listener can only be
   // armed by the agent's own background command, and that takes a turn. A listener armed for a
   // DIFFERENT role counts as unarmed — it hears notes for the old name, not this one. The
-  // caller decides what to do with armNeeded: the sentinel hook turns it into a pass-through
+  // caller decides what to do with armNeeded: the prompt hook turns it into a pass-through
   // turn that arms (see arc-switch-hook); the CLI path just shows the instruction, because the
   // agent reading it is already mid-turn and can arm right now.
   const waiting = require('./arc-await').waitingFor(session);
@@ -320,18 +322,18 @@ function requestRole(session, arg, cwd) {
     `✓ you are "${role}" on the "${board.name}" board  (${board.root})\n` +
     dutyLine +
     (ros ? `  roster:\n${ros}\n` : '') +
-    (unread.count ? `  📌 ${unread.count} unread note(s) — read them: arc:notes\n` : '  board is empty for you\n') +
+    (unread.count ? `  📌 ${unread.count} unread note(s) — read them: /arc-notes\n` : '  board is empty for you\n') +
     listen };
 }
 
-// ---- arc:note -----------------------------------------------------------------
+// ---- /arc-note ----------------------------------------------------------------
 // `opts.hasTranscript` is injectable so a test can exercise the REVIVABLE branch without
 // fabricating a transcript in the user's real ~/.claude/projects.
 function requestNote(session, arg, cwd, opts) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const board = R.resolveBoard(resolveCwd(session, cwd));
   const me = getRole(session, board);
-  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  arc:role research` };
+  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  /arc-role research` };
 
   const s = String(arg || '').trim();
   const m = s.match(/^(\S+)\s+([\s\S]+)$/);
@@ -541,10 +543,10 @@ const NOTE_USAGE =
   // NB the examples teach `--reply-to 8`, NOT `#8`: this usage ALSO surfaces on the terminal
   // path (arc note …), where `#` starts a comment in BOTH sh and PowerShell — the rest of the
   // line silently vanishes and a garbage note posts "successfully". The parser accepts both.
-  'usage: arc:note <role|all> [--kind <k>] [--reply-to N] [--supersedes N] [--board <path>]\n' +
+  'usage: /arc-note <role|all> [--kind <k>] [--reply-to N] [--supersedes N] [--board <path>]\n' +
   '                 [--body-file <path>] <text>\n' +
-  '  plain:    arc:note coding "P-014 spec changed"          (kind defaults to info)\n' +
-  '  ask:      arc:note research --kind request "can you check X?"\n' +
+  '  plain:    /arc-note coding "P-014 spec changed"          (kind defaults to info)\n' +
+  '  ask:      /arc-note research --kind request "can you check X?"\n' +
   // The one flag that is not a convenience. See the --body-file block in requestNote.
   '  LONG/multi-line: write the body to a file and pass the PATH — never the text:\n' +
   '            arc note research --kind request --body-file ./packet.md\n' +
@@ -555,8 +557,8 @@ const NOTE_USAGE =
   '  another board: arc note code --board E:/arc "arc\'s stop hook fires twice when …"\n' +
   '            ← one-way ANNOUNCEMENT to a DIFFERENT repo\'s board; asks your human first, arrives\n' +
   '              as "<thisboard>/<yourrole>". No requests, no replies: they cannot answer you there.\n' +
-  '  answer:   arc:note android --reply-to 8 "DONE — here is what I found"   (kind: result)\n' +
-  '  retract:  arc:note android --supersedes 13 "CORRECTION — I was wrong because…"\n' +
+  '  answer:   /arc-note android --reply-to 8 "DONE — here is what I found"   (kind: result)\n' +
+  '  retract:  /arc-note android --supersedes 13 "CORRECTION — I was wrong because…"\n' +
   `  kinds: ${R.KINDS.join(' · ')}   (blocker + correction are auto-HIGH priority)\n` +
   '  a --supersedes note WARNS every future reader of the note it retracts — that is how an\n' +
   '  append-only ledger stays honest: you never rewrite history, you correct it.';
@@ -597,7 +599,7 @@ function receiptBlock(board, me, all) {
   return `\n  your recent sent (receipts — no ack needed):\n${rows.join('\n')}`;
 }
 
-// ---- arc:notes ----------------------------------------------------------------
+// ---- /arc-notes ---------------------------------------------------------------
 function requestNotes(session, arg, cwd) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const board = R.resolveBoard(resolveCwd(session, cwd));
@@ -623,7 +625,7 @@ function requestNotes(session, arg, cwd) {
     return { ok: true, plain: true, message: `${head}   — ALL ${all.length} note(s), nothing marked read\n${rows.join('\n')}${openLine}` };
   }
 
-  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  arc:role research\n(or read everything anyway:  arc:notes all)` };
+  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  /arc-role research\n(or read everything anyway:  /arc-notes all)` };
   const u = R.unreadFor(board, me);
   if (!u.count) {
     return { ok: true, plain: true, message:
@@ -657,7 +659,7 @@ function requestNotes(session, arg, cwd) {
 }
 
 // Re-assert this session's role claim under a NEW pid. Called by arc-runner on every
-// (re)launch, because `arc:restart` re-execs the wrapper: ARC_SESSION survives, but the
+// (re)launch, because `/arc-restart` re-execs the wrapper: ARC_SESSION survives, but the
 // pid changes, so the old claim would look DEAD and another session could steal the
 // role. The role itself lives in arc-role-<session>.json, which survives restart and
 // switch — exactly like the session's model and effort.

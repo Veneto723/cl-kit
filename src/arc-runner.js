@@ -6,7 +6,7 @@
 //
 // Switching is MANUAL mid-session, driven by trigger files (not keystroke
 // interception):
-//   - `arc:switch [account]` / `arc:restart` are plain-text sentinels caught by the
+//   - `/arc-switch [account]` / `/arc-restart` are typed commands caught by the
 //     UserPromptSubmit hook (arc-switch-hook.js -> arc-switch-core.js), which drops a
 //     per-session trigger file BEFORE any model turn (zero tokens, classifier-immune).
 //     This runner polls for its own session's trigger. (The old /switch and
@@ -204,7 +204,7 @@ function releaseConv(convId) {
 // same fix: a test now asserts that every `arc-<kind>-` file written anywhere in src/ appears
 // below, so the next feature cannot quietly leak.
 const SWEEP_RX = /^arc-(state|prefs|active|effort|turn|convlock|rmpending|delpending|win|role|stance|armed|listen-offered|await)-.*\.json$/;
-// A TRIGGER is a sentinel's message to one specific session's poll loop (arc-<action>-<session>
+// A TRIGGER is a blocked /arc- command's message to one specific session's poll loop (arc-<action>-<session>
 // .trigger). It is consumed on the next poll — unless that session dies first, and then it sits
 // there forever. One was found from a session dead for days. Session-keyed, so the same liveness
 // rule that governs the companions governs these.
@@ -345,7 +345,7 @@ function buildEnv(accountId) {
 }
 
 // ---- preserve mode/model/effort across a switch ---------------------------
-// On respawn we re-apply the session's current choices so an arc:switch or arc:restart
+// On respawn we re-apply the session's current choices so a /arc-switch or /arc-restart
 // doesn't reset them. model + permissionMode come from the transcript tail;
 // effort from the sticky per-conversation file the statusline maintains.
 
@@ -417,9 +417,9 @@ function findTranscript(convId) {
 // `arc --resume` session gets adopted into managed mode after the first launch.
 //
 // GUARDED require: on a partially-updated deploy (a newer arc-runner.js copied into
-// ~/.claude/scripts without arc-slash.js) this must DEGRADE to the old colon-prefix
-// strip, not throw MODULE_NOT_FOUND from inside a respawn — that path runs after the
-// old claude process is already dead, so a throw here costs the whole tab.
+// ~/.claude/scripts without arc-slash.js) this must DEGRADE to the coarse prefix
+// strip below, not throw MODULE_NOT_FOUND from inside a respawn — that path runs after
+// the old claude process is already dead, so a throw here costs the whole tab.
 let SLASH_MOD = null;
 try { SLASH_MOD = require('./arc-slash'); } catch { /* degraded strip below */ }
 function stripConvArgs(args, opts) {
@@ -431,26 +431,25 @@ function stripConvArgs(args, opts) {
     // A FORK HAPPENS ONCE, AT BIRTH. Carrying --fork-session into a RELAUNCH (switch/restart)
     // makes the session fork ITSELF again: claude resumes the peer's conversation and immediately
     // branches it into a NEW one, abandoning the history the peer just built. This is the whole
-    // of "arc:switch didn't restore my session" — the user hit it the first time an invited peer
+    // of "/arc-switch didn't restore my session" — the user hit it the first time an invited peer
     // ran out of tokens and switched accounts to keep going, which is exactly when a peer most
     // needs its conversation to survive. From the second launch on, an invited peer is just a
     // session with its own conversation, and it must RESUME that, not re-fork it.
     if (x === '--fork-session') continue;
-    // The opening prompt staffing injects (`arc:role <role>`) is a BIRTH instruction — it exists
+    // The opening prompt staffing injects (`/arc-role <role>`) is a BIRTH instruction — it exists
     // to make the newborn claim + arm itself. Replaying it on every relaunch would re-send it as a
     // prompt forever. It is not needed: the role is re-adopted from the claim (which carries the
     // conversation id, see arc-notes.healClaimConv) and the listener re-arms at the first idle.
     // ...but ONLY on a respawn. On the FIRST launch this IS the instruction the newborn exists to
     // receive; stripping it there opens a tab that claims nothing (see the call site).
-    // BOTH spellings, via the REAL matchers (adversarial review 2026-07-18, then its
-    // reviewer): `arc /arc-restart` re-submits on every respawn, the hook eats it and
-    // drops a fresh restart trigger each cycle — an INFINITE kill/relaunch loop. The
-    // first fix paired SLASH_RX with a cheap /^arc:/i check and missed the HYBRID
-    // spellings TRIGGER_RX tolerates (`/arc:restart`, `!arc:restart`, `  arc:restart`)
-    // — the same loop through a spelling the fix skipped, proven with node. Only the
-    // hook's own regexes can say what the hook will eat, so ask them; the prefix check
-    // survives solely as the degraded no-arc-slash fallback.
-    const hookEats = SLASH_MOD ? (SLASH_MOD.TRIGGER_RX.test(x) || SLASH_MOD.SLASH_RX.test(x)) : /^arc:/i.test(x);
+    // TWO strips, ONE live spelling. SLASH_RX is what the hook actually eats — an
+    // unstripped `/arc-restart` in argv re-submits on every respawn, the hook drops a
+    // fresh restart trigger each cycle, and the runner kill/relaunches FOREVER (proven
+    // with node, both reviews 2026-07-18). LEGACY_RX is DISPOSAL of the dead shape it
+    // names (see arc-slash.js): argv preserved by an older session can still carry it,
+    // in any of the tolerances the old matcher allowed, and without the strip that dead
+    // prompt would replay into the conversation as PROSE on every respawn.
+    const hookEats = SLASH_MOD ? (SLASH_MOD.LEGACY_RX.test(x) || SLASH_MOD.SLASH_RX.test(x)) : /^arc:/i.test(x);
     if (hookEats && !keepPrompt) continue;
     if (x === '--resume' || x === '-r' || x === '--session-id') {
       if (args[i + 1] && !args[i + 1].startsWith('-')) i++; // also drop its value
@@ -531,20 +530,20 @@ function preservedModel(convId) {
 
 const switchTrigger    = path.join(CACHE_DIR, `arc-switch-${SESSION_ID}.trigger`);
 const restartTrigger   = path.join(CACHE_DIR, `arc-restart-${SESSION_ID}.trigger`);
-// Dropped by the arc:switch hook to open the interactive arrow-key
+// Dropped by the /arc-switch hook to open the interactive arrow-key
 // account picker. arc-runner kills claude, renders the picker on the freed TTY,
 // and relaunches on the chosen account — zero model tokens.
 const pickTrigger      = path.join(CACHE_DIR, `arc-pick-${SESSION_ID}.trigger`);
-// Dropped by the arc:mode hook (no arg): open the ←/→ stance bar on the freed TTY, set
+// Dropped by the /arc-mode hook (no arg): open the ←/→ stance bar on the freed TTY, set
 // the stance, and relaunch this conversation (the stance is read live on the next turn).
 const modeTrigger      = path.join(CACHE_DIR, `arc-mode-${SESSION_ID}.trigger`);
-// Dropped by the arc:add-account hook: carries { args } (the id + flags). arc-runner
+// Dropped by the /arc-add-account hook: carries { args } (the id + flags). arc-runner
 // kills claude, runs the guided browser login on the freed TTY, and relaunches.
 const addAcctTrigger   = path.join(CACHE_DIR, `arc-addacct-${SESSION_ID}.trigger`);
-// Dropped by the arc:delete hook (after confirm): carries { convId }. arc-runner
+// Dropped by the /arc-delete hook (after confirm): carries { convId }. arc-runner
 // kills claude, moves the transcript to recoverable trash, and starts fresh.
 const deleteTrigger    = path.join(CACHE_DIR, `arc-delete-${SESSION_ID}.trigger`);
-// Dropped by the arc:rename hook when renaming THIS session's account: carries
+// Dropped by the /arc-rename hook when renaming THIS session's account: carries
 // { oldId, newId }. arc-runner kills claude (releases the open profile dir), moves
 // the profile dir + updates config, then relaunches this conversation on the new name.
 const renameTrigger    = path.join(CACHE_DIR, `arc-rename-${SESSION_ID}.trigger`);
@@ -563,7 +562,7 @@ function resetTerminal() {
 }
 
 // A short usage summary for an account, read from the statusline's cache
-// (usage-monitor-cache.json) — so the picker shows the same info as arc:peek
+// (usage-monitor-cache.json) — so the picker shows the same info as /arc-peek
 // without any network call. oauth → subscription 5h/7d %; api → the gateway's
 // own usage line (e.g. "$103.60 today · 62.9M tok"); legacy poolDb → active/5h.
 // '' when there's no data to show. Never throws.
@@ -606,14 +605,14 @@ function accountUsage(acc) {
 // forces one or `features.autoBest` is false.
 //
 // The DECISION functions live in arc-switch-core (accountHeadroom /
-// chooseLaunchAccount) so the launch path here and the `arc:peek` recommendation
+// chooseLaunchAccount) so the launch path here and the `/arc-peek` recommendation
 // always agree — one source of truth. arc-runner just reads the cache and calls it.
 function readUsageCache() {
   try { return JSON.parse(fs.readFileSync(path.join(CACHE_DIR, 'usage-monitor-cache.json'), 'utf8')); } catch { return null; }
 }
 
 // True if this conversation has a saved transcript (so `--resume` works). A fresh
-// session where only a blocked arc: command ran (e.g. arc:add-account in a new
+// session where only a blocked /arc- command ran (e.g. /arc-add-account in a new
 // terminal) never persisted one — then `--resume` fails with "No conversation
 // found", and the caller must `--session-id` to (re)create it instead.
 function hasTranscript(convId) {
@@ -655,7 +654,7 @@ function pickAccount(currentId) {
           : `   ${body}${useDim}${cur}\r\n`);
       });
       // Footer reinforces the memorable entry points every time they switch.
-      out.write('\r\n  \x1b[2mtip: `arc:switch <name>` jumps directly · `arc:help` lists all commands\x1b[0m\r\n');
+      out.write('\r\n  \x1b[2mtip: `/arc-switch <name>` jumps directly · `/arc-help` lists all commands\x1b[0m\r\n');
     }
 
     function done(id) {
@@ -935,7 +934,7 @@ async function runCodexAccountWizard(id, out, cancel) {
   });
   out.write((r.ok ? '\x1b[32m' : '\x1b[31m') + r.message + '\x1b[0m\r\n');
   if (r.ok) {
-    out.write(`\x1b[2m  switch to it with  arc:switch ${id}  — arc auto-starts the translator on 127.0.0.1:${proxyPort}\x1b[0m\n`);
+    out.write(`\x1b[2m  switch to it with  /arc-switch ${id}  — arc auto-starts the translator on 127.0.0.1:${proxyPort}\x1b[0m\n`);
     out.write(`\x1b[2m  in a session, /model opus|sonnet|haiku → ${opus} | ${sonnet} | ${haiku}\x1b[0m\n`);
   }
 }
@@ -982,8 +981,8 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
       resolve({ reason, exitCode, payload });
     };
 
-    // Poll for this session's trigger files: arc:switch / arc:restart (and the other
-    // arc: sentinels) each drop a per-session trigger file via the UserPromptSubmit
+    // Poll for this session's trigger files: /arc-switch / /arc-restart (and the other
+    // /arc- commands) each drop a per-session trigger file via the UserPromptSubmit
     // hook (arc-switch-core), which we act on here.
     // Switching is MANUAL-only — there is no automatic usage-based switching.
     const t0 = Date.now();
@@ -1019,7 +1018,7 @@ function runClaude(claudeArgs, account, extraSettings, watchAdopt) {
         clearTriggers(); killChild(child); finish('rename', undefined, payload || {});
       }
       else if (fs.existsSync(switchTrigger)) {
-        // The trigger may carry a target account id (from `arc:switch <id>`).
+        // The trigger may carry a target account id (from `/arc-switch <id>`).
         let target = null;
         try {
           const raw = fs.readFileSync(switchTrigger, 'utf8');
@@ -1082,7 +1081,7 @@ function killChild(child) {
 // Adopt the CURRENT active login (~/.claude/.credentials.json) into an account's
 // own profile dir — a manual migration/repair tool for the profile model. (Fresh
 // accounts are normally established by logging in directly into the profile via
-// `arc add-account` / arc:switch → /login.)
+// `arc add-account` / /arc-switch → /login.)
 function cmdCapture(id) {
   const acc = C.findAccount(cfg, id);
   if (!acc || acc.type !== 'oauth') {
@@ -1135,7 +1134,7 @@ function addAccountToConfig(accObj, makeDefault) {
 // The guided add-account flow. Drives the NATIVE Claude login, auto-captures the
 // resulting credential, and registers a new oauth account. Returns { code:0|1 }
 // and prints its own progress — it NEVER exits, so it works both as the `arc
-// add-account` CLI subcommand AND in-session (arc:add-account, run by the wrapper
+// add-account` CLI subcommand AND in-session (/arc-add-account, run by the wrapper
 // after it kills claude and owns the TTY).
 function doAddAccount(argv) {
   const id = argv.find((a) => !a.startsWith('-'));
@@ -1184,7 +1183,7 @@ function doAddAccount(argv) {
 
   process.stdout.write(
     `\n\x1b[32m[arc] ✓ added account "${id}"${acc.email ? ` (${acc.email}, ${acc.subscriptionType || 'subscription'})` : ''}.\x1b[0m` +
-    `\n[arc] use it:  arc:switch ${id}\n` +
+    `\n[arc] use it:  /arc-switch ${id}\n` +
     `[arc] config backed up at ${cfgBak}\n`);
   return { code: 0 };
 }
@@ -1224,7 +1223,7 @@ function cmdDoctor() {
     } else {
       // oauth: the login lives in the account's own CLAUDE_CONFIG_DIR profile.
       if (P.hasCreds(a.id)) detail = 'signed in · own profile';
-      else { status = '⚠'; detail = `NO login yet — arc:switch ${a.id} then /login (or arc capture ${a.id})`; }
+      else { status = '⚠'; detail = `NO login yet — arc --account ${a.id} then /login (or arc capture ${a.id})`; }
     }
     lines.push(`  [${a.type}] ${a.id} "${a.label}" ${status} ${detail}`);
   }
@@ -1411,7 +1410,7 @@ async function main() {
   if (userArgs[0] === 'capture') return cmdCapture(userArgs[1]);
   if (userArgs[0] === 'rename') {
     // Terminal rename of a NOT-currently-open account (offline). Renaming the
-    // account a live session is on must be done from that session (arc:rename).
+    // account a live session is on must be done from that session (/arc-rename).
     if (userArgs.length < 3) { process.stderr.write('[arc] usage: arc rename <old> <new>\n'); process.exit(1); }
     try { const { backup } = require('./arc-switch-core').doRename(C, userArgs[1], userArgs[2]);
       process.stdout.write(`[arc] ✓ renamed "${userArgs[1]}" → "${userArgs[2]}" (login + conversations preserved; config backup ${backup})\n`); process.exit(0); }
@@ -1422,7 +1421,9 @@ async function main() {
     const sync = require('./arc-sync');
     const fn = userArgs[0] === 'export' ? sync.doExport : sync.doImport;
     const r = fn(process.env.ARC_SESSION || '', userArgs.slice(1).join(' '));
-    process.stdout.write(r.message + '\n');
+    // CLI re-spelling: the shared messages teach the in-session /arc- form; a terminal
+    // speaks the space form.
+    process.stdout.write(r.message.replace(/\/arc-(export|import)/g, 'arc $1') + '\n');
     process.exit(r.ok ? 0 : 1);
   }
   if (userArgs[0] === 'peek' || userArgs[0] === 'usage') {
@@ -1432,9 +1433,9 @@ async function main() {
   }
   if (userArgs[0] === 'trash') {
     // arc trash [restore <id> | empty [confirm]] — same two-step confirm as the
-    // in-session arc:trash (run `arc trash empty`, then `arc trash empty confirm`).
+    // in-session /arc-trash (run `arc trash empty`, then `arc trash empty confirm`).
     const r = core.requestTrash(process.env.ARC_SESSION || '', userArgs.slice(1).join(' '));
-    process.stdout.write(r.message.replace(/arc:trash/g, 'arc trash') + '\n');
+    process.stdout.write(r.message.replace(/(?:\/arc-|arc:)trash/g, 'arc trash') + '\n');
     process.exit(r.ok ? 0 : 1);
   }
   if (userArgs[0] === 'set-key') return cmdSetKey(userArgs.slice(1));
@@ -1442,11 +1443,11 @@ async function main() {
   if (userArgs[0] === 'update') return cmdUpdate();
   if (userArgs[0] === 'release') return cmdRelease(userArgs.slice(1));
 
-  // Board CLI — the AGENT-facing way to leave a peer a note. The `arc:note`
-  // sentinel is eaten by the UserPromptSubmit hook before the model, so an agent can
+  // Board CLI — the AGENT-facing way to leave a peer a note. A typed `/arc-note`
+  // is eaten by the UserPromptSubmit hook before the model, so an agent can
   // never TYPE it; but it can RUN `arc note ...` via its Bash tool, which lands here in a
   // fresh process (no session restart needed). Reuses the same arc-notes functions the
-  // sentinels do. Output mirrors the CLI form (`arc note`, not `arc:note`).
+  // hook does. Output mirrors the CLI form (`arc note`, the space spelling).
   // (`arc delegate` lived here. REMOVED — it fired a headless one-shot that re-read the repo
   //  from scratch and then died: strictly worse than Claude Code's own subagent, which the
   //  agent can call natively, and strictly worse than a live PEER, which keeps its context.
@@ -1475,7 +1476,7 @@ async function main() {
   // command's EXIT re-invokes the agent, so this exit is what reaches an idle session with
   // nobody typing anything. It never times out. ONE verb for "be on this board and reachable"
   // — this is what the Stop hook and every opening prompt teach. (The vocabulary split is
-  // deliberate: `arc:role`/`arc role` DECLARES, `arc join` LISTENS — and joining costs the
+  // deliberate: `/arc-role`/`arc role` DECLARES, `arc join` LISTENS — and joining costs the
   // turn it runs in, because only the agent's own background command can wake the session.)
   if (userArgs[0] === 'join') {
     const N = require('./arc-notes');
@@ -1492,7 +1493,7 @@ async function main() {
     if (N.getRole(session, board) !== role) {
       const r = N.requestRole(session, role, cwd);
       if (!r.ok) {
-        const msg = String(r.message).replace(/arc:role/g, 'arc role');
+        const msg = String(r.message).replace(/(?:\/arc-|arc:)role/g, 'arc role');
         process.stderr.write(`[arc join] ${msg}\n`);
         process.exit(1);          // a refused claim EXITS — if backgrounded, that exit reports it
       }
@@ -1515,7 +1516,7 @@ async function main() {
   // agent never has to branch on data arc already holds.
   if (userArgs[0] === 'delegate') {
     const r = require('./arc-invite').requestDelegate(process.env.ARC_SESSION || '', userArgs.slice(1).join(' '), process.cwd());
-    process.stdout.write(String(r.message).replace(/arc:role/g, 'arc role').replace(/arc:note/g, 'arc note') + '\n');
+    process.stdout.write(String(r.message).replace(/(?:\/arc-|arc:)role/g, 'arc role').replace(/(?:\/arc-|arc:)note/g, 'arc note') + '\n');
     process.exit(r.ok ? 0 : 1);
   }
   // `arc close <role>` — end a peer YOU spawned. The counterpart to `delegate`, and it exists
@@ -1536,7 +1537,7 @@ async function main() {
       : userArgs[0] === 'note' ? board.requestNote(session, arg, cwd)
         : board.requestNotes(session, arg, cwd);
     const msg = String(r.message)
-      .replace(/arc:role/g, 'arc role').replace(/arc:notes/g, 'arc notes').replace(/arc:note/g, 'arc note');
+      .replace(/(?:\/arc-|arc:)role/g, 'arc role').replace(/(?:\/arc-|arc:)notes/g, 'arc notes').replace(/(?:\/arc-|arc:)note/g, 'arc note');
     process.stdout.write(msg + '\n');
     process.exit(r.ok ? 0 : 1);
   }
@@ -1714,7 +1715,7 @@ async function main() {
       const inheritModel = (explicitId && !passArgs.includes('--model')) ? preservedModel(explicitId) : [];
       claudeArgs = [...passArgs, ...inheritModel, ...effFlag];
     } else {
-      // STRIP THE BIRTH PROMPT ONLY ON A RESPAWN. `arc:role <role>` is a BIRTH instruction: it must
+      // STRIP THE BIRTH PROMPT ONLY ON A RESPAWN. `/arc-role <role>` is a BIRTH instruction: it must
       // reach the session exactly ONCE — on the launch that creates it — and never again, or every
       // switch/restart re-sends it as a prompt forever. stripConvArgs enforces the "never again"
       // half, and it used to be safe to run unconditionally because staffing passed an explicit
@@ -1727,7 +1728,7 @@ async function main() {
       const a = respawning ? stripConvArgs(passArgs) : stripConvArgs(passArgs, { keepPrompt: true });
       // On respawn (switch/restart), also re-apply the session's model + mode.
       // Only --resume if the conversation was actually persisted; a fresh session
-      // that just ran a blocked arc: command has no transcript, so --resume would
+      // that just ran a blocked /arc- command has no transcript, so --resume would
       // fail ("No conversation found") — (re)create it with --session-id instead.
       const canResume = convStarted && hasTranscript(convId);
       claudeArgs = canResume
@@ -1782,7 +1783,7 @@ async function main() {
     //       transcript (e.g. the user used claude's own resume, or the real id
     //       diverged from the minted one). Without this, a switch/restart re-opens
     //       the phantom via --session-id and mints a brand-new EMPTY session — the
-    //       "arc:switch opens a new session instead of resuming" bug.
+    //       "/arc-switch opens a new session instead of resuming" bug.
     // Guard (managed case) via hasTranscript: only adopt a bridged id that is a
     // REAL persisted conversation, never a transient/bogus one. (pickConvId in
     // arc-conv.js is the pure, unit-tested decision.)
@@ -1835,14 +1836,14 @@ async function main() {
       claimConv(convId);
       writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
       process.stdout.write(res.moved.length
-        ? `\x1b[33m[arc] deleted this conversation → recoverable trash: ${res.trashDir}\x1b[0m\n\x1b[2m[arc] list/restore/purge later with arc:trash — starting a fresh session…\x1b[0m\n`
+        ? `\x1b[33m[arc] deleted this conversation → recoverable trash: ${res.trashDir}\x1b[0m\n\x1b[2m[arc] list/restore/purge later with /arc-trash — starting a fresh session…\x1b[0m\n`
         : `\x1b[33m[arc] (no transcript found to delete) — starting a fresh session…\x1b[0m\n`);
       await new Promise(r => setTimeout(r, 300));
       continue; // loop launches --session-id <new convId>
     }
 
     if (reason === 'addaccount') {
-      // claude is dead, arc-runner owns the TTY. Wizard (bare arc:add-account) →
+      // claude is dead, arc-runner owns the TTY. Wizard (bare /arc-add-account) →
       // type-select + prompts; otherwise the flag-driven guided login/api add.
       if (payload && payload.wizard) {
         await runAddWizard();
@@ -1870,7 +1871,7 @@ async function main() {
         process.stdout.write(`\x1b[2m[arc] staying on ${accountLabel(account)}.\x1b[0m\n`);
       }
       writeState({ account, switchCount, convId, pinnedEffort, forked: isFork });
-      if (moved) core.refreshUsageNow(6_000); // same as arc:switch — don't paint the old account's usage
+      if (moved) core.refreshUsageNow(6_000); // same as /arc-switch — don't paint the old account's usage
       await new Promise(r => setTimeout(r, 200));
       continue; // loop top relaunches --resume convId on `account`
     }

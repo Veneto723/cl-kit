@@ -15,7 +15,7 @@
 //            disk, bound to this Windows user+machine; set via `arc set-key <id>`).
 //            Optional `usageUrl` (default `<baseUrl>/v1/usage`, set false to
 //            disable): the gateway's own usage endpoint — arc fetches it and shows
-//            the account's cost/tokens in the statusline + arc:peek (see gw-usage.js).
+//            the account's cost/tokens in the statusline + /arc-peek (see gw-usage.js).
 //
 // Minimal example (single subscription):
 //   { "version": 1, "accounts": [ { "id": "main", "label": "MAX", "type": "oauth" } ] }
@@ -92,7 +92,7 @@ function findAccount(cfg, id) {
   return cfg.accounts.find((a) => a.id === id) || null;
 }
 
-// The account arc:switch moves to: an explicit valid target, else the next id in
+// The account /arc-switch moves to: an explicit valid target, else the next id in
 // switchOrder after `currentId` (cyclic).
 function nextAccount(cfg, currentId, targetId) {
   const target = findAccount(cfg, targetId);

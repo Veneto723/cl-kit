@@ -6,7 +6,7 @@
 // diverge: a `arc --resume` picker session arc never assigned an id to, or a
 // MANAGED session that drifted so our convId points at a phantom with no
 // transcript. If we relaunch the phantom via --session-id we mint a brand-new
-// EMPTY session (the "arc:switch opens a new session instead of resuming" bug).
+// EMPTY session (the "/arc-switch opens a new session instead of resuming" bug).
 //
 // pickConvId decides which id to (re)launch:
 //   tracked          — the convId arc currently tracks (may be null)

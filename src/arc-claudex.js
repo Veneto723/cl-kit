@@ -6,7 +6,7 @@
 // side, so a LOCAL translator must sit between them. This module owns that translator's life:
 // it starts ONE per account (on 127.0.0.1:<account port>), reuses a healthy one, tracks its
 // PID, and sweeps orphans — so the user never runs or babysits a separate process. They just
-// `arc:switch <codex-account>` and it works.
+// `/arc-switch <codex-account>` and it works.
 //
 // SECURITY: the gateway key is DPAPI-decrypted only in memory and handed to the child via the
 // ENVIRONMENT (never argv, never disk). The sidecar binds 127.0.0.1 only.

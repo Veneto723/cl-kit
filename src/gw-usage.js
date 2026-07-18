@@ -2,7 +2,7 @@
 // MATE's GET <baseUrl>/v1/usage. Provider-specific gateways expose usage in their
 // own shapes; we pull the common, useful figures and degrade gracefully.
 // Used by usage-monitor.js (statusline, does the fetch) and arc-switch-core.js
-// (arc:peek, reads the cached result). Windows/Node 18+ (global fetch).
+// (/arc-peek, reads the cached result). Windows/Node 18+ (global fetch).
 'use strict';
 
 // The usage URL for an api account: explicit `usageUrl`, else <baseUrl>/v1/usage.

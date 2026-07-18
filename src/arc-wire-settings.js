@@ -78,8 +78,8 @@ function mergeHooks(settings, entries) {
 // refreshInterval". 10s costs ~77ms of node per tick and no extra network (the usage API stays
 // behind its own 60s cache), so what a tick actually does is re-read three local files.
 //
-// It also happens to fix the stance dial lagging after `arc:mode`, but that was the symptom, not
-// the reason: a SENTINEL is blocked at UserPromptSubmit and a blocked prompt is not a turn — the
+// It also happens to fix the stance dial lagging after `/arc-mode`, but that was the symptom, not
+// the reason: the command is blocked at UserPromptSubmit and a blocked prompt is not a turn — the
 // very property that makes it cost zero tokens is what starves the bar of its refresh.
 const STATUSLINE_REFRESH_SECONDS = 10;
 
@@ -133,7 +133,7 @@ function coreHookEntries(scriptsDir) {
 // it sat forever at a Bash permission prompt instead, claimed but deaf. The same prompt would
 // wedge every Stop-hook re-arm in an unattended session. These are coordination commands
 // (claim, listen, read, post) — nothing destructive is on this list, and `arc delegate` is
-// deliberately NOT: it is the one verb that can spawn a session, so it stays gated by arc:mode.
+// deliberately NOT: it is the one verb that can spawn a session, so it stays gated by the stance (/arc-mode).
 // EVERY shell tool, not just Bash. A session does not always get the Bash tool: the first
 // INVITED peer reported `No such tool available: Bash` and had only PowerShell — so a Bash-only
 // allowlist matched nothing, `arc join` raised a permission prompt, and the tab sat there
@@ -177,9 +177,18 @@ function overlayMaps(base, wins) { return { ...asMap(base), ...asMap(wins) }; }
 // Defaults-under-user: a user's own override (e.g. "off" to hide one from the menu
 // too) is their call and must survive every reinstall/update.
 function mergeSkillOverrides(settings) {
+  const SL = require('./arc-slash');
   const defaults = {};
-  for (const e of require('./arc-slash').MENU) defaults[`arc-${e.verb}`] = 'user-invocable-only';
+  for (const e of SL.MENU) defaults[`arc-${e.verb}`] = 'user-invocable-only';
   settings.skillOverrides = overlayMaps(defaults, settings.skillOverrides);
+  // SWEEP the arc-* namespace, mirroring the installer's stub sweep: when a verb is
+  // removed from MENU, its stub is deleted but an overlay can only ever ADD — the
+  // override key would outlive the skill forever, silently configuring nothing.
+  // Only arc-* names, only when MENU no longer ships them; a user's overrides for
+  // their own skills are out of this namespace and untouchable.
+  for (const k of Object.keys(settings.skillOverrides)) {
+    if (/^arc-/.test(k) && !(k in defaults)) delete settings.skillOverrides[k];
+  }
   return settings;
 }
 
