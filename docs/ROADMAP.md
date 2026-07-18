@@ -6,17 +6,9 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 1. `/exit` breaks listener stability — fixed for `arc --resume`; the incident's relaunch form is unanswered
+## 1. Operator visibility — the board is invisible to the human · **BIG** · picked up 2026-07-18 (LIVE view · Tauri 2 widget)
 
-**Root cause:** `/exit` deletes session state; on `arc --resume <uuid>` the conversation id survived only in `explicitId`, and `refreshRole` was handed the null `convId` — nothing adopted, session roleless, no nag, no listener, notes rot. **Fix (audit #259, fork-guard attacked and held):** `refreshRole(..., convId || (isFork ? null : explicitId))` — a fork never adopts its caller's chair; a live holder can never be stolen.
-
-**The open sliver (why this item survives):** which relaunch form the human used on 2026-07-17 is unknown. `--resume` → this fix closes it. Bare `arc` → mints a *new* conversation, and the role staying behind is **by design** (role follows the conversation) — a different, design-level conversation. **Owner of the next move:** the human, to say which they used.
-
----
-
-## 2. Operator visibility — the board is invisible to the human · **BIG** · parked
-
-**Classified by the human (2026-07-17) as a BIG update:** substantial work, not a quick fix — parked until there is slack, then handled properly. arc tells an operator nothing about what its agents are doing.
+**Classified by the human (2026-07-17) as a BIG update:** substantial work, not a quick fix. **Un-deferred 2026-07-18** — the human chose to build it after seeing CodexBar; the view/form/framework are now decided (see DECISION below). arc tells an operator nothing about what its agents are doing.
 
 **Why it is big rather than small:** the raw material is complete, but there is no *view* layer at all — every reader arc has is keyed to a chair (below). This is a new surface with its own design question (which of three tools), not a patch to an existing one.
 
@@ -31,47 +23,34 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 **Corroborated the same day, two tabs, independently:** this human — *"we need a way to tell human operator what agents are doing"*; `audit`'s human (board #169) — *"spent the last ~2 hours unable to see this board except through my narration, and asked 'what is going on' more than once."*
 
-**THE OPEN DECISION — the human's, and it gates the work.** Three different tools; the raw material for all three already exists (the ledger is append-only and complete on disk). What is missing is **a view not keyed to a chair**:
+**The three candidate views** (raw material for all three already on disk): **1. LIVE** — who is working, on what, right now · **2. CATCH-UP** — what happened while I was away (`b29c93c` is the closest analogue) · **3. UNFILTERED** — a trail not narrated by an agent.
 
-1. **LIVE** — who is working, on what, right now.
-2. **CATCH-UP** — what happened while I was away. *(Closest analogue already shipped: the revive freshness brief, `b29c93c`.)*
-3. **UNFILTERED** — a trail not narrated by an agent.
+### DECISION (2026-07-18) — the human picked it up
 
-**Next move:** the human picks 1/2/3 (or rejects the framing). Then `code` builds — `research` is read-only on `src/`. Nothing starts before the pick: the same day this was found, `audit` (#162) stopped us for *"polishing a tool for a job nobody has called."*
+- **View: LIVE** (option 1). A **cross-repo** operator dashboard — per repo: how many sessions are working, what is on the board, the cooperation (reply) graph, and **who is waiting for whose response**. CATCH-UP / UNFILTERED not chosen; the same ledger feeds them later.
+- **Form: a docked desktop widget** — always-on-top, ambient, glanceable (the human's "desktop-pet *vibe*": docked and chill, **not** a literal mascot, and explicitly **not** a browser page).
+- **Framework: Tauri 2** to try (Tauri 1 is legacy — do not use). **WPF/PowerShell** is the doctrine-clean fallback if the standalone-app cost is unwanted.
 
-**Not claimed:** that any view would have changed a decision — unmeasured. And 20% is likely a **floor**: this board was `research`-heavy because that chair was busiest; a human at a quieter tab would be blinder, and that is not measured either.
+**FEASIBILITY — verified 2026-07-18 by a research workflow** (4 investigators → synthesis → adversarial verify; all load-bearing claims held):
+- **Derivable, solidly:** sessions-per-repo (scan `~/.claude/cache` for live `arc-state`/`arc-convlock` pid+cwd → repo root); board contents (`allNotes` off disk); and the strongest — **the waiting graph** (`openRequests` + `requestStatus` per-recipient seen/replied + the `arc-await` idle marker; i.e. the `⧗ N unanswered` signal arc already computes, `arc-board.js:357-410`).
+- **Honest limits:** cross-repo **cooperation between sessions is NOT in the data** (no session/board link is stored) — cooperation is honest only *per board*. "All repos" needs **new code** (a filesystem walk for `.arc/peer/notes.jsonl` under configured roots; imported/cold boards are otherwise invisible). Liveness must **replicate `isHolder`** (start-time check), not bare pid, or it shows recycled-pid ghosts.
+- **Effort: low-medium.** The built-ins-only 127.0.0.1 server lifecycle lifts near-verbatim from `arc-claudex-proxy.js`/`arc-claudex.js`; the readers (`allNotes`/`liveRoles`/`openRequests`/`requestStatus`) already exist.
+
+**THE DOCTRINE CALL, made consciously:** a docked native widget (Tauri **or** WPF) is a standalone GUI app — the "no standalone third-party apps" the self-contained doctrine forbids (`CLAUDE.md`). So **Tauri 2 is an opt-in companion / a deliberate author-choice, NOT shipped in core `src/`.** The split that keeps arc clean: **arc builds the status FEED** (pure Node built-ins, in `src/`, doctrine-clean); **the Tauri 2 widget is the opt-in FACE** that reads it. The feed is renderer-agnostic — committing to Tauri locks in nothing on arc's side, and the same feed later drives a browser view or a WPF widget if wanted.
+
+**Not claimed:** that any view *changes* a decision — unmeasured; this is a legibility/ergonomics win judged on its own terms. The 20%-invisible figure is a likely **floor**.
+
+**Next move:** `code` — build the doctrine-clean status **feed** (arc's half) in `src/`; the Tauri 2 **widget** is the human's to prototype as the opt-in face. `research` is read-only on `src/`. (Heed `audit` #162's standing caution — *"polishing a tool for a job nobody called"* — is now answered: the human called it.)
 
 ---
 
-## 3. Asymmetric note permission — initiating asks, replying does not · **RAW** · recorded, not analysed
+## 2. Asymmetric note permission — initiating asks, replying does not · **RAW** · recorded, not analysed
 
 **The human's idea, verbatim (2026-07-17):** *"Session initiate a note need permission in balanced mode, but replying a note doesn't require user permission."*
 
 **Status: RECORDED ONLY.** The human asked for this to be parked without analysis, so none has been done — no gap statement, no evidence, no design. It is written down here so it is not lost, and deliberately nothing more. Do not mistake this entry for a considered proposal; it is a raw idea awaiting its turn.
 
 **Owner of the next move:** the human, to say when it is worth thinking about.
-
----
-
-## 4. delegate can read a dead chair as LIVE — the fail-open window's sharpest edge · **SMALL** · scheduled by audit (#259)
-
-**Found while fixing the delegate closed-chair check (2026-07-18), fixture-proven, has NOT fired in production.** `isHolder`'s deliberate fail-open windows (the warm ≤30s `PIDSTART_CACHE` serving a dead predecessor's start; the probe-unavailable path) can make `requestDelegate` treat a closed chair as live: it skips the revive, posts the packet to a dead chair, and tells the delegator *"«role» is live: its listener will wake it within seconds."*
-
-**Why scheduled rather than fixed inline:** fail-open is the designed anti-duplicate-session tradeoff (`a0c93bb`, audit #152 — fail-safe, ≤30s, self-heals), and audit ratified the deferral. **Audit's sharpness note (#259):** the delegate path is where a false-live reading costs the most — *a request nobody answers, reported as handled* — worse than the revive-refusal the same race causes elsewhere.
-
-**The fix shape, when picked up:** in the impostor path, re-probe an isAlive-but-cache-fresh pid (the reopen trigger the code itself names), and when `procStarts` returns null have `requestDelegate` say "could not verify «role» is live" instead of asserting liveness. Touches `isHolder` semantics — needs its own review against the duplicate-session risk fail-open was built to avoid.
-
-**Owner of the next move:** `code`, when there is slack.
-
----
-
-## 5. The listener-supersede test can lose to environment pollution · **SMALL** · scheduled by audit (#259)
-
-**Audit's finding (2026-07-18):** running the suite on a machine with a dozen live `arc join` listeners, the listener-supersede test failed 1-in-2 runs, then passed clean. The failing title was the since-replaced kill-based test, and the tree was changing mid-audit — so *churn, not flake* is the leading hypothesis — but it cannot be proven from here, and the principle stands regardless: **a green light that flickers will someday wave off a real arc-await regression as "just the flake."**
-
-**The fix shape:** make the supersede test hermetic against live-listener pollution — its sessions and markers are already synthetic; audit the remaining shared state (the cache dir sweep, pid liveness probes against real machine pids) and pin whatever leaks.
-
-**Owner of the next move:** `code`, when there is slack.
 
 ---
 
