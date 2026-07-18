@@ -36,6 +36,21 @@ fs.mkdirSync(CLAUDE, { recursive: true });
 const ROOT = path.join(__dirname, '..');
 const SRC = path.join(ROOT, 'src');
 
+// A pid that is PROVABLY dead on THIS machine, verified at suite start — never a guessed
+// constant. A guessed "dead" pid is machine-dependent state leaking into the suite: Windows
+// allocates pids as multiples of 4 (an ODD candidate is structurally unallocatable there),
+// but other OSes allocate densely up to pid_max, where 999999 can be a LIVE stranger on a
+// busy box — the environment-pollution class behind the listener-test flake suspicion
+// (roadmap item, audit #259). Candidates stay odd (999999, 999995, …) so the Windows
+// invariant holds even if a pid comes alive between this probe and a later liveness check,
+// and each is verified with the SAME probe the code under test uses (arc-board.isAlive),
+// so fixture and code can never disagree about what "dead" means.
+const DEAD_PID = (() => {
+  const { isAlive } = require(path.join(SRC, 'arc-board.js'));
+  for (let p = 999999; p > 4; p -= 4) if (!isAlive(p)) return p;
+  throw new Error('suite fixture: no dead pid found on this machine (should be impossible)');
+})();
+
 let pass = 0, fail = 0;
 const fails = [];
 function ok(name, cond, extra) {
@@ -547,8 +562,8 @@ try {
     // the ledger: two frozen id-less lines, then two id-bearing
     fs.writeFileSync(path.join(bA.planDir, 'notes.jsonl'), led(noid1, noid2, idA, idB));
     // claims: one whose conversation travels (WITH a pid — export must strip it), one orphan
-    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', pid: 999999, sessionId: 'a-sess', convId: cidA, at: 7000 }));
-    fs.writeFileSync(path.join(bA.planDir, 'claim-ghost.json'), J({ role: 'ghost', pid: 999998, sessionId: 'g-sess', convId: 'no-such-conv-anywhere', at: 7000 }));
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', pid: DEAD_PID, sessionId: 'a-sess', convId: cidA, at: 7000 }));
+    fs.writeFileSync(path.join(bA.planDir, 'claim-ghost.json'), J({ role: 'ghost', pid: DEAD_PID, sessionId: 'g-sess', convId: 'no-such-conv-anywhere', at: 7000 }));
     // cursors: alpha's session travels; cursor-notes is the OTHER machine's human — must stay home
     fs.writeFileSync(path.join(bA.planDir, 'cursor-alpha.json'), J({ o: { x: 2 }, seq: 4, at: 9000 }));
     fs.writeFileSync(path.join(bA.planDir, 'cursor-notes.json'), J({ o: { x: 1 }, seq: 1, at: 9000 }));
@@ -1356,7 +1371,7 @@ try {
   const { spawn: spawnLive } = require('child_process');
   const liveProc = spawnLive(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
   fs.writeFileSync(path.join(C, `arc-state-${LIVE2}.json`), JSON.stringify({ pid: liveProc.pid, cwd: TMP }));
-  fs.writeFileSync(path.join(C, `arc-state-${DEAD2}.json`), JSON.stringify({ pid: 999999, cwd: TMP }));
+  fs.writeFileSync(path.join(C, `arc-state-${DEAD2}.json`), JSON.stringify({ pid: DEAD_PID, cwd: TMP }));
   const mk = (name, when) => { const p = path.join(C, name); fs.writeFileSync(p, '{}'); if (when) fs.utimesSync(p, when / 1000, when / 1000); return p; };
   const liveRole = mk(`arc-role-${LIVE2}.json`, old);      // ancient, but its session is ALIVE
   const deadRole = mk(`arc-role-${DEAD2}.json`);           // fresh, but its session is DEAD
@@ -1456,7 +1471,7 @@ try {
   // ---- an ABANDONED task's baseline is swept once its session dies ----
   const DEAD = 'base-dead-' + process.pid;
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${DEAD}.json`),
-    JSON.stringify({ pid: 999999, cwd: brepo }));            // a pid that cannot be alive
+    JSON.stringify({ pid: DEAD_PID, cwd: brepo }));          // verified-dead at suite start
   DN.recordBaseline(bb, DEAD, 7, 'deadbeef');
   DN.recordBaseline(bb, LIVE, 8, 'cafebabe');
   ok('(setup) both a dead session\'s and a live session\'s baselines exist',
@@ -1480,7 +1495,7 @@ try {
 
   // And TaskCreated does the sweeping, so it happens without anyone remembering to.
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${DEAD}.json`),
-    JSON.stringify({ pid: 999999, cwd: brepo }));
+    JSON.stringify({ pid: DEAD_PID, cwd: brepo }));
   DN.recordBaseline(bb, DEAD, 10, 'deadbeef2');
   const r = DN.onTaskCreated({ cwd: brepo, task_id: 11 }, LIVE);
   ok('TaskCreated sweeps dead baselines on the way in (nobody has to remember)',
@@ -1795,7 +1810,7 @@ try {
     // peer's chair). close inherits roleClaim's genuine-holder check, so it kills NOTHING when the
     // claim points at a pid it cannot prove is the peer — and still frees the chair, which is the
     // part that matters. A claim held by a corpse blocks staffing forever.
-    RM7.claimRole(BRD, 'ghost', 999999, 'ghost-sess', 'ghost-conv');   // not a running process
+    RM7.claimRole(BRD, 'ghost', DEAD_PID, 'ghost-sess', 'ghost-conv');   // not a running process
     let touched = 0;
     const g = RM7.closePeer(BRD, 'ghost', { tree: () => ({ parent: 5, children: [6] }), kill: () => { touched++; return true; } });
     ok('close kills NOTHING when the claim names an unprovable pid (it may be a stranger now)',
@@ -1805,7 +1820,7 @@ try {
     ok('...but STILL frees the chair — a claim held by a corpse blocks staffing forever',
       !RM7.roleClaim(BRD, 'ghost') && RM7.vacantClaimForRole(BRD, 'ghost').convId === 'ghost-conv');
     // Only a chair with NOTHING to come back to is truly bare: no convId -> the file goes.
-    RM7.claimRole(BRD, 'bare', 999998, 'bare-sess', null);
+    RM7.claimRole(BRD, 'bare', DEAD_PID, 'bare-sess', null);
     RM7.closePeer(BRD, 'bare', { tree: () => ({ parent: null, children: [] }), kill: () => false });
     ok('close with no conversation unlinks outright — a tombstone pointing nowhere is clutter',
       !fs.existsSync(path.join(BRD.planDir, 'claim-bare.json')));
@@ -1826,7 +1841,7 @@ try {
     ok('close ABORTS the tombstone when a revive re-claimed during the kill — no clobber of a live peer',
       raceRes.reclaimed === true && racedClaim.pid === 424242 && racedClaim.convId === 'new-conv');
     // and the normal path is unaffected: no concurrent reclaim -> tombstone written, reclaimed:false
-    RM7.claimRole(BRD, 'calm', 999997, 'calm-sess', 'calm-conv');
+    RM7.claimRole(BRD, 'calm', DEAD_PID, 'calm-sess', 'calm-conv');
     const calmRes = RM7.closePeer(BRD, 'calm', { tree: () => ({ parent: null, children: [] }), kill: () => true });
     const calmTomb = JSON.parse(fs.readFileSync(path.join(BRD.planDir, 'claim-calm.json'), 'utf8'));
     ok('...while an uncontended close still tombstones normally (convId kept, pid gone, reclaimed:false)',
@@ -2223,7 +2238,7 @@ try {
     F5.healClaimConv(FS_, frepo) === null);
   ok('...and it NEVER touches a claim held by another live session',
     (() => {
-      RM5.claimRole(fboard, 'other', 999999, 'someone-else', null);   // a dead pid = not ours
+      RM5.claimRole(fboard, 'other', DEAD_PID, 'someone-else', null);   // a dead pid = not ours
       F5.healClaimConv(FS_, frepo);
       return RM5.roleClaim(fboard, 'other') === null;                 // still vacant, untouched
     })());
@@ -2775,7 +2790,7 @@ try {
   // copy of the CALLER wearing the role's name; resume WITHOUT it and the real peer walks back in.
   RM3.ensureBoard(RM3.resolveBoard(vrepo));
   const vboard = RM3.resolveBoard(vrepo);
-  RM3.claimRole(vboard, 'ghost', 999999, 'ghost-sess', 'ghost-conv-777');   // held, then died
+  RM3.claimRole(vboard, 'ghost', DEAD_PID, 'ghost-sess', 'ghost-conv-777');   // held, then died
   ok('a vacant claim (dead pid + a convId) is what makes a closed peer revivable',
     !!RM3.vacantClaimForRole(vboard, 'ghost')
     && RM3.vacantClaimForRole(vboard, 'ghost').convId === 'ghost-conv-777');
@@ -2941,7 +2956,7 @@ try {
     const FRS = 'fresh-sess-' + process.pid;
     fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${FRS}.json`),
       JSON.stringify({ pid: process.pid, cwd: frepo, convId: 'caller-conv-fresh' }));
-    RM3.claimRole(fboard, 'sleeper', 999999, 'sleeper-sess', 'sleeper-conv-1');   // held, then died
+    RM3.claimRole(fboard, 'sleeper', DEAD_PID, 'sleeper-sess', 'sleeper-conv-1');   // held, then died
     const frec = [];
     const revd = I.staffRole(FRS, 'sleeper', {
       spawn: (cmd, args) => { frec.push({ cmd, args }); return { status: 0 }; },
@@ -3192,7 +3207,7 @@ try {
   // THE property that decides whether a crash makes a session permanently deaf: the test is
   // LIVENESS, not existence. A stale marker left by a dead waiter must re-arm — otherwise the
   // session never hears another note and nothing ever tells it why.
-  A.markWaiting(WS, 'research', 999999);                 // a pid that cannot be alive
+  A.markWaiting(WS, 'research', DEAD_PID);               // verified-dead at suite start
   ok('a DEAD waiter does not count — the session re-arms instead of going deaf forever',
     A.isWaiting(WS) === false);
   ok('...and the stale marker is swept, not left to rot', !fs.existsSync(A.awaitFile(WS)));
@@ -3252,7 +3267,7 @@ try {
   // most of them orphans of long-dead sessions, each still polling the board every 2.5s.
   const ORPH = 'orphan-sess-' + process.pid;
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${ORPH}.json`),
-    JSON.stringify({ pid: 999999, cwd: repo }));          // an owner pid that cannot be alive
+    JSON.stringify({ pid: DEAD_PID, cwd: repo }));        // verified-dead at suite start
   const before = fs.existsSync(A.awaitFile(ORPH));
   const orphRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'orph-'));
   fs.mkdirSync(path.join(orphRepo, '.git'), { recursive: true });
@@ -3441,7 +3456,7 @@ try {
   ok('a different live session is refused (even with same pid)', second.ok === false && second.holder.sessionId === 's1');
   // /arc-restart re-execs arc-runner: SAME session, NEW pid → must reclaim its own role.
   ok('same session reclaims under a NEW pid (restart-safe)', R.claimRole(rTop, 'coding', process.pid + 1, 's1').ok === true);
-  fs.writeFileSync(path.join(rTop.planDir, 'claim-coding.json'), JSON.stringify({ role: 'coding', pid: 999999, sessionId: 's9', at: Date.now() }));
+  fs.writeFileSync(path.join(rTop.planDir, 'claim-coding.json'), JSON.stringify({ role: 'coding', pid: DEAD_PID, sessionId: 's9', at: Date.now() }));
   ok('a DEAD holder\'s claim is vacant', R.roleClaim(rTop, 'coding') === null);
   ok('a vacant role can be claimed by anyone', R.claimRole(rTop, 'coding', process.pid, 's3').ok === true);
   ok('liveRoles lists live holders only', R.liveRoles(rTop).map((l) => l.role).join(',') === 'coding');
@@ -3489,7 +3504,7 @@ try {
   fs.mkdirSync(path.join(rTop.root, '.arc', 'roles'), { recursive: true });
   fs.writeFileSync(path.join(rTop.root, '.arc', 'roles', 'ghostrole.md'), 'owns: the web surface\n');
   // a vacant claim whose conversation IS still on disk => revivable
-  R.claimRole(rTop, 'ghostrole', 999999, 'gone-sess', 'ghost-conv-live');
+  R.claimRole(rTop, 'ghostrole', DEAD_PID, 'gone-sess', 'ghost-conv-live');
   const rev = N9.requestNote(S9, 'ghostrole "please review this"', rTop.root,
     { hasTranscript: () => true });
   ok('an empty chair whose conversation SURVIVES is offered as REVIVABLE, not as a stranger',
@@ -3498,7 +3513,7 @@ try {
   ok('...and it says to prefer that over rebuilding the context yourself',
     /already has the context you would be rebuilding/.test(rev.message));
   for (const f of [`arc-state-${S9}.json`, `arc-role-${S9}.json`]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', f)); } catch {} }
-  R.releaseRole(rTop, 'ghostrole', 999999);
+  R.releaseRole(rTop, 'ghostrole', DEAD_PID);
   try { fs.unlinkSync(path.join(rTop.root, '.arc', 'roles', 'ghostrole.md')); } catch {}
 
   // THE TIMEZONE TRAP, as a regression guard. PowerShell's `.StartTime.Ticks` encodes the LOCAL
@@ -3522,15 +3537,18 @@ try {
   // MUST run cold: procStarts memoises in-process AND caches to disk, so an in-process call here
   // answers from cache and never probes — the first version of this test passed with the bug
   // reintroduced, proving only that the cache worked. Fresh process, cache deleted.
+  // DEAD_PID is INTERPOLATED into the child's source (the child process has no access to the
+  // suite's consts); the all-dead batch uses its odd siblings — odd pids are unallocatable on
+  // Windows, so they stay dead even without an individual liveness probe.
   const probeJs = `const fs=require('fs'),os=require('os'),path=require('path');
     try{fs.unlinkSync(path.join(os.homedir(),'.claude','cache','arc-pidstart.json'))}catch{}
     const R=require(${JSON.stringify(path.join(SRC, 'arc-board.js'))});
-    const mixed=R.procStarts([process.pid,999999]);
-    const allDead=R.procStarts([999998,999997]);
+    const mixed=R.procStarts([process.pid,${DEAD_PID}]);
+    const allDead=R.procStarts([${DEAD_PID - 4},${DEAD_PID - 8}]);
     process.stdout.write(JSON.stringify({
       liveResolved: !!mixed && typeof mixed[process.pid]==='number',
-      deadIsGone:   !!mixed && mixed[999999]===null,
-      allDeadIsAnswer: !!allDead && allDead[999998]===null && allDead[999997]===null,
+      deadIsGone:   !!mixed && mixed[${DEAD_PID}]===null,
+      allDeadIsAnswer: !!allDead && allDead[${DEAD_PID - 4}]===null && allDead[${DEAD_PID - 8}]===null,
     }));`;
   let cold = {};
   try { cold = JSON.parse(spawnSync(process.execPath, ['-e', probeJs], { encoding: 'utf8' }).stdout || '{}'); } catch {}
