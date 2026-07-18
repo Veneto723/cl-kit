@@ -38,7 +38,26 @@ const HOME_CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 // session (CLAUDE_CONFIG_DIR points at the profile dir, which reads its OWN
 // settings.json) — observed live: root overrides hid skills at root and every
 // profiled session still listed them.
-const ARC_SETTINGS_KEYS = ['hooks', 'statusLine', 'permissions', 'skillOverrides'];
+//
+// THE POLICY TRAVELS WITH THE KEY (roadmap #7, human-approved 2026-07-18). This used
+// to be a bare name list whose loop DEFAULTED to wholesale replace — and that default
+// silently ate profile-local values TWICE (the human's own permission grants, then
+// nearly skillOverrides), each rescued afterward with a bespoke branch. Now adding a
+// key FORCES the merge decision here, at the declaration:
+//   replace — arc is the SOLE author (hooks, statusLine): the root copy is the truth
+//             and a profile edit to it is drift, not a choice to preserve.
+//   union   — permissions: profile-local scalars win, allow/deny/ask lists union, so
+//             a /permissions grant made inside a profiled session survives launch.
+//   overlay — plain per-key map, profile wins (skillOverrides via the SHARED
+//             overlayMaps in arc-wire-settings — one policy, not two copies).
+// A key with an unknown policy is SKIPPED at runtime (not-synced beats clobbered) and
+// FAILS THE SUITE — a silent wrong default is the exact bug this shape retires.
+const ARC_SETTINGS_KEYS = [
+  { key: 'hooks',          merge: 'replace' },
+  { key: 'statusLine',     merge: 'replace' },
+  { key: 'permissions',    merge: 'union'   },
+  { key: 'skillOverrides', merge: 'overlay' },
+];
 
 function profileDir(accId) { return path.join(PROFILES_DIR, String(accId)); }
 function credsPath(accId) { return path.join(profileDir(accId), '.credentials.json'); }
@@ -99,31 +118,34 @@ function syncSettings(dir) {
   const dst = path.join(dir, 'settings.json');
   let cur = {}; try { cur = JSON.parse(fs.readFileSync(dst, 'utf8')); } catch {}
   const next = { ...cur };
-  for (const k of ARC_SETTINGS_KEYS) {
+  for (const { key: k, merge } of ARC_SETTINGS_KEYS) {
     if (master[k] === undefined) continue;
-    // skillOverrides gets the permissions treatment, not the wholesale one: a human
-    // cycling a skill's state via /skills inside a PROFILED session writes to the
-    // profile's own settings.json, and a wholesale replace would revert their choice
-    // on the very next launch. Per-key via the SHARED overlay (arc-wire-settings owns
-    // the policy and its corrupt-value sanitizing — two hand-rolled copies is how the
-    // guards drifted in the first draft): profile wins, new arc entries still flow.
-    // ACCEPTED TRADEOFF (same one permissions scalars already carry): once a profile
-    // holds a key, a ROOT-level change to that SAME key never reaches it — the profile
-    // value wins forever. Root /skills is therefore not the place to retune an
-    // existing override for profiled sessions; do it in the profile.
-    if (k === 'skillOverrides') {
-      next.skillOverrides = require('./arc-wire-settings').overlayMaps(master.skillOverrides, cur.skillOverrides);
-      continue;
+    if (merge === 'replace') {
+      // arc is the sole author of these — the root copy IS the truth.
+      next[k] = master[k];
+    } else if (merge === 'overlay') {
+      // Plain per-key map, profile wins (shared overlayMaps — one policy, one
+      // sanitizer, never two hand-rolled copies). ACCEPTED TRADEOFF (same as the
+      // union scalars): once a profile holds a key, a root change to that SAME key
+      // never reaches it — retune existing values in the profile, not at root.
+      next[k] = require('./arc-wire-settings').overlayMaps(master[k], cur[k]);
+    } else if (merge === 'union') {
+      // Object merge where profile-local scalars (defaultMode) win, plus a set-union
+      // of the rule lists — a /permissions grant made inside a profiled session must
+      // survive the next launch (ensureProfile runs every launch, so "next" is soon).
+      const mp = master[k] || {}, cp = (cur[k] && typeof cur[k] === 'object') ? cur[k] : {};
+      const merged = { ...mp, ...cp };
+      for (const list of ['allow', 'deny', 'ask']) {
+        const a = Array.isArray(mp[list]) ? mp[list] : [];
+        const b = Array.isArray(cp[list]) ? cp[list] : [];
+        if (a.length || b.length) merged[list] = [...new Set([...a, ...b])];
+      }
+      next[k] = merged;
     }
-    if (k !== 'permissions') { next[k] = master[k]; continue; }
-    const mp = master.permissions || {}, cp = (cur.permissions && typeof cur.permissions === 'object') ? cur.permissions : {};
-    const merged = { ...mp, ...cp };                     // profile-local scalars (defaultMode) win
-    for (const list of ['allow', 'deny', 'ask']) {
-      const a = Array.isArray(mp[list]) ? mp[list] : [];
-      const b = Array.isArray(cp[list]) ? cp[list] : [];
-      if (a.length || b.length) merged[list] = [...new Set([...a, ...b])];
-    }
-    next.permissions = merged;
+    // Unknown policy: SKIP — not-synced beats clobbered. The suite fails on any
+    // declared key whose policy this dispatch does not know, so an unknown value
+    // cannot ship silently; this branch exists only so a live mismatch degrades
+    // to "that key stops syncing" instead of "that key eats the profile's value".
   }
   try {
     if (JSON.stringify(next) !== JSON.stringify(cur)) fs.writeFileSync(dst, JSON.stringify(next, null, 2));
@@ -230,4 +252,4 @@ function removeProfile(accId) {
   return dest;
 }
 
-module.exports = { PROFILES_DIR, profileDir, credsPath, ensureProfile, hasCreds, seedCreds, renameProfile, removeProfile, SHARED_DIRS, adoptIntoShared };
+module.exports = { PROFILES_DIR, ARC_SETTINGS_KEYS, syncSettings, profileDir, credsPath, ensureProfile, hasCreds, seedCreds, renameProfile, removeProfile, SHARED_DIRS, adoptIntoShared };

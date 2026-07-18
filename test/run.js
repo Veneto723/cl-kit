@@ -4228,15 +4228,46 @@ try {
     && JSON.stringify(W.overlayMaps({ a: 1 }, 'junk')) === '{"a":1}'
     && JSON.stringify(W.overlayMaps(null, null)) === '{}');
 
-  // Profile sync: skillOverrides must ride ARC_SETTINGS_KEYS (a root-only write is
-  // proven ineffective in profiled sessions), and through the SHARED overlay so the
-  // two writers keep ONE semantics — the first draft hand-rolled the merge twice with
-  // two different corrupt-value guards, which is exactly the drift this pins.
-  const profSrc = fs.readFileSync(path.join(SRC, 'arc-profile.js'), 'utf8');
-  ok('arc-profile syncs skillOverrides into every profile',
-    /ARC_SETTINGS_KEYS\s*=\s*\[[^\]]*'skillOverrides'/.test(profSrc));
-  ok('...through the shared overlay (profile wins; one policy, not a second copy)',
-    /overlayMaps\(master\.skillOverrides,\s*cur\.skillOverrides\)/.test(profSrc));
+  // Profile sync — THE POLICY TRAVELS WITH THE KEY (roadmap #7): the bare name-list
+  // whose loop defaulted to wholesale replace ate profile-local values twice; now
+  // every declared key carries its merge policy and an unknown policy SKIPS (never
+  // replaces). Behavioral, against a real temp profile dir:
+  const P7 = require(path.join(SRC, 'arc-profile.js'));
+  ok('every ARC_SETTINGS_KEYS entry declares a KNOWN merge policy — no silent default left',
+    Array.isArray(P7.ARC_SETTINGS_KEYS) && P7.ARC_SETTINGS_KEYS.length >= 4
+    && P7.ARC_SETTINGS_KEYS.every((e) => e && typeof e.key === 'string'
+      && ['replace', 'union', 'overlay'].includes(e.merge)));
+  {
+    const masterPath = path.join(CLAUDE, 'settings.json');
+    const savedMaster = fs.existsSync(masterPath) ? fs.readFileSync(masterPath) : null;
+    const pdir = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-'));
+    try {
+      fs.writeFileSync(masterPath, JSON.stringify({
+        hooks: { UserPromptSubmit: ['arc-master'] },
+        permissions: { defaultMode: 'default', allow: ['Bash(arc role:*)'] },
+        skillOverrides: { 'arc-peek': 'user-invocable-only' },
+      }));
+      fs.writeFileSync(path.join(pdir, 'settings.json'), JSON.stringify({
+        hooks: { UserPromptSubmit: ['profile-drift'] },
+        permissions: { defaultMode: 'auto', allow: ['Bash(my own:*)'] },
+        skillOverrides: { 'arc-peek': 'off' },
+        theme: 'dark',
+      }));
+      P7.syncSettings(pdir);
+      const out = JSON.parse(fs.readFileSync(path.join(pdir, 'settings.json'), 'utf8'));
+      ok('replace: arc-owned hooks take the ROOT copy (profile drift is not a choice to keep)',
+        JSON.stringify(out.hooks) === JSON.stringify({ UserPromptSubmit: ['arc-master'] }));
+      ok('union: profile scalars win, rule lists union — a profiled /permissions grant survives',
+        out.permissions.defaultMode === 'auto'
+        && out.permissions.allow.includes('Bash(my own:*)') && out.permissions.allow.includes('Bash(arc role:*)'));
+      ok('overlay: the profile\'s own skill choice wins over the root default',
+        out.skillOverrides['arc-peek'] === 'off');
+      ok('...and keys arc does not own (theme) are untouched', out.theme === 'dark');
+    } finally {
+      if (savedMaster != null) fs.writeFileSync(masterPath, savedMaster); else fs.rmSync(masterPath, { force: true });
+      fs.rmSync(pdir, { recursive: true, force: true });
+    }
+  }
 
   // The machine-sender contract, updated 2026-07-18: the revive prompt is
   // `/arc-role <role>`. Safe because it travels PROGRAMMATICALLY — measured:
