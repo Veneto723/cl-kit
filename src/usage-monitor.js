@@ -91,11 +91,37 @@ function tokenFor(acc) {
   return creds.claudeAiOauth.accessToken;
 }
 
+// The Claude-Code CLIENT header set, verbatim — measured (research, board #257, an
+// order-controlled A/B/A/B with one live token): this set gets 200 where arc's old
+// `anthropic-version`-only set gets 429 once the endpoint is under pressure. The
+// discriminator is client identity (per-client rate-limit buckets; beta-only and
+// old-set+beta both stayed 429). Adopted EXACTLY as proven — adding headers back
+// (anthropic-version) is an untested combination, so it is left out on purpose.
+// Eyes-open tradeoff from the finding: the claude-code UA may share the real
+// client's bucket — arc's refresh sits behind a 60s cache (~1 call/min worst case),
+// negligible next to the client's own traffic.
+const UA_FALLBACK = 'claude-code/2.1.212';
+let claudeUA = null;
+function clientUA() {
+  if (claudeUA) return claudeUA;
+  // Only ever called on the network path (60s-cached), never per statusline render —
+  // a spawn here costs a fraction of the fetch it decorates.
+  try {
+    const v = require('child_process').execSync('claude --version', { encoding: 'utf8', timeout: 4000, windowsHide: true })
+      .trim().split(/\s+/)[0];
+    if (/^\d+\.\d+\.\d+/.test(v)) claudeUA = `claude-code/${v}`;
+  } catch { /* fall through */ }
+  return (claudeUA = claudeUA || UA_FALLBACK);
+}
+
 async function fetchUsageFor(acc) {
   const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
     headers: {
       Authorization: `Bearer ${tokenFor(acc)}`,
-      'anthropic-version': '2023-06-01',
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'anthropic-beta': 'oauth-2025-04-20',
+      'User-Agent': clientUA(),
     },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

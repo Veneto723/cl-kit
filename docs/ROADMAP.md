@@ -6,23 +6,17 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 1. `arc delegate` does not check whether the target is closed · **RAW** · recorded, not analysed
+## 1. ~~`arc delegate` does not check whether the target is closed~~ · **FIXED** (2026-07-18, audit #259)
 
-**The human's report, verbatim (2026-07-17):** *"research delegate an issue to code, while code is actually closed. it doesnt check code status before delegating."*
-
-**Status: RECORDED ONLY, and promoted to #1 by the human.** They asked for this to be recorded without analysis, so none has been done — the report above has not been verified against the code, no mechanism has been traced, and no fix is proposed. Written down so it is not lost, and deliberately nothing more.
-
-**Owner of the next move:** the human, to say when it is worth thinking about.
+**Root cause:** the status check *fired* and was **decapitated** — `requestNote` appended the closed-chair warning as a prose tail opening with `\n`, and the sender's `| head -4` clipped it; the incident transcript still shows the orphaned blank line. (`arc delegate` itself classified correctly that day.) **Fix:** the status now also rides **line 1** of the receipt (`— ⚠ "code" is CLOSED (revive: …)`), unclippable; the delegate paths omit the warning at the source via `opts.chairHandled` instead of tail-strip regexes. The related **fail-open false-live latent** is item 8.
 
 ---
 
-## 2. `/exit` appears to break listener stability · **RAW** · recorded, not analysed
+## 2. `/exit` breaks listener stability · **FIXED for `arc --resume`** — coverage of the original incident unconfirmed
 
-**The human's report, verbatim (2026-07-17):** *"seems like /exit a session will break it listener stability. Its no longer auto connect and keep it alive."*
+**Root cause:** `/exit` deletes session state; on `arc --resume <uuid>` the conversation id survived only in `explicitId`, and `refreshRole` was handed the null `convId` — nothing adopted, session roleless, no nag, no listener, notes rot. **Fix (audit #259, fork-guard attacked and held):** `refreshRole(..., convId || (isFork ? null : explicitId))` — a fork never adopts its caller's chair; a live holder can never be stolen.
 
-**Status: RECORDED ONLY, placed at #2 by the human.** They asked for this to be recorded without analysis, so none has been done — the report above has not been reproduced or verified against the code, no mechanism has been traced, and no fix is proposed. Their own hedge (*"seems like"*) is preserved deliberately: it is an observation, not yet a finding.
-
-**Owner of the next move:** the human, to say when it is worth thinking about.
+**The open sliver (why this item survives):** which relaunch form the human used on 2026-07-17 is unknown. `--resume` → this fix closes it. Bare `arc` → mints a *new* conversation, and the role staying behind is **by design** (role follows the conversation) — a different, design-level conversation. **Owner of the next move:** the human, to say which they used.
 
 ---
 
@@ -147,6 +141,28 @@ So DEAF fires during normal long turns. That is alarm fatigue: it goes off when 
 **The fix (small, shaped by audit's review):** make the policy travel with the key — `ARC_SETTINGS_KEYS` becomes `[{ key, merge: 'replace' | 'overlay' | 'permissions' }]`, so adding a key **forces** the merge decision at the declaration site instead of defaulting to the dangerous branch. Existing behavior unchanged; only the default dies.
 
 **Owner of the next move:** `code`, when there is slack. No design question is open — this is scheduled work, not a parked idea.
+
+---
+
+## 8. delegate can read a dead chair as LIVE — the fail-open window's sharpest edge · **SMALL** · scheduled by audit (#259)
+
+**Found while fixing roadmap #1 (2026-07-18), fixture-proven, has NOT fired in production.** `isHolder`'s deliberate fail-open windows (the warm ≤30s `PIDSTART_CACHE` serving a dead predecessor's start; the probe-unavailable path) can make `requestDelegate` treat a closed chair as live: it skips the revive, posts the packet to a dead chair, and tells the delegator *"«role» is live: its listener will wake it within seconds."*
+
+**Why scheduled rather than fixed inline:** fail-open is the designed anti-duplicate-session tradeoff (`a0c93bb`, audit #152 — fail-safe, ≤30s, self-heals), and audit ratified the deferral. **Audit's sharpness note (#259):** the delegate path is where a false-live reading costs the most — *a request nobody answers, reported as handled* — worse than the revive-refusal the same race causes elsewhere.
+
+**The fix shape, when picked up:** in the impostor path, re-probe an isAlive-but-cache-fresh pid (the reopen trigger the code itself names), and when `procStarts` returns null have `requestDelegate` say "could not verify «role» is live" instead of asserting liveness. Touches `isHolder` semantics — needs its own review against the duplicate-session risk fail-open was built to avoid.
+
+**Owner of the next move:** `code`, when there is slack.
+
+---
+
+## 9. The listener-supersede test can lose to environment pollution · **SMALL** · scheduled by audit (#259)
+
+**Audit's finding (2026-07-18):** running the suite on a machine with a dozen live `arc join` listeners, the listener-supersede test failed 1-in-2 runs, then passed clean. The failing title was the since-replaced kill-based test, and the tree was changing mid-audit — so *churn, not flake* is the leading hypothesis — but it cannot be proven from here, and the principle stands regardless: **a green light that flickers will someday wave off a real arc-await regression as "just the flake."**
+
+**The fix shape:** make the supersede test hermetic against live-listener pollution — its sessions and markers are already synthetic; audit the remaining shared state (the cache dir sweep, pid liveness probes against real machine pids) and pin whatever leaks.
+
+**Owner of the next move:** `code`, when there is slack.
 
 ---
 

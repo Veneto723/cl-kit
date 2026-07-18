@@ -1742,8 +1742,15 @@ async function main() {
     // at a dead process and another session could steal it — re-assert it here.
     // Pass the CONVERSATION: a relaunch mints a new ARC_SESSION, so the role must be adopted
     // from the conversation's vacant claim — otherwise this session silently receives nothing.
+    // convId is NULL on a user-managed resume (a /exit deleted the state; `arc --resume
+    // <uuid>` keeps the id only in explicitId) — which silently dropped the role on every
+    // such relaunch: no adoption, no stop-hook nag, no listener, notes rotting unread
+    // (roadmap #2, reproduced in a 20-check fixture). Hand it the id the runner already
+    // knows. NOT on a fork: a fork's explicitId names the CALLER's conversation, and
+    // passing it would let a newborn adopt its dead caller's chair — the exact identity
+    // confusion the fork machinery exists to prevent.
     try {
-      const rr = require('./arc-notes').refreshRole(SESSION_ID, process.pid, process.cwd(), convId);
+      const rr = require('./arc-notes').refreshRole(SESSION_ID, process.pid, process.cwd(), convId || (isFork ? null : explicitId));
       if (rr && rr.adopted) process.stdout.write(`\x1b[2m[arc] resumed as "${rr.role}" on the "${rr.board}" board (role follows the conversation)\x1b[0m\n`);
     } catch {}
     // Seed the sticky baseline with what we ACTUALLY applied, so the statusline

@@ -1662,6 +1662,14 @@ try {
   ok('a note to an EMPTY CHAIR still posts (the cursor is per-role — it keeps)', req.ok === true);
   ok('...but says so, loudly, instead of a bare ✓',
     /NOBODY HOLDS "research"/.test(req.message));
+  // THE CLIPPED-WARNING BUG (field report 2026-07-17, roadmap #1): the warning above is a
+  // prose TAIL — a sender piping through `| head -4` saw a clean ✓ while its work landed in
+  // a closed chair (the incident transcript shows the warning's orphaned leading '\n').
+  // The same truth must live ON LINE ONE, where no clip can lose it.
+  ok('...and LINE ONE carries the closed-chair marker (a `| head -4` cannot decapitate it)',
+    /is CLOSED/.test(req.message.split('\n')[0]));
+  ok('...with the chairHandled flag omitting BOTH (the delegate path fills the chair itself)',
+    !/NOBODY HOLDS|is CLOSED/.test(F8.requestNote(AS, 'research --kind request "again"', drepo, { chairHandled: true }).message));
   ok('...and uses the DUTY to make the warning actionable (the chair is real, staff it)',
     /IS a declared role/.test(req.message) && /investigation and docs/.test(req.message)
     && /arc delegate research/.test(req.message));
@@ -3076,22 +3084,40 @@ try {
   // that nothing could ever clean up. Re-arming is routine (a manual `arc join`, a restart's
   // re-arm), so each one would leak a process for the rest of the machine's uptime.
   // (Found by the first live peer loop: a duplicate `join code` survived a restart this way.)
-  const { spawn: spawnBg } = require('child_process');
-  const ghost = spawnBg(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-  A.markWaiting(WS, 'research', ghost.pid);
-  const prevEnv = process.env.ARC_SESSION;            // awaitOnce reads the session from the env
-  process.env.ARC_SESSION = WS;
-  A.awaitOnce('research', repo, { pollMs: 5, maxPolls: 1, write: () => {} });
-  if (prevEnv === undefined) delete process.env.ARC_SESSION; else process.env.ARC_SESSION = prevEnv;
-  ok('re-arming SUPERSEDES the session\'s previous listener (never leaks a polling orphan)',
-    (() => { try { process.kill(ghost.pid, 0); return false; } catch { return true; } })());
-  try { ghost.kill(); } catch {}
+  // GRACEFUL SUPERSEDE (2026-07-18): re-arming used to process.kill the previous listener,
+  // which enforced one-listener-per-session but reported the DESIGNED displacement as a
+  // task "failed with exit code 1" — recurring false alarm. Now the new arm just overwrites
+  // the marker; the old listener notices the ownership change within one poll and stands
+  // down ITSELF: exit 0, says "superseded", and — load-bearing — does NOT clear the marker,
+  // which now belongs to its successor. (The successor pid below is THIS test process — the
+  // marker liveness-sweep would eat a dead pid before the displaced listener could see it.)
+  const sup = spawnSync(process.execPath, ['-e',
+    `process.env.ARC_SESSION = ${JSON.stringify(WS)};`
+    + `const A = require(${JSON.stringify(path.join(SRC, 'arc-await.js'))});`
+    + `const p = A.awaitOnce('research', ${JSON.stringify(repo)}, { pollMs: 25, write: (l) => console.log(l) });`
+    + `setTimeout(() => A.markWaiting(${JSON.stringify(WS)}, 'research', ${process.pid}), 80);`   // a newer listener takes the chair
+    + `p.then((c) => { const w = A.waitingFor(${JSON.stringify(WS)});`
+    + `console.log(JSON.stringify({ code: c, marker: w && w.pid })); process.exit(c); });`,
+  ], { encoding: 'utf8', timeout: 8000, env: { ...process.env, ARC_SESSION: WS } });
+  const supTail = (() => { try { return JSON.parse(sup.stdout.trim().split('\n').pop()); } catch { return {}; } })();
+  ok('a displaced listener stands down GRACEFULLY: exit 0, says superseded (no false "failed" alarm)',
+    sup.status === 0 && /superseded by a newer listener/.test(sup.stdout));
+  ok('...and leaves the SUCCESSOR\'s marker untouched (clearing it would deafen the session)',
+    supTail.marker === process.pid);
+  A.clearWaiting(WS);   // test hygiene: release the marker we planted as the successor
 
   // awaitOnce checks the board SYNCHRONOUSLY on entry (inside the Promise executor), so a note
   // that is already waiting is reported before the first poll interval — no wait, no flake.
   RM.appendNote(board, { from: 'android', to: 'research', body: 'investigate the tap drop' });
   const said = [];
+  // Session-scoped like every other awaitOnce in the suite: bare, this inherited the DEVELOPER'S
+  // live ARC_SESSION and displaced their real listener on every suite run (as a silent kill
+  // before the graceful supersede made it visible, 2026-07-18).
+  const prevEnv3 = process.env.ARC_SESSION;
+  process.env.ARC_SESSION = WS;
   A.awaitOnce('research', repo, { pollMs: 5, write: (l) => said.push(l) });
+  if (prevEnv3 === undefined) delete process.env.ARC_SESSION; else process.env.ARC_SESSION = prevEnv3;
+  A.clearWaiting(WS);
   ok('a note already on the board is seen immediately (no polling delay)',
     said.some((l) => /investigate the tap drop/.test(l)));
   ok('...and it tells the woken agent to run `arc notes` (a wake is not a turn, so the',
@@ -4188,6 +4214,16 @@ try {
   const inviteSrc = fs.readFileSync(path.join(SRC, 'arc-invite.js'), 'utf8');
   ok('the revive prompt is /arc-role — programmatic path, gate-immune',
     /`\/arc-role \$\{role\}`/.test(inviteSrc) && !/`arc:role \$\{role\}`/.test(inviteSrc));
+
+  // THE /exit ROLE-DROP (field report 2026-07-17, roadmap #2, 20-check fixture repro):
+  // /exit deletes session state, so on `arc --resume <uuid>` the resumed conversation id
+  // lives only in explicitId — refreshRole received the null convId, adopted nothing, and
+  // the session came back roleless: no stop-hook nag, no listener, notes rotting unread.
+  // The launch loop must hand refreshRole the id it already knows — but NEVER on a fork,
+  // whose explicitId names the CALLER's conversation (adopting it would steal the chair).
+  const runnerSrc2 = fs.readFileSync(path.join(SRC, 'arc-runner.js'), 'utf8');
+  ok('the resume launch hands refreshRole the explicit conversation id, fork-guarded',
+    /refreshRole\(SESSION_ID, process\.pid, process\.cwd\(\), convId \|\| \(isFork \? null : explicitId\)\)/.test(runnerSrc2));
 } catch (e) { ok('/arc slash commands', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- receipts: a note reports whether it landed, so an ack is never needed ---

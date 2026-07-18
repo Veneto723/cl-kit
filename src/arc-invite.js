@@ -830,11 +830,14 @@ function delegateMany(session, firstToken, packet, cwd, o) {
     `${done.length} chair(s) filled:\n  ${summary}\n  no packet — give them a job:  arc delegate ${targets.join(',')} "<packet>"` };
 
   // ONE multi-recipient request to all targets: delivered WHOLE to each, tracked until EACH replies.
-  const note = N.requestNote(session, `${targets.join(',')} --kind request ${packet}`, cwd);
+  // chairHandled: the chairs were JUST filled above — the unheld warning would be false, so it is
+  // omitted at the SOURCE. (This used to strip it with an end-anchored regex, which would have
+  // silently matched nothing the day the warning moved off the message tail — and it did move.)
+  const note = N.requestNote(session, `${targets.join(',')} --kind request ${packet}`, cwd, { chairHandled: true });
   if (!note.ok) return note;
   return { ok: true, roles: targets, message:
     `delegated to ${targets.join(' + ')}:\n  ${summary}\n` +
-    note.message.replace(/\n\s+⚠ not currently held[\s\S]*$/, '').replace(/^✓ /, '  ✓ ') +
+    note.message.replace(/^✓ /, '  ✓ ') +
     `\n  ONE request, posted to all — tracked until EACH replies (arc notes shows per-recipient status).` };
 }
 
@@ -882,11 +885,13 @@ function requestDelegate(session, arg, cwd, opts) {
 
   // Then the work. Always a request: a delegation is a question you are owed an answer to, and
   // that is what makes it tracked and what wakes you when they reply.
-  const note = N.requestNote(session, `${role} --kind request ${packet}`, cwd);
+  // chairHandled: this path either just staffed the chair or verified it live — the empty-chair
+  // warning would be false, so requestNote omits it at the source (no fragile tail-strip regex).
+  const note = N.requestNote(session, `${role} --kind request ${packet}`, cwd, { chairHandled: true });
   if (!note.ok) return note;
   return { ok: true, role, revived: staffed && staffed.revived, message:
     (staffed ? staffed.message + '\n' : '') +
-    note.message.replace(/\n\s+⚠ NOBODY HOLDS[\s\S]*$/, '') +
+    note.message +
     (staffed ? `\n  the note is waiting in ${role}'s inbox — it reads it on arrival.`
              : `\n  ${role} is live: its listener will wake it within seconds.`) };
 }

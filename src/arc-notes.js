@@ -481,19 +481,33 @@ function requestNote(session, arg, cwd, opts) {
   // to whoever claims that role next (proven: a fresh session inherits the whole inbox). That is
   // a real feature, not a leak, so refusing would destroy something useful. What was missing was
   // the truth, out loud, at the only moment it can be acted on.
-  let chair = '';
+  // chairLead is the SAME truth as the chair block, compressed onto LINE ONE of the
+  // receipt. The block alone was a clippable prose TAIL opening with '\n' — a sender
+  // piping through `| head -4` saw a clean ✓ while its work landed in a closed chair
+  // (the 2026-07-17 field report: the check FIRED and was decapitated; the transcript
+  // still shows the warning's orphaned blank line). Line 1 is the one line every
+  // caller reads, so the status lives there too. `opts.chairHandled` skips both: the
+  // delegate path fills the chair itself, and the warning would be false there — it
+  // used to strip it with an end-anchored regex that would have silently broken the
+  // moment the warning moved off the tail... which is exactly what this change does.
+  let chair = '', chairLead = '';
+  if (opts && opts.chairHandled) { /* the caller is staffing the chair — no warning */ } else
   if (Array.isArray(to)) {
     // MULTI-RECIPIENT: name any addressee nobody holds. The rich revive offer below is for a SINGLE
     // recipient; for a subset keep it terse, so the sender is not misled about who actually got it.
     const held = new Set(R.liveRoles(crossFrom ? target : board).map((l) => l.role));
     const empty = to.filter((r) => !held.has(r));
-    if (empty.length) chair = `\n  ⚠ not currently held: ${empty.join(', ')} — the note keeps for ${empty.length === 1 ? 'that role' : 'them'} (whoever claims it next reads it in full)`
-      + (note.kind === 'request' ? `; a REQUEST stays unanswered by ${empty.length === 1 ? 'it' : 'those'} until staffed (arc delegate <role> "<packet>").` : '.');
+    if (empty.length) {
+      chairLead = ` — ⚠ unheld: ${empty.join(', ')}`;
+      chair = `\n  ⚠ not currently held: ${empty.join(', ')} — the note keeps for ${empty.length === 1 ? 'that role' : 'them'} (whoever claims it next reads it in full)`
+        + (note.kind === 'request' ? `; a REQUEST stays unanswered by ${empty.length === 1 ? 'it' : 'those'} until staffed (arc delegate <role> "<packet>").` : '.');
+    }
   } else
   // ACROSS A BOARD, the empty-chair OFFER is not yours to take: `arc delegate` acts on YOUR board,
   // so telling a whalephone peer to revive arc's `frontend` would be advice it cannot follow. Say
   // the true half (nobody is there, the note keeps) and stop.
   if (crossFrom && to && !R.liveRoles(target).some((l) => l.role === to)) {
+    chairLead = ` — ⚠ "${to}" unheld on "${target.name}"`;
     chair = `\n  ⚠ NOBODY HOLDS "${to}" on "${target.name}" right now — the note waits in an empty chair.\n`
       + `    It keeps: whoever claims "${to}" there next reads it in full. You cannot staff their\n`
       + `    board from here, and should not try — that is their side's call.\n`;
@@ -512,6 +526,7 @@ function requestNote(session, arg, cwd, opts) {
       const hasT = (opts && opts.hasTranscript) || require('./arc-invite').hasTranscript;
       revivable = !!(v && hasT(v.convId));
     } catch { /* never let a hint break a note */ }
+    chairLead = ` — ⚠ "${to}" is CLOSED${revivable ? ` (revive: arc delegate ${to} "<packet>")` : ''}`;
     chair = `\n  ⚠ NOBODY HOLDS "${to}" right now — your note is waiting in an empty chair.\n`
       + (revivable
         ? `    BUT "${to}" HAS WORKED HERE BEFORE and can come back AS ITSELF — its own conversation\n`
@@ -548,7 +563,7 @@ function requestNote(session, arg, cwd, opts) {
   const stored = note.body.length;
   return { ok: true, message:
     `✓ note #${seq} posted for ${Array.isArray(to) ? to.join(' + ') : (to || 'everyone')} (from "${crossFrom || me}", on the "${target.name}" board)` +
-    `  — ${stored} chars stored\n` +
+    `  — ${stored} chars stored${chairLead}\n` +
     (crossFrom ? `  ⇄ CROSS-BOARD: this left "${board.name}" and landed on "${target.name}". One-way — they\n`
                + `    cannot reply to you here. Anything you need BACK goes through your human.\n` : '') +
     (extra ? `  ${extra}\n` : '') +

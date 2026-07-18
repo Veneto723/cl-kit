@@ -114,14 +114,16 @@ function awaitOnce(roleArg, cwd, opts) {
     process.stderr.write(`[${tag}] no role — \`arc join research\` claims one and listens.\n`);
     return Promise.resolve(1);
   }
-  // SUPERSEDE the listener this session already has, if any. markWaiting is about to overwrite
-  // its marker, which would orphan it INVISIBLY — still polling, but no longer findable by
-  // session, so nothing would ever clean it up. Re-arming happens routinely (a manual `arc
-  // join`, a restart's re-arm), so without this every re-arm leaks a process for the rest of
-  // the machine's uptime. One session, one listener.
+  // SUPERSEDE the listener this session already has, if any. markWaiting overwrites the
+  // marker with OUR pid — that overwrite IS the stand-down order: the old listener checks
+  // marker ownership every poll (below) and exits 0 with "superseded" within one poll
+  // interval. It used to be process.kill(prev.pid), which worked but reported the
+  // DESIGNED displacement as a task "failed with exit code 1" — a recurring false alarm
+  // the human eventually spent attention asking about (2026-07-18). A graceful stand-down
+  // says what actually happened. One session, one listener, ~2.5s of benign overlap
+  // (`arc await` only OBSERVES — it never advances the read cursor, so two pollers
+  // cannot consume each other's wake).
   if (session) {
-    const prev = waitingFor(session);
-    if (prev && prev.pid !== process.pid) { try { process.kill(prev.pid); } catch { /* already gone */ } }
     markWaiting(session, role, process.pid);
     // ARMING IS THE COMPLIANCE — so the offer is fulfilled HERE, the moment the listener exists.
     //
@@ -166,13 +168,31 @@ function awaitOnce(roleArg, cwd, opts) {
     return true;
   };
 
+  // SUPERSEDED: the marker exists but names a DIFFERENT pid — a newer listener took this
+  // session's chair (see the arm block above). Stand down without touching the marker.
+  const superseded = () => {
+    if (!session) return false;
+    const w = waitingFor(session);
+    return !!(w && w.pid !== process.pid);
+  };
+
   return new Promise((resolve) => {
-    const done = (code) => { if (session) clearWaiting(session); resolve(code); };
+    // OWNERSHIP-CHECKED clear: only remove the marker if it is still OURS. A displaced
+    // listener that cleared unconditionally would delete its SUCCESSOR's marker — the
+    // session would keep a live poller the Stop hook could no longer see.
+    const done = (code) => {
+      if (session) { const w = waitingFor(session); if (!w || w.pid === process.pid) clearWaiting(session); }
+      resolve(code);
+    };
     if (check()) return done(0);
     const t = setInterval(() => {
       // opts.maxPolls: a test hatch only. Nothing in production stops this early — see the
       // header on why a TIMEOUT would make a session wake forever.
       if (check()) { clearInterval(t); return done(0); }
+      if (superseded()) {                                     // a newer listener holds this chair
+        write(`[${tag}] superseded by a newer listener for this session — standing down.`);
+        clearInterval(t); return resolve(0);                  // NOT done(): the marker is the successor's
+      }
       if (orphaned()) { clearInterval(t); return done(0); }   // my session is gone: nothing to wake
       if (moved()) {                                          // my board moved: re-arm on the new one
         write(`[${tag}] the board folder moved (${watching} is gone) — exiting so this session re-arms on the new one.`);
