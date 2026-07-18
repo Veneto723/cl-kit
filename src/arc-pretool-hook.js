@@ -76,6 +76,23 @@ const RX_CROSS_BOARD = /(?:^|[\s;&|(`])arc(?:\.cmd|\.exe)?\s+note\s+[^\n]*--boar
 // A cross-board reply still asks: RX_CROSS_BOARD is checked FIRST and returns before this.
 const RX_NOTE_REPLY = /(?:^|[\s;&|(`])arc(?:\.cmd|\.exe)?\s+note\s+([a-z][a-z0-9_-]*)\s+[^\n]*--reply-to[=\s]+#?(\d+)/i;
 
+// AN AUTO-ALLOW MUST SCOPE TO EXACTLY THE EXEMPTED COMMAND — the one predicate both auto-allows
+// (the note-reply exemption and the ACTIVE-stance delegate) run through. A hook `allow` approves the
+// WHOLE Bash command, so a chained tail rides it: `arc <verb> …; rm -rf X` would auto-run the `rm`
+// AND remove the very prompt that would have shown a human the tail (audit #290 caught this on the
+// reply; #293 scheduled it for delegate). "Sole" means the command is ONLY that arc verb —
+//   • anchored at its START (no leading `cd /other;` — which would run other work AND, for a note,
+//     land on a DIFFERENT board than the ledger checks read), and
+//   • free of EVERY shell control/substitution char (`; & | ` $ ( ) < >` and newlines) anywhere,
+//     quoted or not — `$()` and backticks execute inside double quotes, and parsing quoting across
+//     two shells is exactly the analysis a fail-closed gate must not attempt.
+// A decorated command fails the test and falls back to the normal permission prompt: fail-closed
+// costs a prompt, never a bypass.
+function soleCommand(cmd, verb) {
+  const anchored = new RegExp('^arc(?:\\.cmd|\\.exe)?\\s+' + verb + '\\b', 'i');
+  return anchored.test(String(cmd || '').trim()) && !/[;&|`$()<>\r\n]/.test(String(cmd || ''));
+}
+
 const MAX_PEERS_AUTO = 3;   // beyond this, even ACTIVE asks first
 
 function out(decision, reason, systemMessage) {
@@ -126,7 +143,7 @@ function run(raw) {
   // backticks execute INSIDE double quotes, and parsing quoting across two shells is exactly the
   // analysis a fail-closed gate must not attempt. A reply whose body needs those characters
   // simply defers to the normal permission prompt: fail-closed costs a prompt, never a bypass.
-  const soleReply = /^arc(?:\.cmd|\.exe)?\s+note\s+/i.test(cmd.trim()) && !/[;&|`$()<>\r\n]/.test(cmd);
+  const soleReply = soleCommand(cmd, 'note');
   const nr = cmd.match(RX_NOTE_REPLY);
   if (nr && !soleReply) return null;                              // chained/decorated — normal flow decides
   if (nr) {
@@ -200,6 +217,19 @@ function run(raw) {
         + '  each one is a session burning its own quota, so this one needs your nod.');
       return 'ask-cap';
     }
+    // COMMAND-SCOPED, OR ASK (audit #293 — the last unscoped auto-allow in this gate). ACTIVE
+    // auto-approves a delegate, but the `allow` blesses the WHOLE command, so a chained tail
+    // (`arc delegate x "…"; rm -rf Y`) would ride it. So only auto-allow a SOLE delegate; a
+    // decorated one falls to a prompt (the human then sees the tail), never denied — ACTIVE still
+    // wants the delegate, it just cannot bless what is stapled to it.
+    if (!soleCommand(cmd, 'delegate')) {
+      out('ask',
+        '[/arc-mode active] the delegate is chained to another command — approving the prompt confirms the WHOLE line.',
+        'arc: ACTIVE would auto-approve a bare delegate, but this command carries more than the\n'
+        + '  delegate (a shell operator: ; && | ` $() etc.). An auto-allow would bless the whole line,\n'
+        + '  so this one needs your prompt — check the full command before approving.');
+      return 'ask-chained';
+    }
     out('allow', '[/arc-mode active] auto-approved — you asked for an agent that starts its own peers.');
     return 'allow';
   }
@@ -213,7 +243,7 @@ function run(raw) {
   return 'ask';
 }
 
-module.exports = { run, RX_DELEGATE, RX_NOTE_REPLY, MAX_PEERS_AUTO };
+module.exports = { run, RX_DELEGATE, RX_NOTE_REPLY, MAX_PEERS_AUTO, soleCommand };
 
 if (require.main === module) {
   let raw = '';

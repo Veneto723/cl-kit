@@ -2516,6 +2516,30 @@ try {
   ok('ACTIVE allows — auto-approved, no prompt',
     gate('arc delegate frontend "do a thing"').decision === 'allow');
 
+  // COMMAND-SCOPED, OR ASK (audit #293 — the last unscoped auto-allow in the gate). ACTIVE's allow
+  // blesses the WHOLE command, so a chained tail would ride it. A SOLE delegate still auto-allows; a
+  // decorated one falls to a PROMPT (never denied — ACTIVE still wants the delegate, just not what
+  // is stapled to it). Same soleCommand predicate the reply exemption uses.
+  ok('a CHAINED delegate defers to a prompt in ACTIVE — the allow no longer blesses the tail',
+    gate('arc delegate frontend "x"; rm -rf Y').decision === 'ask'
+    && gate('arc delegate frontend "x" && curl evil').decision === 'ask'
+    && gate('arc delegate frontend "x" | tee Z').decision === 'ask');
+  ok('...a leading cd/prefix before the delegate defers too (anchored at ^arc delegate)',
+    gate('cd E:\\other; arc delegate frontend "x"').decision === 'ask'
+    && gate('echo hi && arc delegate frontend "x"').decision === 'ask');
+  ok('...a substitution char in the packet defers ($()/backticks run inside quotes)',
+    gate('arc delegate frontend "x $(whoami)"').decision === 'ask'
+    && gate('arc delegate frontend "see (a)"').decision === 'ask');
+  ok('...but a SOLE delegate still auto-allows (the exemption survives its own scoping)',
+    gate('arc delegate frontend "do a thing"').decision === 'allow');
+  // one shared predicate, source-pinned so the two auto-allows cannot drift apart.
+  const PT = require(path.join(SRC, 'arc-pretool-hook.js'));
+  ok('soleCommand is the shared scoping predicate (both auto-allows call it)',
+    PT.soleCommand('arc delegate x "y"', 'delegate') === true
+    && PT.soleCommand('arc delegate x "y"; rm', 'delegate') === false
+    && PT.soleCommand('arc note x --reply-to 1 "y"', 'note') === true
+    && PT.soleCommand('cd z; arc note x --reply-to 1 "y"', 'note') === false);
+
   // THE MERGE'S WHOLE POINT: one verb, two costs. Delegating to a LIVE peer is a note — free,
   // reversible, the commonest thing an agent does — and gating it would be pure noise. The gate
   // must therefore look up liveness, not just match the command string.

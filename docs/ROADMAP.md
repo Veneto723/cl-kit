@@ -44,16 +44,6 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
-## 2. `arc delegate` auto-allow is not command-scoped — the last unscoped ALLOW in the pretool gate · **SMALL** · scheduled by audit (#293)
-
-**Found while scoping the reply exemption (2026-07-18).** The pretool gate's ACTIVE-stance `arc delegate` path emits `permissionDecision: allow`, which approves the WHOLE Bash command — so a chained command (`arc delegate x "…"; rm -rf Y`) rides the allow, exactly the class just closed for the note-reply exemption (#291). **Narrower than that one was:** ACTIVE stance only, and delegate is rare — but with the reply exemption now command-scoped, this is the *last* unscoped auto-allow in `arc-pretool-hook`.
-
-**The fix (small, same shape as #291):** require the allowed command be *solely* the delegate — anchored at `^arc delegate`, and rejecting any shell control/substitution operator (`; & | \` $ ( ) < >`) anywhere, quoted or not — so a decorated command falls back to the normal permission prompt (fail-closed costs a prompt, never a bypass). Factor the `soleReply`-style guard into one shared predicate both auto-allows call.
-
-**Owner of the next move:** `code`, when there is slack. No design question open — scheduled, not parked.
-
----
-
 ## Parked elsewhere — pointers, not entries
 
 These are live threads owned by other chairs or blocked on a call. They are **not** roadmap items; recorded here only so this file is not mistaken for the whole picture.
