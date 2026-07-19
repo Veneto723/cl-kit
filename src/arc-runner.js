@@ -1549,6 +1549,21 @@ async function main() {
     require('./arc-await').awaitOnce(userArgs[1], process.cwd()).then((code) => process.exit(code));
     return;
   }
+  // `arc alarm "<msg>"` — raise a board-wide FIRE ALARM: broadcast a note (wakes idle peers) AND
+  // set the interrupt flag (every BUSY peer stops at its next tool call to read it). `--clear` takes
+  // it down. The one board action that INTERRUPTS instead of waiting — debounced, capped, and the
+  // raiser never blocks on its own alarm. Use it for a stop-the-line correction, not routine news.
+  if (userArgs[0] === 'alarm') {
+    const AL = require('./arc-alarm');
+    const rest = userArgs.slice(1);
+    if (rest[0] === '--clear' || rest[0] === 'clear') {
+      process.stdout.write(`[arc alarm] ${AL.clear(process.cwd()).message}\n`);
+      process.exit(0);
+    }
+    const r = AL.raise(process.env.ARC_SESSION || '', rest.join(' '), process.cwd());
+    process.stdout.write(`[arc alarm] ${r.message}\n`);
+    process.exit(r.ok ? 0 : 1);
+  }
   // `arc delegate <role> [<packet>]` — THE one verb. "Get <role> on this." arc resolves whether
   // that peer is live, closed (revive it as itself) or new (staff it from your context), so the
   // agent never has to branch on data arc already holds.

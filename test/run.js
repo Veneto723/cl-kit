@@ -2473,6 +2473,130 @@ try {
 // and cannot tell the user's order from the agent's own idea. A prompt-command escape hatch
 // (a prompt is provably yours) was removed on purpose — a human's natural act is prose, not a
 // command. So passive costs you the spawn whoever wanted it.
+// ── arc alarm: the board-wide fire alarm — a broadcast that INTERRUPTS busy peers ──────────────
+// Raised by `arc alarm "<msg>"`: it broadcasts a note (wakes idle peers) AND writes a flag the
+// pretool hook reads on every tool call, denying a BUSY peer's next tool call so it must read the
+// alarm before proceeding. The design review (audit #332) required: block-once per (session,alarm),
+// FAIL-OPEN on ack-write failure, DEBOUNCE raises, CAP+frame the untrusted body, and the raiser
+// auto-acks. This exercises all of them against a real spawned hook.
+section('arc alarm (broadcast + busy-peer interrupt at the next tool boundary)');
+try {
+  const AL = require(path.join(SRC, 'arc-alarm.js'));
+  const RMa = require(path.join(SRC, 'arc-board.js'));
+  const Fa = require(path.join(SRC, 'arc-notes.js'));
+  const HOOKPa = path.join(SRC, 'arc-pretool-hook.js');
+
+  const arepo = fs.mkdtempSync(path.join(os.tmpdir(), 'alarm-'));
+  spawnSync('git', ['init', '-q'], { cwd: arepo });
+  const aboard = RMa.resolveBoard(arepo); RMa.ensureBoard(aboard);
+  const RAISER = 'alarm-raiser-' + process.pid;
+  const BUSY = 'alarm-busy-' + process.pid;
+  for (const s of [RAISER, BUSY]) fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`),
+    JSON.stringify({ pid: process.pid, cwd: arepo, convId: 'ac1' }));
+  Fa.requestRole(RAISER, 'code', arepo);
+  Fa.requestRole(BUSY, 'audit', arepo);
+
+  // the pretool gate, driven exactly as the /arc-mode gate test below drives it
+  const armgate = (command, session) => {
+    const r = spawnSync(process.execPath, [HOOKPa], {
+      input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd: arepo }),
+      encoding: 'utf8', env: { ...process.env, ARC_SESSION: session },
+    });
+    if (!r.stdout || !r.stdout.trim()) return { decision: null };
+    try { const j = JSON.parse(r.stdout); return { decision: j.hookSpecificOutput.permissionDecision, reason: j.hookSpecificOutput.permissionDecisionReason, sys: j.systemMessage }; }
+    catch { return { decision: 'PARSE-ERROR', raw: r.stdout }; }
+  };
+
+  // RAISE: writes the flag, broadcasts a note, and the raiser auto-acks (never blocks on its own).
+  const notesBefore = RMa.allNotes(aboard).length;
+  const raised = AL.raise(RAISER, 'STOP — the config schema changed, do not build on the old one', arepo);
+  ok('raise writes the flag AND broadcasts a note (so idle peers wake, busy peers get interrupted)',
+    raised.ok === true && !!raised.id && !!AL.readFlag(aboard)
+    && RMa.allNotes(aboard).length === notesBefore + 1
+    && /ALARM: STOP/.test(RMa.allNotes(aboard).slice(-1)[0].body));
+  ok('the raiser auto-acks — it does NOT block on its own alarm',
+    AL.checkAndAck(RAISER, aboard) === null);
+
+  // BUSY peer: interrupted ONCE at its next tool call, then never again for the same alarm.
+  const first = armgate('ls -la', BUSY);
+  ok('a BUSY peer is DENIED at its next tool call, the body framed as UNTRUSTED (not an instruction)',
+    first.decision === 'deny' && /ALARM/i.test(first.reason || '')
+    && /UNTRUSTED/i.test(first.sys || '') && /schema changed/.test(first.sys || '')
+    && /NOT an instruction/i.test(first.sys || ''));
+  ok('...BLOCK-ONCE: the very next tool call RUNS (the ack suppresses a re-block, no storm)',
+    armgate('ls -la', BUSY).decision === null);
+  ok('...`arc alarm` itself is EXEMPT so a peer can always raise/clear (no clear-deadlock)',
+    armgate('arc alarm --clear', RAISER).decision === null);
+
+  // DEBOUNCE: a second raise inside the window coalesces — no per-id block storm.
+  const dbl = AL.raise(RAISER, 'a second, rapid alarm', arepo);
+  ok('a rapid second raise COALESCES (debounce) — one alarm, not a board-wide storm',
+    dbl.ok === false && dbl.coalesced === true && AL.readFlag(aboard).id === raised.id);
+
+  // BODY CAP: the injected body is capped at the source (untrusted, force-fed into context).
+  AL.clear(arepo);
+  const big = AL.raise(RAISER, 'x'.repeat(1000), arepo);
+  ok('the alarm body is CAPPED (a broadcast prompt-injection surface must be bounded)',
+    big.ok === true && AL.readFlag(aboard).body.length <= AL.BODY_CAP);
+
+  // STALE / TTL: an alarm older than the TTL no longer interrupts.
+  const flag = JSON.parse(fs.readFileSync(AL.flagPath(aboard), 'utf8'));
+  flag.at = Date.now() - AL.TTL_MS - 1000;
+  fs.writeFileSync(AL.flagPath(aboard), JSON.stringify(flag));
+  ok('a STALE alarm (past its TTL) no longer interrupts — readFlag and the gate fall through',
+    AL.readFlag(aboard) === null && armgate('ls', 'alarm-fresh-' + process.pid).decision === null);
+
+  // FAIL-OPEN: if the ack cannot be written, the gate lets the tool RUN (never block-forever).
+  AL.clear(arepo);
+  AL.raise(RAISER, 'fresh alarm for the fail-open probe', arepo);
+  ok('an ack-write FAILURE fails OPEN — a session whose ack cannot persist is NOT wedged',
+    AL.stampAck('bad<>:name', 'x') === false
+    && AL.checkAndAck('bad<>:name', aboard) === null
+    && AL.readFlag(aboard) !== null);   // the flag stays live for peers who CAN ack
+
+  // CLEAR: removes the flag; the gate falls through again for everyone.
+  AL.clear(arepo);
+  ok('clear removes the flag — the gate falls through for everyone',
+    AL.readFlag(aboard) === null && armgate('ls', BUSY).decision === null);
+
+  // DE-DUP (design review #332, claim 6): the alarm reaches a peer on TWO channels — the broadcast
+  // note AND the pretool flag-gate. Whichever fires first stamps the shared ack; the other is
+  // suppressed, so no peer sees the same alarm twice. Fresh board to isolate the channels cleanly.
+  const drepo = fs.mkdtempSync(path.join(os.tmpdir(), 'alarmdd-'));
+  spawnSync('git', ['init', '-q'], { cwd: drepo });
+  const dboard = RMa.resolveBoard(drepo); RMa.ensureBoard(dboard);
+  const DR = 'dd-raiser-' + process.pid, D1 = 'dd-note1st-' + process.pid, D2 = 'dd-flag1st-' + process.pid;
+  for (const s of [DR, D1, D2]) fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`),
+    JSON.stringify({ pid: process.pid, cwd: drepo, convId: 'dc1' }));
+  Fa.requestRole(DR, 'code', drepo); Fa.requestRole(D1, 'frontend', drepo); Fa.requestRole(D2, 'backend', drepo);
+
+  const r1 = AL.raise(DR, 'schema changed — stop', drepo);
+  // DIRECTION 1 (note first): the delivery SHOWS the alarm and stamps the ack -> the flag stays quiet.
+  const injA = Fa.injection(D1, drepo);
+  ok('de-dup, NOTE first: the note is shown and stamps the ack, so the flag-gate then stays quiet',
+    !!injA && /ALARM: schema changed/.test(injA.text)
+    && AL.readAck(D1) === r1.id && AL.checkAndAck(D1, dboard) === null);
+
+  // DIRECTION 2 (flag first): the gate blocks (acks), then the note is SUPPRESSED from delivery and
+  // the cursor advances so it never re-delivers. Here the alarm is the only unread note, so nothing
+  // is injected at all — the peer got it via the block; a note delivery would be the double-show.
+  const blocked = AL.checkAndAck(D2, dboard);
+  const injB = Fa.injection(D2, drepo);
+  ok('de-dup, FLAG first: the gate blocks, then the note is SUPPRESSED (no double-show, nothing injected)',
+    !!blocked && AL.readAck(D2) === r1.id && injB === null);
+  ok('...and the suppressed alarm never re-delivers — the cursor advanced past it',
+    Fa.injection(D2, drepo) === null && AL.readFlag(dboard) !== null);
+
+  for (const s of [DR, D1, D2]) {
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-alarmack-${s}.json`)); } catch {}
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`)); } catch {}
+  }
+  fs.rmSync(drepo, { recursive: true, force: true });
+
+  for (const s of [RAISER, BUSY]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-alarmack-${s}.json`)); } catch {} }
+  fs.rmSync(arepo, { recursive: true, force: true });
+} catch (e) { ok('arc alarm section ran without throwing', false, e.message); }
+
 section('/arc-mode gate (fires ONLY when a delegate would spawn a session)');
 try {
   const HOOKP = path.join(SRC, 'arc-pretool-hook.js');
@@ -2539,6 +2663,33 @@ try {
     && PT.soleCommand('arc delegate x "y"; rm', 'delegate') === false
     && PT.soleCommand('arc note x --reply-to 1 "y"', 'note') === true
     && PT.soleCommand('cd z; arc note x --reply-to 1 "y"', 'note') === false);
+
+  // THE BARE-ARM GUARD (self-inflicted-deafness fix, 2026-07-18). A decorated `arc join` never
+  // creates a wakeable listener — the shell `&`/redirect makes the tracked process exit at once and
+  // orphans the real listener, while "listening" prints and lies (the #317 agent-behavior cause,
+  // lived this day). The PreToolUse hook is the ONLY layer that sees the shell decoration, so a
+  // LEADING `arc join` must be sole. It fires in ANY stance and needs no board read.
+  ok('a DECORATED arc join is DENIED — the exact self-arm form that went silently deaf',
+    gate('arc join code >/dev/null 2>&1 &').decision === 'deny'
+    && gate('arc join code &').decision === 'deny'
+    && gate('arc join audit | head -1').decision === 'deny'
+    && gate('arc join code; echo done').decision === 'deny'
+    && gate('arc join code', 'PowerShell').decision === null);   // PowerShell path judged too
+  ok('...the denial names the fix (malformed arm; arm bare via run_in_background)',
+    /malformed arm/i.test(gate('arc join code &').reason || '')
+    && /run_in_background/i.test(gate('arc join code >/dev/null 2>&1 &').sys || ''));
+  ok('a BARE arc join is never touched — the CORRECT arm must pass clean',
+    gate('arc join code').decision === null
+    && gate('arc join audit').decision === null
+    && gate('  arc join code  ').decision === null                // leading/trailing space ok
+    && gate('arc join code\n').decision === null                  // trailing newline is not decoration (audit's edge-FP)
+    && gate('\narc join code').decision === null);                // leading newline either
+  ok('...but an INTERIOR newline (a real second command) still DENIES — trim keeps the bypass shut',
+    gate('arc join code\nrm -rf x').decision === 'deny');
+  ok('a note that MENTIONS or DISCUSSES arc join is NOT denied (anchored at ^, zero false positive)',
+    gate('arc note audit "run EXACTLY: arc join code; NO pipe & NO redirect >x"').decision !== 'deny'
+    && gate('arc note code --reply-to 5 "the bug: arc join x | head is malformed"').decision !== 'deny'
+    && gate('arc delegate research "scout arc join failure modes; & pipes"').decision !== 'deny');
 
   // THE MERGE'S WHOLE POINT: one verb, two costs. Delegating to a LIVE peer is a note — free,
   // reversible, the commonest thing an agent does — and gating it would be pure noise. The gate

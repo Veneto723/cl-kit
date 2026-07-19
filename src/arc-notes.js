@@ -940,21 +940,42 @@ function injection(session, cwd) {
     // catches up in chronological order, batch by batch, and the tail is NEVER
     // consumed. (The old code ranked newest-first, capped, then marked ALL read — so
     // the oldest overflow was silently lost. That is the bug this fixes.)
-    const picked = [];
-    let used = 0;
+    // ALARM DE-DUP (design review #332, claim 6). The active alarm reaches a peer on TWO channels:
+    // this note AND the pretool flag-gate. Whichever fires first stamps a shared ack (keyed by the
+    // note's id — never a seq); the other is then suppressed, so no peer is shown the same alarm
+    // twice. Here, at the note channel: if the flag already blocked this session (ack == alarm id),
+    // CONSUME the alarm's note — advance the cursor past it so it never re-delivers — but do NOT show
+    // it again. If it has NOT been seen, show it AND stamp the ack, so the flag-gate won't block for
+    // it. Fail-open on any hiccup (a require/read failure just leaves the pre-review double-show).
+    let alarmId = null, alarmSeen = false;
+    try { const AL = require('./arc-alarm'); const f = AL.readFlag(board);
+      if (f) { alarmId = f.id; alarmSeen = AL.readAck(session) === f.id; } } catch { /* fail-open */ }
+
+    const picked = [];   // CONSUMED — the cursor advances over all of these (shown or suppressed)
+    const shown = [];    // actually surfaced to the peer
+    let used = 0, showAlarm = false;
     for (const n of u.notes) {
-      const row = rowFor(n);
-      if (picked.length && used + row.length > INJECT_MAX) break;     // always show ≥1
-      picked.push(n); used += row.length;
+      const suppress = !!alarmId && n.id === alarmId && alarmSeen;    // already seen via the flag-block
+      const row = suppress ? '' : rowFor(n);
+      if (shown.length && used + row.length > INJECT_MAX) break;      // cap by SHOWN content; always show ≥1
+      picked.push(n);
+      if (!suppress) { shown.push(n); used += row.length; if (n.id === alarmId) showAlarm = true; }
     }
+    const suppressed = picked.length - shown.length;
     const more = u.count - picked.length;
-    const newCursor = picked[picked.length - 1].seq;                  // last DELIVERED note
+    const newCursor = picked.length ? picked[picked.length - 1].seq : R.latestSeq(board);
+    if (showAlarm) { try { require('./arc-alarm').stampAck(session, alarmId); } catch { /* fail-open */ } }
+
+    // Everything consumed was a suppressed (already-seen) alarm note: advance past it and inject
+    // NOTHING — the peer already got this alarm via the flag-block, so a note delivery would be the
+    // exact double-show the ack exists to prevent.
+    if (!shown.length) { R.writeCursor(board, role, newCursor); return null; }
 
     // Display: float what MATTERS to the top of THIS batch — high priority first, then by
     // KIND (a blocker or a retraction must never sit under routine news), then oldest-first.
     // This only reorders what we're already showing; the cursor still advances by seq.
     const rank = (n) => R.KIND_RANK[n.kind || R.DEFAULT_KIND] ?? 5;
-    const display = [...picked].sort((a, b) =>
+    const display = [...shown].sort((a, b) =>
       (b.priority === 'high') - (a.priority === 'high') || rank(a) - rank(b) || a.seq - b.seq);
     spills.length = 0;   // the accounting pass above also called rowFor; collect spills from the SHOWN rows only
 
@@ -965,7 +986,7 @@ function injection(session, cwd) {
       : '';
 
     const text =
-      `[arc board] ${u.count} unread note(s) for "${role}" on the "${board.name}" board ` +
+      `[arc board] ${u.count - suppressed} unread note(s) for "${role}" on the "${board.name}" board ` +
       `(left by another arc session working in this folder):\n` +
       display.map(rowFor).join('\n') +
       (more > 0 ? `\n  …and ${more} more still unread — run \`arc notes\` to read the next batch.` : '') +
