@@ -1,0 +1,4 @@
+# build outputs (built from source with build.ps1 — nothing to install)
+arc-scope.exe
+*.pdb
+*.obj

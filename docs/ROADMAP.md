@@ -44,6 +44,29 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
+## 2. Board notes grow unbounded — a hard cap is the wrong tool; bound the *newborn's* catch-up · **SMALL** · research-analysed, not built
+
+**The human's question (2026-07-18):** do we need a hard cap on board-note count so the ledger stops growing forever, since old/legacy notes are meaningless? **Answer: don't cap — the problem is narrower than "every role," and a count-cap is unsafe.**
+
+**Measured (research, 2026-07-18):** the board (`.arc/peer/notes.jsonl`) is **334 notes / 760 KB**, append-only. `allNotes` (`arc-board.js:430`) parses the WHOLE file on every read and `injection` runs it every turn — so growth is a real but tiny per-turn parse cost (a slow leak, not a fire; 760 KB is a few ms).
+
+**The finding — it's a NEWBORN problem, not an existing-role one:**
+- **Existing roles are immune.** The cursor sits at the tip; `unreadFor` (`arc-board.js:550`) delivers only notes past it, and `markRead` advances it each turn. Old notes are **never re-read**.
+- **A newborn inherits the whole inbox.** A fresh claim has no cursor, so `unreadFor` matches every broadcast + every note ever addressed to its role from note #1 (`arc-notes.js:494-495`, verbatim: *"a fresh session inherits the whole inbox"*). It is paced — `injection` batches the catch-up by seq-prefix (`arc-notes.js:938/981`) — but a fresh role still burns early turns on history it may not need.
+
+**Why a hard cap (keep last N) is the wrong tool — three measured hazards:**
+1. **Breaks references.** **197 of 334** notes carry `replyTo`/`supersedes`/`refs` pointing at other notes by stable id; dropping by position dangles them and corrupts threads / `supersededMap`.
+2. **Drops unread notes.** An away role's cursor is old; its unread notes sit *below* the cap line — a count-cap silently deletes what it never saw, violating the board's core guarantee (`arc-board.js:493`: *"a missed one is the bug this design exists to prevent"*).
+3. **Fights the append-only / id-merge model** the board is built on.
+
+**The targeted fix (research's recommendation):** **seed a fresh claim's cursor to a recent window** (tip, or last-N / last-24h) so a newborn starts on *current* work instead of catching up from note #1. One line, touches no note, breaks no reference — it makes history stop mattering for a fresh role, which is exactly what the human asked for. **Only if the file ever genuinely bloats:** *cursor-safe GC* (drop a note only when every live role's cursor is past it **and** no surviving note references it by id) or *archive-rotate* to a side file `arc notes all` can still read — **never a blind count cap.**
+
+**Not claimed:** that 760 KB is a problem today — it is not. This is a slow leak plus a newborn-ergonomics cost, not urgent.
+
+**Owner of the next move:** `code`, if the human wants the newborn-cursor seed built. `research` is read-only on `src/`.
+
+---
+
 ## Parked elsewhere — pointers, not entries
 
 These are live threads owned by other chairs or blocked on a call. They are **not** roadmap items; recorded here only so this file is not mistaken for the whole picture.

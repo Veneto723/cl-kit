@@ -1564,6 +1564,97 @@ async function main() {
     process.stdout.write(`[arc alarm] ${r.message}\n`);
     process.exit(r.ok ? 0 : 1);
   }
+  // `arc feed [--stop|--status]` — the read-only operator status feed (127.0.0.1). Bare = ensure it
+  // is up and print the URL a widget reads; --status reports health; --stop takes it down. The feed
+  // also auto-starts with every session, so this is mainly for inspecting or controlling it by hand.
+  if (userArgs[0] === 'feed') {
+    const F = require('./arc-feed');
+    const sub = userArgs[1];
+    if (sub === '--stop' || sub === 'stop') {
+      const r = F.stopFeed();
+      process.stdout.write(`[arc feed] ${r.wasRunning ? 'stopped' : 'was not running'} (127.0.0.1:${r.port})\n`);
+      process.exit(0);
+    }
+    if (sub === '--status' || sub === 'status') {
+      F.feedStatus().then((s) => {
+        process.stdout.write(`[arc feed] ${s.healthy ? 'UP' : 'down'} at ${s.url}${s.pid ? ` (pid ${s.pid})` : ''}\n`);
+        process.exit(0);
+      });
+      return;
+    }
+    F.sweepOrphans();
+    F.ensureFeed().then((r) => {
+      process.stdout.write(`[arc feed] ${r.reused ? 'already running' : r.ok ? 'started' : 'FAILED'} — ${r.url}  (SSE ${r.url}/events · snapshot ${r.url}/status)\n`);
+      process.exit(r.ok ? 0 : 1);
+    });
+    return;
+  }
+  // `arc operator [--stop]` — the docked desktop widget (WPF via PowerShell, both built into Windows;
+  // the doctrine-clean "face" for the feed). Bare = ensure the feed is up, then launch one always-on-
+  // top window that polls /status. --stop closes any running widget. The widget is a plain viewer —
+  // read-only, loopback-only — so launching it is safe and never touches the board.
+  if (userArgs[0] === 'operator') {
+    const ps1 = path.join(__dirname, 'arc-operator.ps1');
+    if (userArgs[1] === '--stop' || userArgs[1] === 'stop') {
+      // Close every widget by matching its `-File …arc-operator.ps1` command line (not by pid).
+      const kill = "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -like '*-File*arc-operator.ps1*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }";
+      spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', kill], { timeout: 5000, windowsHide: true });
+      process.stdout.write('[arc operator] closed any running widget\n');
+      process.exit(0);
+    }
+    if (!fs.existsSync(ps1)) {
+      process.stdout.write(`[arc operator] widget script not found (${ps1}) — run install.ps1 to deploy it\n`);
+      process.exit(1);
+    }
+    const F = require('./arc-feed');
+    F.sweepOrphans();
+    F.ensureFeed().then((r) => {
+      // Detached, hidden-console STA PowerShell so the WPF window survives this process exiting.
+      try {
+        const child = spawn('powershell.exe',
+          ['-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1, '-Port', String(r.port || 8791)],
+          { detached: true, stdio: 'ignore', windowsHide: true });
+        child.unref();
+        process.stdout.write(`[arc operator] widget launched — reading ${r.url}  (drag by the header · ✕ closes · 'arc operator --stop')\n`);
+        process.exit(0);
+      } catch (e) {
+        process.stdout.write(`[arc operator] failed to launch: ${e && e.message}\n`);
+        process.exit(1);
+      }
+    });
+    return;
+  }
+  // `arc status "<text>"` — a session self-reports what it is working on; the operator feed surfaces
+  // it per-session (arc-scope's SESSIONS line: "code 18824 — <text>"). Stored in its OWN
+  // arc-status-<session>.json so it never races the runner's account-state writes. `--clear` (or an
+  // empty text) removes it. Machine-local, keyed by the session id the tools inherit (ARC_SESSION),
+  // so it targets THIS session's row and no other.
+  if (userArgs[0] === 'status') {
+    const rest = userArgs.slice(1);
+    // Key by the SESSION's inherited ARC_SESSION — NOT SESSION_ID, which is minted fresh for a
+    // non-respawn invocation (a subprocess like this one) so nested `arc`s don't collide. The feed
+    // reads arc-status-<ARC_SESSION>.json alongside arc-state-<ARC_SESSION>.json, so we must match it.
+    const sid = process.env.ARC_SESSION;
+    if (!sid) {
+      process.stdout.write('[arc status] no session (ARC_SESSION unset) — run this inside an arc session\n');
+      process.exit(1);
+    }
+    const statusPath = path.join(CACHE_DIR, `arc-status-${sid}.json`);
+    if (rest[0] === '--clear' || rest[0] === 'clear' || rest.join(' ').trim() === '') {
+      try { fs.unlinkSync(statusPath); } catch {}
+      process.stdout.write('[arc status] cleared\n');
+      process.exit(0);
+    }
+    const activity = rest.join(' ').trim().slice(0, 200);
+    try {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      const tmp = `${statusPath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ activity, at: Date.now() }));
+      fs.renameSync(tmp, statusPath);
+      process.stdout.write(`[arc status] ${activity}\n`);
+      process.exit(0);
+    } catch (e) { process.stdout.write(`[arc status] failed: ${e && e.message}\n`); process.exit(1); }
+  }
   // `arc delegate <role> [<packet>]` — THE one verb. "Get <role> on this." arc resolves whether
   // that peer is live, closed (revive it as itself) or new (staff it from your context), so the
   // agent never has to branch on data arc already holds.
@@ -1833,6 +1924,11 @@ async function main() {
     // Claudex: bring the translator sidecar up (reuse/spawn+wait) before Claude Code launches
     // into 127.0.0.1:<port>. A no-op for every other account type.
     await ensureClaudexProxy(account);
+
+    // OPERATOR FEED: bring up the read-only 127.0.0.1 status feed so a docked widget can see what
+    // every session is doing, across repos. Best-effort and NON-BLOCKING (fire-and-forget) — a
+    // coordination nicety must never delay or wedge a launch; sweep dead feed pidfiles first.
+    try { const F = require('./arc-feed'); F.sweepOrphans(); F.ensureFeed().catch(() => {}); } catch {}
 
     // Watch for conversation adoption whenever this session's OWN id is unknowable before launch,
     // and only until the first effort-restoring relaunch. Two ways that happens, not one: a picker

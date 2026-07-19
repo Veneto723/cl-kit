@@ -737,7 +737,7 @@ async function main() {
   let alarm = '';
   try {
     const cwd = sl && sl.workspace ? sl.workspace.current_dir : null;
-    if (cwd) alarm = require('./arc-alarm').badge(require('./arc-board').resolveBoard(cwd));
+    if (cwd) alarm = require('./arc-alarm').badge(require('./arc-board').resolveBoard(cwd), process.env.ARC_SESSION);
   } catch {}
 
   process.stdout.write(

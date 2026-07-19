@@ -131,9 +131,14 @@ function clear(cwd) {
 // its TTL — readFlag already drops those, so the status bar and the gate agree on "active"). The
 // caller styles and positions it; this just owns the flag's on-screen shape. A raised alarm is a
 // board-wide STATE, so it belongs in the persistent status bar, not only the one-time raise line.
-function badge(board) {
+function badge(board, session) {
   let f; try { f = readFlag(board); } catch { return ''; }
   if (!f) return '';
+  // DISSOLVE once THIS session has taken the alarm up — acked via a flag-block or a note-read. The
+  // badge means "an alarm you have NOT handled yet"; clearing it the moment you start handling it IS
+  // the "on it" signal (and the raiser, auto-acked, never sees its own). Others still see it until
+  // they engage. No session => show it (a role-less viewer in the folder should still see an alarm).
+  try { if (session && readAck(session) === f.id) return ''; } catch {}
   const body = String(f.body || '').replace(/\s+/g, ' ').trim().slice(0, 44);
   return `ALARM: ${body}`;
 }

@@ -26,6 +26,8 @@ Copy-Item (Join-Path $kit 'src\arc-focus.vbs') $scripts -Force
 # The birth template MUST land beside arc-invite.js — birthTemplate() resolves it via __dirname, so a
 # missing copy here is a launcher that opens no tab at all.
 Copy-Item (Join-Path $kit 'src\arc-birth.ps1') $scripts -Force
+# The operator widget (`arc operator`) — arc-runner spawns it via __dirname, so it must land here too.
+Copy-Item (Join-Path $kit 'src\arc-operator.ps1') $scripts -Force
 Copy-Item (Join-Path $kit 'src\icons\make-icons.ps1') (Join-Path $scripts 'icons') -Force
 Write-Host "  scripts -> $scripts"
 

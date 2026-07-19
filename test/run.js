@@ -1104,8 +1104,17 @@ try {
   const out = noRole.stdout + noRole.stderr;
   ok('`arc note` with no role is refused and points to `arc role`', noRole.status !== 0 && /arc role/.test(out) && !/arc:role/.test(out));
 
+  // `arc status "<text>"` self-reports activity into arc-status-<session>.json (read by the feed).
+  const stPath = path.join(CLAUDE, 'cache', `arc-status-${S}.json`);
+  const st1 = spawnSync(process.execPath, [runner, 'status', 'editing the widget'], { cwd: repo, env, encoding: 'utf8' });
+  ok('`arc status "<text>"` exits 0 and writes arc-status-<session>.json keyed by ARC_SESSION',
+    st1.status === 0 && fs.existsSync(stPath) && JSON.parse(fs.readFileSync(stPath, 'utf8')).activity === 'editing the widget');
+  const st2 = spawnSync(process.execPath, [runner, 'status', '--clear'], { cwd: repo, env, encoding: 'utf8' });
+  ok('`arc status --clear` removes the activity file', st2.status === 0 && !fs.existsSync(stPath));
+
   fs.rmSync(repo, { recursive: true, force: true });
   try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-role-${S}.json`)); } catch {}
+  try { fs.unlinkSync(stPath); } catch {}
 } catch (e) { ok('arc-runner board CLI works', false, e.message); }
 
 // ---- the bin shims: `arc` must be runnable BY THE AGENT ---------------------------
@@ -1128,6 +1137,14 @@ try {
     /Join-Path \$bin 'arc\.cmd'/.test(ps1));
   ok('install.ps1 ALSO writes an extensionless `arc` (bash does not do PATHEXT -> 127)',
     /Join-Path \$bin 'arc'\)/.test(ps1));
+
+  // `arc operator` spawns <scripts>/arc-operator.ps1 via __dirname — so install.ps1 MUST copy it
+  // there, or the deployed verb dies with "script not found" (the "src/ is not what runs" trap).
+  ok('install.ps1 copies arc-operator.ps1 to $scripts (else `arc operator` has nothing to launch)',
+    /Copy-Item \(Join-Path \$kit 'src\\arc-operator\.ps1'\) \$scripts/.test(ps1));
+  const runnerSrc = fs.readFileSync(path.join(SRC, 'arc-runner.js'), 'utf8');
+  ok('arc-runner launches the widget from __dirname/arc-operator.ps1 (deploy-relative, not src)',
+    /path\.join\(__dirname, 'arc-operator\.ps1'\)/.test(runnerSrc));
 
   // The shim's two content traps, both silent and both nasty:
   // Grab the whole assignment line: PowerShell escapes a quote as `" , so [^"]* would stop
@@ -2521,8 +2538,10 @@ try {
     && /ALARM: STOP/.test(RMa.allNotes(aboard).slice(-1)[0].body));
   ok('the raiser auto-acks — it does NOT block on its own alarm',
     AL.checkAndAck(RAISER, aboard) === null);
-  ok('badge() renders the ACTIVE alarm for the status bar (the raise line scrolls; the state persists)',
-    /^ALARM: STOP/.test(AL.badge(aboard)));
+  ok('badge() shows the ACTIVE alarm to a session that has NOT taken it up yet',
+    /^ALARM: STOP/.test(AL.badge(aboard, BUSY)));
+  ok('...and DISSOLVES for a session that HAS acked it — the raiser auto-acked, so its bar shows "on it"',
+    AL.badge(aboard, RAISER) === '' && /^ALARM: STOP/.test(AL.badge(aboard)));   // no-session viewer still sees it
 
   // BUSY peer: interrupted ONCE at its next tool call, then never again for the same alarm.
   const first = armgate('ls -la', BUSY);
@@ -2621,6 +2640,143 @@ try {
   for (const s of [RAISER, BUSY]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-alarmack-${s}.json`)); } catch {} }
   fs.rmSync(arepo, { recursive: true, force: true });
 } catch (e) { ok('arc alarm section ran without throwing', false, e.message); }
+
+// ── arc feed: the read-only operator status feed (127.0.0.1) ────────────────────────────────────
+// The human holds no role, so no board reader serves them. The feed answers "what are my agents
+// doing, across every repo?" — snapshot() is a pure function of on-disk state (live arc-state files
+// + the boards their cwds resolve to), so it is unit-tested here; the live SSE server is smoke-
+// tested separately. Genuine liveness (isHolder), not a bare pid, or it shows recycled-pid ghosts.
+section('arc feed (operator status snapshot + lifecycle)');
+try {
+  const F = require(path.join(SRC, 'arc-feed.js'));
+  const RMf = require(path.join(SRC, 'arc-board.js'));
+  const Ff = require(path.join(SRC, 'arc-notes.js'));
+
+  const frepo = fs.mkdtempSync(path.join(os.tmpdir(), 'feed-'));
+  spawnSync('git', ['init', '-q'], { cwd: frepo });
+  const fboard = RMf.resolveBoard(frepo); RMf.ensureBoard(fboard);
+  const CODE = 'feed-code-' + process.pid, AUD = 'feed-aud-' + process.pid;
+  for (const s of [CODE, AUD]) fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`),
+    JSON.stringify({ pid: process.pid, cwd: frepo, convId: 'fc1', account: 'sub' }));   // pid alive => live sessions
+  // v5 DETAIL fixtures: a self-reported activity (its OWN file) + a docs/ROADMAP.md to parse.
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-status-${CODE}.json`), JSON.stringify({ activity: 'editing the feed', at: Date.now() }));
+  fs.mkdirSync(path.join(frepo, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(frepo, 'docs', 'ROADMAP.md'),
+    '# roadmap\n\n## 1. First item — the gap here · **BIG** · picked up 2026-07-19\n\nBody. **Next move:** `code`.\n\n## 2. Second item — another gap · **SMALL**\n\nBody. **Owner of the next move:** `research`.\n\n## Parked elsewhere — pointers\n\n- not a numbered item.\n');
+  Ff.requestRole(CODE, 'code', frepo); Ff.requestRole(AUD, 'audit', frepo);
+  RMf.appendNote(fboard, { from: 'code', to: 'audit', kind: 'request', body: 'please verify X' });   // #1
+  RMf.appendNote(fboard, { from: 'code', to: 'audit', kind: 'request', body: 'and Y' });              // #2 (stays open)
+  RMf.appendNote(fboard, { from: 'audit', to: 'code', kind: 'result', body: 'DONE X', replyTo: 1 });  // #3 answers #1
+
+  const snap = F.snapshot();
+  const repo = (snap.repos || []).find((r) => r.root === fboard.root);
+  ok('snapshot lists the repo with its genuinely-live role-holders',
+    !!repo && repo.name === fboard.name && repo.roles.map((x) => x.role).sort().join(',') === 'audit,code');
+  ok('...board summary carries the note count + last-activity timestamp',
+    !!repo && repo.board.notes === 3 && !!repo.board.lastTs);
+  ok('...the WAITING graph has code→audit for the STILL-OPEN request (#2), not the answered one (#1)',
+    !!repo && repo.waiting.some((w) => w.from === 'code' && w.to === 'audit' && w.seq === 2)
+    && !repo.waiting.some((w) => w.seq === 1));
+  ok('...the COOPERATION graph has the reply edge audit→code (re #1)',
+    !!repo && repo.cooperation.some((c) => c.from === 'audit' && c.to === 'code' && c.reSeq === 1));
+  ok('...a live role carries its self-reported ACTIVITY (arc status → per-session working-on line)',
+    !!repo && (repo.roles.find((x) => x.role === 'code') || {}).activity === 'editing the feed');
+  ok('...each WAITING/COOPERATION edge carries the note TEXT (body) so a note is click-to-read',
+    !!repo && (repo.waiting.find((w) => w.seq === 2) || {}).text === 'and Y'
+    && (repo.cooperation.find((c) => c.reSeq === 1) || {}).text === 'DONE X');
+  ok('...the repo ROADMAP is parsed from docs/ROADMAP.md — numbered items only, with owner + open/prog state',
+    !!repo && repo.roadmap.length === 2
+    && repo.roadmap[0].title === 'First item' && repo.roadmap[0].owner === 'code' && repo.roadmap[0].state === 'prog'
+    && repo.roadmap[1].title === 'Second item' && repo.roadmap[1].owner === 'research' && repo.roadmap[1].state === 'open');
+  ok('a DEAD session is NOT shown — liveness is genuine, not a stale arc-state file',
+    (() => { const D = 'feed-dead-' + process.pid;
+      fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${D}.json`), JSON.stringify({ pid: 999999, cwd: frepo }));
+      const r2 = (F.snapshot().repos || []).find((r) => r.root === fboard.root);
+      try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${D}.json`)); } catch {}
+      return !!r2 && r2.sessionCount === 2; })());   // pid 999999 is odd => structurally dead on Windows
+
+  // LIFECYCLE (sync-testable): sweepOrphans drops a DEAD feed pidfile, keeps a live one.
+  const fp = (p) => path.join(CLAUDE, 'cache', `arc-feed-${p}.json`);
+  fs.writeFileSync(fp(18990), JSON.stringify({ pid: 999999, port: 18990 }));
+  fs.writeFileSync(fp(18991), JSON.stringify({ pid: process.pid, port: 18991 }));
+  const swept = F.sweepOrphans();
+  ok('sweepOrphans drops a DEAD feed pidfile and keeps a live one',
+    swept >= 1 && !fs.existsSync(fp(18990)) && fs.existsSync(fp(18991)));
+  try { fs.unlinkSync(fp(18991)); } catch {}
+
+  // THE HOST GUARD (audit #345) — the DNS-rebinding allowlist as a PURE function, so the security
+  // logic is LOCKED in the suite (not only smoke-tested). Every angle audit probed on the wire.
+  ok('hostAllowed accepts ONLY loopback; rejects rebinding + suffix/prefix smuggling (audit #345)',
+    F.hostAllowed('127.0.0.1:8791') && F.hostAllowed('localhost:8791') && F.hostAllowed('[::1]:8791')
+    && F.hostAllowed('127.0.0.1') && F.hostAllowed('LOCALHOST:8791')
+    && !F.hostAllowed('evil.example.com') && !F.hostAllowed('evil.example.com:8791')
+    && !F.hostAllowed('127.0.0.1.evil.com') && !F.hostAllowed('localhost.evil.com')
+    && !F.hostAllowed('127.0.0.1:8791.evil') && !F.hostAllowed('[::ffff:127.0.0.1]') && !F.hostAllowed(''));
+  // A running detached feed never reloads its source, so a deployed fix must SELF-ACTIVATE — the
+  // only lever is VERSION (ensureFeed restarts a feed whose /healthz version is older). Guard the
+  // discipline: this fix must have bumped it past the original 1 (audit #345).
+  ok('the feed VERSION is bumped past 1 — a deployed fix can tell a running feed its code is stale',
+    F.VERSION >= 2);
+
+  // THE BUILT-IN DASHBOARD (so the feed is VIEWABLE, not only JSON): a pure function of the snapshot,
+  // self-contained (no external assets — CSP/doctrine-clean), embeds the data then live-updates via SSE.
+  const dash = F.dashboardHtml({ host: 'TESTBOX', at: Date.now(), version: F.VERSION,
+    repos: [{ root: 'e:\\demo', name: 'demo', roles: [{ role: 'code', pid: 111 }], sessionCount: 1,
+      board: { notes: 5, lastTs: null, unread: {} },
+      waiting: [{ from: 'code', to: 'audit', seq: 9, id: 'x', ts: new Date().toISOString(), seen: false }],
+      cooperation: [{ from: 'audit', to: 'code', seq: 10, reSeq: 8 }] }] });
+  ok('dashboardHtml: self-contained page — SSR cards (renders with NO JS) + embedded snapshot + SSE wire',
+    /arc . operator/.test(dash) && /<!doctype html>/i.test(dash)
+    && dash.indexOf("EventSource('/events')") !== -1
+    && dash.indexOf('<h2>demo</h2>') !== -1                               // SSR: the card is IN the HTML, no JS needed
+    && dash.indexOf('class="edge unseen"') !== -1                        // SSR: the unseen waiting edge rendered
+    && /"role":"code"/.test(dash)                                        // embedded snapshot drives live JS updates
+    && dash.indexOf('__ARC_') === -1                                     // every placeholder replaced
+    && !/https?:\/\//.test(dash.replace(/http:\/\/127\.0\.0\.1/g, '')));  // no EXTERNAL asset URLs (CSP-clean)
+
+  // XSS LOCK (audit #352): the escaping IS the security boundary of the served `/` HTML surface.
+  // Adversarial board data through the REAL exported renderer must never reach the DOM as markup nor
+  // break out of the embedded <script>. Locks it so a future esc()/E() refactor or a new field can't
+  // silently reopen XSS — the structural test above checks shape; this checks the escaping.
+  const evil = F.dashboardHtml({ host: '<img src=x onerror=alert(1)>', at: Date.now(), version: F.VERSION,
+    repos: [{ root: 'C:/repo/<svg/onload=alert(2)>', name: '</script><script>alert(3)</script>',
+      roles: [{ role: '<img src=x onerror=alert(4)>', pid: 111 }], sessionCount: 1,
+      board: { notes: 1, lastTs: null, unread: {} },
+      waiting: [{ from: 'a', to: '"><svg/onload=alert(5)>', seq: 1, id: 'x', ts: new Date().toISOString(), seen: false }],
+      cooperation: [] }] });
+  ok('dashboardHtml NEUTRALIZES adversarial role/path/to/host — no XSS reaches the DOM (audit #352 probe)',
+    !/<img[^>]*onerror/i.test(evil) && !/<svg[^>]*onload/i.test(evil)      // no live event-handler tags survive
+    && evil.indexOf('</script><script>alert(3)') === -1                    // the embedded-JSON </script> breakout is dead
+    && (evil.match(/<script/gi) || []).length === 1                        // exactly ONE <script — the shell's own
+    && /&lt;img src=x onerror=alert\(4\)&gt;/.test(evil));                 // the role rendered as ESCAPED text
+
+  for (const s of [CODE, AUD]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`)); } catch {} }
+  try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-status-${CODE}.json`)); } catch {}
+  fs.rmSync(frepo, { recursive: true, force: true });
+} catch (e) { ok('arc feed section ran without throwing', false, e.message); }
+
+// ── every recurring PowerShell shell-out is windowless (audit #348) ─────────────────────────────
+// A detached, CONSOLE-LESS process (the operator feed) makes a NEW console window for a child
+// powershell UNLESS windowsHide is set — a pop-up that steals focus every ~30s cache-miss. procStarts
+// and treeOf were the two recurring PS spawns missing it; the feed (new, runs forever) turned that
+// latent gap into a continuous flash. Lint the whole class so it cannot silently come back.
+section('powershell shell-outs are windowless (audit #348 — no focus-stealing pop-up)');
+try {
+  const bad = [];
+  for (const f of fs.readdirSync(SRC)) {
+    if (!f.endsWith('.js') || f === 'arc-invite.js') continue;   // arc-invite's peer-birth window is intentional
+    const src = fs.readFileSync(path.join(SRC, f), 'utf8');
+    const rx = /spawn(?:Sync)?\(\s*['"]powershell/g;
+    let m;
+    while ((m = rx.exec(src))) {
+      const call = src.slice(m.index, m.index + 1000);
+      if (/stdio\s*:[^}]*inherit/.test(call)) continue;   // console-ATTACHED (arc update's install.ps1) — user-invoked, no window class
+      if (!/windowsHide\s*:\s*true/.test(call)) bad.push(f + '@' + m.index);
+    }
+  }
+  ok('every recurring PowerShell spawn in src/ sets windowsHide (no window from a console-less parent)',
+    bad.length === 0, bad.join(', '));
+} catch (e) { ok('windowsHide lint ran', false, e.message); }
 
 section('/arc-mode gate (fires ONLY when a delegate would spawn a session)');
 try {

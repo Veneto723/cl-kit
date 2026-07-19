@@ -643,7 +643,10 @@ function procStarts(pids, opts) {
     try {
       r = spawnSync('powershell.exe', ['-NoProfile', '-Command',
         `Get-Process -Id ${need.join(',')} -ErrorAction SilentlyContinue | %{ "$($_.Id) $($_.StartTime.ToFileTimeUtc())" }; "${PROBE_OK}"`],
-      { encoding: 'utf8', timeout: 5000 });
+      // windowsHide: a CONSOLE-LESS parent (the detached feed) otherwise makes a NEW console window
+      // for this child every cache-miss — a focus-stealing pop-up (audit #348). Every recurring PS
+      // shell-out must set it; only arc-invite's peer birth window is intentional.
+      { encoding: 'utf8', timeout: 5000, windowsHide: true });
     } catch { return null; }
     if (!r || r.error) return null;                        // could not spawn/timed out — cannot ask
     const out = String(r.stdout || '');
@@ -918,7 +921,7 @@ function treeOf(pid) {
     const q = spawnSync('powershell.exe', ['-NoProfile', '-Command',
       `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if($p){ "P:"+$p.ParentProcessId };` +
       `Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}" | ForEach-Object { "C:"+$_.ProcessId }`],
-      { encoding: 'utf8', timeout: 8000 });
+      { encoding: 'utf8', timeout: 8000, windowsHide: true });   // no pop-up window from a console-less parent (audit #348)
     for (const line of String(q.stdout || '').split(/\r?\n/)) {
       const m = /^([PC]):(\d+)$/.exec(line.trim());
       if (!m) continue;

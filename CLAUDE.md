@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Two constraints, both deliberate and each reversed-into once — do not re-litigate:
 - **Windows only** (`package.json` pins `os: win32`). Don't re-add cross-platform code.
-- **Self-contained** — `src/` is pure Node built-ins (no npm deps at all); the `mcp/` server may carry in-process npm deps (it has its own `package.json`); no standalone third-party apps and no global system hooks.
+- **Self-contained** — `src/` is pure Node built-ins (no npm deps at all); the `mcp/` server may carry in-process npm deps (it has its own `package.json`); the `scope/` companion (`arc-scope`, the desktop GUI) is a **first-party** WPF app in C#, built by the in-box Windows compiler with zero third-party runtime; no standalone **third-party** apps and no global system hooks.
 
 ## Commands
 
