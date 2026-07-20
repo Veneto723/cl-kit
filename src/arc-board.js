@@ -10,7 +10,7 @@
 // The board follows the session's CURRENT cwd, which Claude Code reports per prompt
 // and which can DRIFT. Moving around inside a repo is harmless (we walk up to the
 // git root), but `cd`-ing into a DIFFERENT repo genuinely changes boards — the role
-// claimed in the old board stops applying, and `arc:role` will say you have none.
+// claimed in the old board stops applying, and `/arc-role` will say you have none.
 // That is intended ("you moved flats"), but it is surprising, so: documented.
 //
 // Design notes (each one earned; see docs/research/agent-handoff/SUMMARY.md):
@@ -83,21 +83,21 @@ const PLAN_DIR = path.join('.arc', 'peer');
 // Newest first. A machine that skipped a hop (home still on `.plan`) migrates straight here.
 const LEGACY_DIRS = ['.peer', '.plan'];
 const NOTES = 'notes.jsonl';
+// The self-ignore sits at .arc/.gitignore and swallows the WHOLE .arc — peer/ AND roles/.
+// The operator's ruling (2026-07-17): everything under .arc is machine state and travels by
+// `arc export` / `arc import`, never by git. Charters included — that half of the old split
+// ("a role's duty is a project fact and commits") was overruled. One file, one level up,
+// same trick: it ignores itself too, so the project's own .gitignore never needs to know
+// arc exists. (The former peer/.gitattributes `merge=union` went with it: nothing under
+// .arc passes through git now, and the union job moved into `arc import`'s ledger merge —
+// which git's union never did soundly anyway; see the id-less-prefix note in mergeLedgers.)
 const GITIGNORE_BODY =
-  '# The board: cross-session sticky notes. Coordination scratch, not a project\n' +
-  '# artifact — this ignores the whole .arc/peer/ area (including this file), so\n' +
-  "# the project's own .gitignore never needs to know it exists. Its sibling\n" +
-  '# .arc/roles/ is NOT ignored: a role\'s duty is a project fact and commits.\n' +
+  '# arc machine state: the board (peer/), the role charters (roles/), claims, cursors.\n' +
+  '# None of it is a project artifact — it travels between machines by `arc export` /\n' +
+  '# `arc import`, never by git (operator ruling, 2026-07-17). This file ignores the\n' +
+  '# whole .arc including itself, so the project\'s own .gitignore never needs to know\n' +
+  '# arc exists.\n' +
   '*\n';
-// Governs notes.jsonl if the board is ever shared (git's default merge corrupts an append-only
-// ledger by writing conflict markers into it). Lives beside the ledger so a board carries its own
-// merge rule wherever it is cloned — no repo-root file to remember, nothing to configure.
-const GITATTRIBUTES_BODY =
-  '# The ledger is APPEND-ONLY: every line is a whole note and no line is ever edited.\n' +
-  '# git\'s default merge would write <<<<<<< markers INTO it and the board would stop\n' +
-  '# parsing. `union` keeps both sides\' lines instead. Merge-safety also needs notes to\n' +
-  '# be referenced by `id`, never by line position — see the design note in arc-board.js.\n' +
-  'notes.jsonl merge=union\n';
 
 // ---- board resolution ---------------------------------------------------------
 // Canonicalise so E:\WhalePhone, e:\whalephone and a junction all name one board.
@@ -154,16 +154,20 @@ function ensureBoard(board) {
     catch { /* someone raced us, or it is locked — keep using the legacy dir, still correct */ }
   }
   fs.mkdirSync(board.planDir, { recursive: true });
-  const gi = path.join(board.planDir, '.gitignore');
-  if (!fs.existsSync(gi)) fs.writeFileSync(gi, GITIGNORE_BODY);
-  // The board declares its OWN merge, next to the file it governs — the same self-contained move as
-  // the .gitignore above, and it costs nothing while the board stays ignored. It matters the moment
-  // anyone shares one: git's DEFAULT merge on an append-only ledger writes conflict markers straight
-  // INTO it (proven with two clones — the board stops parsing). `union` is built in, needs no
-  // config on either machine, and keeps both sides' lines. It is only half of merge-safety; the
-  // other half is that nothing references a note by position. See `id` and `ord`.
-  const ga = path.join(board.planDir, '.gitattributes');
-  if (!fs.existsSync(ga)) fs.writeFileSync(ga, GITATTRIBUTES_BODY);
+  if (path.basename(path.dirname(board.planDir)) === '.arc') {
+    // The self-ignore covers the WHOLE .arc from one level up (see GITIGNORE_BODY), and the
+    // old per-dir pair inside peer/ is retired: the .gitignore is redundant under the parent
+    // rule, and the .gitattributes union merge is moot — nothing under .arc meets git now.
+    // Unlinking every call is a no-op after the first (ENOENT); this IS the migration.
+    const gi = path.join(path.dirname(board.planDir), '.gitignore');
+    if (!fs.existsSync(gi)) fs.writeFileSync(gi, GITIGNORE_BODY);
+    for (const f of ['.gitignore', '.gitattributes']) { try { fs.unlinkSync(path.join(board.planDir, f)); } catch {} }
+  } else {
+    // A legacy planDir (root-level .peer/.plan — the rename above raced or is locked): there is
+    // no .arc parent to hold the rule, so the in-dir self-ignore stays until the migration lands.
+    const gi = path.join(board.planDir, '.gitignore');
+    if (!fs.existsSync(gi)) fs.writeFileSync(gi, GITIGNORE_BODY);
+  }
   return board;
 }
 
@@ -594,7 +598,13 @@ let pidStartMemo = null;                 // per-process memo, so one hook run pa
 
 // pid -> start time (epoch ms), null if no such process. Returns null ENTIRELY if the OS cannot
 // be asked — the caller must then FAIL OPEN, never invent a verdict.
-function procStarts(pids) {
+// opts.fresh — re-probe the asked pids even when their cache entries are warm. The warm cache is
+// itself one of isHolder's two fail-open windows (a dead predecessor's start served for ≤30s), so
+// a caller for whom a false "live" is expensive (the delegate path) passes fresh to bypass exactly
+// the thing being doubted. The fresh answer still writes through to the memo + disk cache, so
+// every later check in the same flow agrees with it.
+function procStarts(pids, opts) {
+  const fresh = !!(opts && opts.fresh);
   const want = [...new Set(pids.map(Number).filter(Boolean))];
   if (!want.length) return {};
   if (!pidStartMemo) {
@@ -602,6 +612,7 @@ function procStarts(pids) {
   }
   const now = Date.now();
   const need = want.filter((p) => {
+    if (fresh) return true;
     const e = pidStartMemo[p];
     return !e || typeof e.at !== 'number' || now - e.at > PIDSTART_TTL;
   });
@@ -632,7 +643,10 @@ function procStarts(pids) {
     try {
       r = spawnSync('powershell.exe', ['-NoProfile', '-Command',
         `Get-Process -Id ${need.join(',')} -ErrorAction SilentlyContinue | %{ "$($_.Id) $($_.StartTime.ToFileTimeUtc())" }; "${PROBE_OK}"`],
-      { encoding: 'utf8', timeout: 5000 });
+      // windowsHide: a CONSOLE-LESS parent (the detached feed) otherwise makes a NEW console window
+      // for this child every cache-miss — a focus-stealing pop-up (audit #348). Every recurring PS
+      // shell-out must set it; only arc-invite's peer birth window is intentional.
+      { encoding: 'utf8', timeout: 5000, windowsHide: true });
     } catch { return null; }
     if (!r || r.error) return null;                        // could not spawn/timed out — cannot ask
     const out = String(r.stdout || '');
@@ -681,8 +695,10 @@ function isHolder(claim, starts) {
   // direction). a0c93bb closed the COLD-cache door (a protected pid probes to null → vacant); this
   // warm-cache door is left open on purpose — Windows does not recycle a pid onto a chosen number
   // within 30s, so the probability is low and the outcome transient. If pid-reuse ever gets faster
-  // or PIDSTART_TTL grows, this window grows with it — re-probe for an isAlive-but-cache-fresh pid
-  // in the impostor path if that ever changes.
+  // or PIDSTART_TTL grows, this window grows with it. The DELEGATE path — where a false "live"
+  // costs the most (a packet posted to a dead chair, reported as handled) — already closes it:
+  // requestDelegate passes procStarts(..., {fresh: true}) results in as `starts`. Do the same
+  // elsewhere if the window ever matters on another path.
   return claim.at >= t - CLAIM_SKEW_MS;
 }
 
@@ -692,7 +708,7 @@ function roleClaim(board, role) {
 }
 
 // Returns {ok:true} if claimed, or {ok:false, holder} if a LIVE *other* session holds it.
-// IDENTITY IS THE SESSION, NOT THE PID: `arc:restart` re-execs arc-runner with a NEW pid
+// IDENTITY IS THE SESSION, NOT THE PID: `/arc-restart` re-execs arc-runner with a NEW pid
 // but the SAME ARC_SESSION, and must be able to reclaim its own role. The pid is only
 // a liveness probe. (Fall back to pid comparison for claims written without a session.)
 // The check and the write happen UNDER A LOCK: without it, two sessions claiming the same
@@ -805,10 +821,26 @@ function spawnsOf(board, conv) {
   return out;
 }
 
+// A ROLE MOVE MUST NOT BURN THE REVIVE POINTER. This used to unlink the claim outright — the
+// same mistake closePeer already fixed (see :859) surviving in the MOVE path: a session
+// switching roles deleted its OLD chair's claim, and with it the convId that made the old role
+// revivable. Fired in production 2026-07-18: audit's session was mis-adopted into 'research'
+// (the restart/sweeper race — ROADMAP) and the move DELETED claim-audit, so the next
+// `arc delegate audit` silently birthed a stranger in the chair's name. Tombstone like
+// closePeer does: keep the convId, drop the pid; unlink only a claim with no conversation to
+// point at. Under the same role lock claimRole holds, and pid-checked INSIDE it — a concurrent
+// revive that re-claimed the chair must not have its live claim clobbered by our tombstone.
 function releaseRole(board, role, pid) {
-  for (const p of [claimPath(board, role), legacyClaimPath(board, role)]) {
-    try { if (JSON.parse(fs.readFileSync(p, 'utf8')).pid === pid) fs.unlinkSync(p); } catch {}
-  }
+  return withLock(board, `role-${role}`, () => {
+    for (const p of [claimPath(board, role), legacyClaimPath(board, role)]) {
+      try {
+        const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (c.pid !== pid) continue;               // not ours (or already re-claimed) — leave it
+        if (c.convId) atomicWriteJson(p, { role: c.role || role, sessionId: c.sessionId || null, convId: c.convId, at: Date.now() });
+        else fs.unlinkSync(p);
+      } catch {}
+    }
+  });
 }
 
 // ---- CLOSING A PEER: kill the TREE, in the only order that works ----------------------------
@@ -889,7 +921,7 @@ function treeOf(pid) {
     const q = spawnSync('powershell.exe', ['-NoProfile', '-Command',
       `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if($p){ "P:"+$p.ParentProcessId };` +
       `Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}" | ForEach-Object { "C:"+$_.ProcessId }`],
-      { encoding: 'utf8', timeout: 8000 });
+      { encoding: 'utf8', timeout: 8000, windowsHide: true });   // no pop-up window from a console-less parent (audit #348)
     for (const line of String(q.stdout || '').split(/\r?\n/)) {
       const m = /^([PC]):(\d+)$/.exec(line.trim());
       if (!m) continue;
@@ -907,7 +939,7 @@ module.exports = {
   KINDS, KIND_RANK, DEFAULT_KIND, normalizeKind, supersededMap, openRequests, repliesTo, seenBy, requestStatus,
   readCursor, readCursorMap, writeCursor, unreadFor, markRead, stampSeen, readSeen,
   boardOrigin, noteOrigin, noteKey, refKey, resolveRef, refSeq, legacyId,
-  isAlive, isHolder, procStarts, roleClaim, claimRole, releaseRole, liveRoles, vacantClaimForRole,
+  isAlive, isHolder, procStarts, roleClaim, readClaimFile, claimRole, releaseRole, liveRoles, vacantClaimForRole,
   atomicWriteJson, withLock, vacantClaimForConv,
   recordBirth, readBirth, clearBirth, spawnsOf, closePeer, treeOf,
 };

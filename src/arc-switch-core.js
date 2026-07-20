@@ -1,10 +1,10 @@
 // arc-switch-core: the shared validate + drop-trigger logic for switching/
 // restarting an arc session. Entry point:
-//   - arc-switch-hook.js  (a UserPromptSubmit hook catching the zero-token arc:
-//                          sentinels — classifier-immune, works even when the
-//                          account is rate-limited)
-// (The old arc-signal.js / /switch / /restart slash-command path was removed; the
-// arc: hook is now the single way in.)
+//   - arc-switch-hook.js  (a UserPromptSubmit hook catching the zero-token
+//                          /arc-<verb> slash commands — classifier-immune,
+//                          works even when the account is rate-limited)
+// (The old arc-signal.js / /switch / /restart slash-command path was removed;
+// the UserPromptSubmit hook is now the single way in.)
 //
 // Keeping the logic in one module means there's one definition of what a valid
 // switch is and where the trigger file goes.
@@ -54,7 +54,7 @@ function liveSessionsOn(accountId) {
 }
 
 // ---- usage peek + shared launch-account decision ---------------------------
-// These back BOTH the launch-time auto-select (arc-runner) and the `arc:peek`
+// These back BOTH the launch-time auto-select (arc-runner) and the `/arc-peek`
 // readout, so the "would launch on X" line always matches what actually happens.
 
 function readUsageCache() {
@@ -62,7 +62,40 @@ function readUsageCache() {
   catch { return null; }
 }
 
-// arc:peek is an explicit "show me current usage" — it must NOT show stale data.
+// Roadmap #10: the usage payload's limits[] carries what the top-line 5h/7d numbers
+// cannot — PER-MODEL weeklies and a server-authoritative severity. Field map measured
+// live (research board #257, CORRECTED by #264): per-model data lives ONLY in
+// limits[] entries with kind:"weekly_scoped" + scope.model.display_name — the
+// top-level seven_day_opus/seven_day_sonnet fields are NULL on subscription accounts,
+// and `percent` is a whole-number percent. Defensive throughout: absent or malformed
+// limits[] returns [] and the caller renders exactly as before this existed.
+function scopedLimits(data) {
+  const out = [];
+  const ls = data && Array.isArray(data.limits) ? data.limits : [];
+  for (const l of ls) {
+    if (!l || typeof l !== 'object' || l.kind !== 'weekly_scoped') continue;
+    const model = l.scope && l.scope.model && l.scope.model.display_name;
+    if (!model) continue;
+    out.push({
+      label: `7d · ${model}`,
+      percent: typeof l.percent === 'number' ? l.percent : null,
+      severity: typeof l.severity === 'string' ? l.severity : null,
+      resets_at: l.resets_at || null,
+    });
+  }
+  return out;
+}
+// Severity → glyph, display only. Escalated values were never OBSERVED (research #264
+// inferred the escalation from the field's presence), so nothing here wires color
+// semantics to guesses: any non-normal value renders ⚠, with ⛔ reserved for the one
+// name whose meaning is unambiguous. Unknown strings are treated as warnings — a
+// server saying anything other than "normal" deserves a glance, whatever the word.
+function sevGlyph(s) {
+  if (!s || s === 'normal') return '';
+  return s === 'critical' ? ' ⛔' : ' ⚠';
+}
+
+// /arc-peek is an explicit "show me current usage" — it must NOT show stale data.
 // Unlike the statusline (which paints instantly and refreshes DETACHED for next
 // time), peek SYNCHRONOUSLY refreshes the cache first (subscription + gateways),
 // bounded so it never hangs, and skips the fetch when the cache is already fresh.
@@ -87,12 +120,12 @@ function refreshUsageForPeek(cfg) {
     const mon = path.join(__dirname, 'usage-monitor.js');
     // --force bypasses the per-slice TTLs: a 3-min-old gateway value is "fresh" to
     // the normal refresh (5-min TTL), but peek must show CURRENT data.
-    execFileSync(process.execPath, [mon, '--refresh', '--with-pool', '--force'], { timeout: 10_000, stdio: 'ignore', windowsHide: true });
+    execFileSync(process.execPath, [mon, '--refresh', '--force'], { timeout: 10_000, stdio: 'ignore', windowsHide: true });
   } catch { /* refresh timed out / failed — fall back to cached data */ }
 }
 
 // A bounded, FORCED refresh of every account's usage. Called the moment the account
-// changes (arc:switch / the picker), when the caches still hold the old account's
+// changes (/arc-switch / the picker), when the caches still hold the old account's
 // numbers. A switch already kills and relaunches claude — a visible pause — so
 // spending ~a second here buys a first statusline render that is both correctly
 // attributed and fresh, instead of the new account's label over the old one's data.
@@ -101,7 +134,7 @@ function refreshUsageForPeek(cfg) {
 function refreshUsageNow(timeoutMs) {
   try {
     const mon = path.join(__dirname, 'usage-monitor.js');
-    execFileSync(process.execPath, [mon, '--refresh', '--with-pool', '--force'],
+    execFileSync(process.execPath, [mon, '--refresh', '--force'],
       { timeout: timeoutMs || 6_000, stdio: 'ignore', windowsHide: true });
     return true;
   } catch { return false; } // slow network must never wedge a switch; the statusline catches up
@@ -161,12 +194,8 @@ function accountHeadroom(acc, cache, th, cfg) {
     if (fh >= SW_S || sd >= SW_W) return -1;             // over a switch threshold = exhausted
     return 100 - fh;                                      // 5h is the binding short-term limit
   }
-  if (acc.type === 'api') {
-    if (!cache.pool || !Array.isArray(cache.pool.rows) || !cache.pool.rows.length) return null;
-    const active = cache.pool.rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited' && r.fh != null);
-    if (!active.length) return -1;                        // every pool account in cooldown = exhausted
-    return 100 - Math.min(...active.map((r) => r.fh));    // headroom of the least-loaded pool account
-  }
+  // api (gateway) accounts carry no rate-limit metrics — null = "cannot judge",
+  // which chooseLaunchAccount already ranks as assumed-available (optimistic by design).
   return null;
 }
 
@@ -187,24 +216,15 @@ function chooseLaunchAccount(cfg, cache) {
   const oauthRoom = oauthJudged.filter((x) => x.s >= 0).sort((x, y) => y.s - x.s);
   if (oauthRoom.length) return { id: oauthRoom[0].a.id, reason: 'subscription has headroom' };
 
-  // Be OPTIMISTIC about gateways: once every subscription is exhausted, prefer a gateway
-  // — and prefer it even when its OWN metrics look busy. A gateway's limit is soft (pool
-  // accounts rotate, cooldowns lift, a pay-per-use endpoint may still serve) where a
-  // subscription at 100% is a hard wall. So ANY gateway beats falling back onto the
-  // exhausted sub; among gateways rank by measured headroom (best) > no-metrics/assumed
-  // available > measured-busy. Only a config with NO gateway settles for the least-bad sub.
-  const apiScored = cfg.accounts.filter((a) => a.type === 'api').map((a) => ({ a, s: score(a) }));
-  if (apiScored.length) {
-    const rank = (s) => (s == null ? -0.5 : s);   // assumed-available sits above measured-busy (-1)
-    apiScored.sort((x, y) => rank(y.s) - rank(x.s));
-    const best = apiScored[0];
+  // Be OPTIMISTIC about gateways: once every subscription is exhausted, prefer a gateway.
+  // A gateway's limit is soft where a subscription at 100% is a hard wall — and a gateway
+  // carries no rate-limit metrics (headroom is always null = cannot judge), so it is
+  // ASSUMED available. Multiple gateways tie: config order picks. Only a config with NO
+  // gateway settles for the least-bad sub.
+  const api = cfg.accounts.filter((a) => a.type === 'api');
+  if (api.length) {
     const via = oauthJudged.length ? `${oauthJudged[0].a.label} exhausted → ` : '';
-    // NB: test null FIRST — `null >= 0` is true in JS (null coerces to 0), which would
-    // mislabel a no-metrics gateway as "most available".
-    const how = best.s == null ? 'gateway (assumed available)'
-      : best.s >= 0 ? 'most available gateway'
-        : 'gateway (optimistic — metrics say busy)';
-    return { id: best.a.id, reason: `${via}${how}` };
+    return { id: api[0].id, reason: `${via}gateway (assumed available)` };
   }
 
   // No gateway configured — least-bad among the (exhausted) subscriptions.
@@ -232,7 +252,7 @@ function ageStr(ms) {
   return m < 90 ? `${m}m ago` : `${Math.round(m / 60)}h ago`;
 }
 
-// Standalone, ZERO-TOKEN usage readout of ALL accounts (subscription + pool),
+// Standalone, ZERO-TOKEN usage readout of ALL accounts (subscription + gateway),
 // current account marked, plus what a fresh launch would auto-select. Read-only —
 // the hook renders this directly (no trigger, no relaunch). Returns { ok, message }.
 function buildPeek(session) {
@@ -247,7 +267,11 @@ function buildPeek(session) {
   if (!cache) lines.push('  (no usage cache yet — the statusline populates it every few minutes; try again shortly)');
 
   for (const a of cfg.accounts) {
-    const mark = a.id === current ? '   ← current' : '';
+    // The CURRENT account is marked by COLOR, not an arrow suffix (human's call,
+    // 2026-07-18): bold cyan — arc's neutral-highlight — on the account's lines.
+    // Applied PER LINE (the host re-emits display rows across soft-wraps and drops
+    // color mid-wrap — same reason clBlock paints per line). Everyone else plain.
+    const tint = (s) => (a.id === current ? `\x1b[1;96m${s}\x1b[0m` : s);
     const label = a.label || a.id;
     if (a.type === 'oauth') {
       const slice = oauthUsageSlice(a, cache, cfg); // THIS account's numbers, not whoever refreshed last
@@ -256,9 +280,18 @@ function buildPeek(session) {
         const sd = d.seven_day || {};                    // partial cache may lack seven_day
         const reset = fmtReset(d.five_hour.resets_at) || fmtReset(sd.resets_at);
         const rp = reset ? `  (resets ${reset})` : '';
-        lines.push(`  ${label} [subscription]   5h ${pct(d.five_hour.utilization).trim()}%  ·  7d ${pct(sd.utilization).trim()}%${rp}   ${ageStr(slice.fetchedAt)}${mark}`);
+        lines.push(tint(`  ${label} [sub]   5h ${pct(d.five_hour.utilization).trim()}%  ·  7d ${pct(sd.utilization).trim()}%${rp}   ${ageStr(slice.fetchedAt)}`));
+        // Roadmap #10 enrichment: ONE extra line, only when the payload carries
+        // per-model weeklies — and only the facts the line above does not already
+        // say. Guarded: enrichment must never break peek.
+        try {
+          const scoped = scopedLimits(d);
+          if (scoped.length) {
+            lines.push(tint(`      ${scoped.map((l) => `${l.label} ${l.percent == null ? '?' : Math.round(l.percent)}%${sevGlyph(l.severity)}`).join('  ·  ')}`));
+          }
+        } catch { /* never */ }
       } else {
-        lines.push(`  ${label} [subscription]   (no usage data)${mark}`);
+        lines.push(tint(`  ${label} [sub]   (no usage data)`));
       }
     } else if (a.type === 'api') {
       const gw = cache && cache.gwUsage && cache.gwUsage[a.id];
@@ -268,28 +301,16 @@ function buildPeek(session) {
         try {
           const GW = require('./gw-usage');
           const s = GW.summarizeGatewayUsage(gw.data);
-          lines.push(`  ${label} [gateway]        ${GW.gatewayUsageLine(gw.data, { withReq: true }) || '(usage)'}   ${ageStr(gw.fetchedAt)}${mark}`);
+          lines.push(tint(`  ${label} [gw]    ${GW.gatewayUsageLine(gw.data, { withReq: true }) || '(usage)'}   ${ageStr(gw.fetchedAt)}`));
           for (const m of ((s && s.models) || []).slice(0, 4)) {
             lines.push(`      ${String(m.model || '?').replace(/^claude-/, '').slice(0, 12).padEnd(12)}  ${GW.fmtTokens(m.tokens)} tok${m.cost != null ? ` · ${GW.fmtCost(m.cost, s.unit)}` : ''}`);
           }
-        } catch { lines.push(`  ${label} [gateway]        (usage unavailable)${mark}`); }
-      } else if (cache && cache.pool && Array.isArray(cache.pool.rows) && cache.pool.rows.length) {
-        // Legacy poolDb metrics (per-backing-account 5h/7d).
-        const rows = cache.pool.rows;
-        const active = rows.filter((r) => r.status === 'active' && r.reason_code !== 'rate_limited').length;
-        const fhs = rows.map((r) => r.fh).filter((v) => v != null);
-        const minFh = fhs.length ? Math.round(Math.min(...fhs)) : null;
-        lines.push(`  ${label} [gateway]        ${active}/${rows.length} active${minFh != null ? `  ·  5h from ${minFh}%` : ''}   ${ageStr(cache.pool.fetchedAt)}${mark}`);
-        for (const r of rows) {
-          const nm = String(r.label || r.email || '?').split('@')[0].slice(0, 10).padEnd(10);
-          const st = r.reason_code === 'rate_limited' ? 'cooldown' : (r.status || '?');
-          lines.push(`      ${nm}  5h ${pct(r.fh)}%  ·  7d ${pct(r.sd)}%   ${st}`);
-        }
+        } catch { lines.push(tint(`  ${label} [gw]    (usage unavailable)`)); }
       } else {
-        lines.push(`  ${label} [gateway]        (no usage data yet)${mark}`);
+        lines.push(tint(`  ${label} [gw]    (no usage data yet)`));
       }
     } else {
-      lines.push(`  ${label} [${a.type}]${mark}`);
+      lines.push(tint(`  ${label} [${a.type}]`));
     }
   }
 
@@ -321,7 +342,7 @@ function renderMenu(cfg, current, lead) {
     return `  ${i + 1}. ${a.id}${a.label && a.label !== a.id.toUpperCase() ? ` (${a.label})` : ''} [${a.type}]${mark}`;
   });
   return `${lead}\n${rows.join('\n')}\n` +
-    `Pick by number or name: \`arc:switch <n|name>\` — zero tokens, works even when rate-limited.`;
+    `Pick by number or name: \`/arc-switch <n|name>\` — zero tokens, works even when rate-limited.`;
 }
 
 // Resolve a target token to an account: a 1-based menu number, or an id/name.
@@ -429,7 +450,7 @@ function requestModePicker(session) {
   }
 }
 
-// ---- add an api (gateway/pool) account inline -------------------------------
+// ---- add an api (gateway) account inline -------------------------------
 // No browser / TTY needed (unlike an oauth subscription), so this runs right in
 // the hook: verify the gateway, auto-detect its model names, DPAPI-encrypt the
 // key (no plaintext on disk), write the account. Mirrors how `mate` was added.
@@ -503,7 +524,7 @@ function pickFamilyModel(models, family) {
   })[0];
 }
 
-// Flag-driven api add (arc:add-account <id> --api --url … / terminal). Thin wrapper
+// Flag-driven api add (/arc-add-account <id> --api --url … / terminal). Thin wrapper
 // that resolves the key from tokens, then delegates to addApiAccountResolved.
 function addApiAccount(tokens, id) {
   const { key, src, error } = readAddKey(tokens);
@@ -585,7 +606,7 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
   headers = headers || {}; modelOverrides = modelOverrides || {}; envMap = envMap || {};
   if (!/^[a-z][a-z0-9_-]*$/i.test(id || '')) return { ok: false, message: `invalid id "${id || ''}" — letters/digits/dash/underscore, start with a letter.` };
   try { if (C.findAccount(C.loadConfig(), id)) return { ok: false, message: `account "${id}" already exists — pick a different id.` }; } catch {}
-  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) return { ok: false, message: 'a gateway/pool account needs a full http(s):// URL.' };
+  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) return { ok: false, message: 'a gateway account needs a full http(s):// URL.' };
   const badAlias = Object.keys(modelOverrides).find((a) => !['opus', 'sonnet', 'haiku', 'fable'].includes(a));
   if (badAlias) return { ok: false, message: `--model alias must be opus/sonnet/haiku/fable (got "${badAlias}").` };
   // Reject EMPTY override/header values from any caller — an empty model id would
@@ -673,19 +694,20 @@ function addApiAccountResolved({ id, baseUrl, key, keySrc, keyErr, label, color,
     ok: true,
     message: `✓ added gateway account "${id}" (${acct.label}) → ${acct.baseUrl}\n` +
       `  key ${key.slice(0, 7)}…${key.slice(-4)} ${stored.note} (from ${keySrc}) · ${detail}${extraHdr}${modeNote}` +
-      `${makeDefault ? '\n  set as the default account' : ''}\n  use it: arc:switch ${id}`,
+      `${makeDefault ? '\n  set as the default account' : ''}\n  use it: /arc-switch ${id}`,
   };
 }
 
-// Add an account. `--api`/`--url` → a gateway/pool account, done inline here.
+// Add an account. `--api`/`--url` → a gateway account, done inline here.
 // Otherwise an oauth subscription → drop a trigger so arc-runner runs the guided
-// browser login on the freed TTY. `argStr` is everything after `arc:add-account`.
+// browser login on the freed TTY. `argStr` is everything after the add-account
+// verb (/arc-add-account, or the `arc add-account` CLI).
 function requestAddAccount(session, argStr) {
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
-  // Bare `arc:add-account` (no id/flags) → open the interactive wizard (pick
-  // Subscription vs Gateway on an arc:switch-style screen, then guided prompts).
+  // Bare `/arc-add-account` (no id/flags) → open the interactive wizard (pick
+  // Subscription vs Gateway on an /arc-switch-style screen, then guided prompts).
   if (!tokens.length) {
-    if (!session) return { ok: false, message: 'launch `arc` first — then `arc:add-account` opens the add wizard.' };
+    if (!session) return { ok: false, message: 'launch `arc` first — then `/arc-add-account` opens the add wizard.' };
     try {
       fs.mkdirSync(CACHE_DIR, { recursive: true });
       fs.writeFileSync(path.join(CACHE_DIR, `arc-addacct-${session}.trigger`), JSON.stringify({ at: Date.now(), wizard: true }));
@@ -694,7 +716,7 @@ function requestAddAccount(session, argStr) {
   }
   const id = tokens.find((t) => !t.startsWith('-') && !/^sk-/.test(t)); // skip a bare key token
   if (!id) {
-    return { ok: false, message: 'usage: arc:add-account <id>  (subscription: browser login)  ·  or  arc:add-account <id> --api --url <gateway> [--label L] [--color #hex] [--default]  (gateway/pool; key from clipboard, or --file/--key)' };
+    return { ok: false, message: 'usage: /arc-add-account <id>  (subscription: browser login)  ·  or  /arc-add-account <id> --api --url <gateway> [--label L] [--color #hex] [--default]  (gateway; key from clipboard, or --file/--key)' };
   }
   if (!/^[a-z][a-z0-9_-]*$/i.test(id)) {
     return { ok: false, message: `invalid id "${id}" — use letters/digits/dash/underscore, starting with a letter.` };
@@ -702,16 +724,16 @@ function requestAddAccount(session, argStr) {
   try {
     const C = require('./arc-config');
     if (C.findAccount(C.loadConfig(), id)) {
-      return { ok: false, message: `account "${id}" already exists — pick a different id (see arc:help or arc doctor).` };
+      return { ok: false, message: `account "${id}" already exists — pick a different id (see /arc-help or arc doctor).` };
     }
   } catch {}
 
-  // Gateway/pool account: no browser, no TTY — verify + register right here.
+  // Gateway account: no browser, no TTY — verify + register right here.
   if (hasFlag(tokens, 'api') || hasFlag(tokens, 'url')) return addApiAccount(tokens, id);
 
   // oauth subscription: needs the browser + terminal → hand off to arc-runner.
   if (!session) {
-    return { ok: false, message: 'adding a SUBSCRIPTION needs the arc wrapper (launch with `arc`). For a gateway/pool, use: arc:add-account ' + id + ' --api --url <gateway>.' };
+    return { ok: false, message: 'adding a SUBSCRIPTION needs the arc wrapper (launch with `arc`). For a gateway, use: /arc-add-account ' + id + ' --api --url <gateway>.' };
   }
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -802,7 +824,7 @@ function requestRename(session, argStr) {
   catch (e) { return { ok: false, message: `arc config unreadable (${e.message}).` }; }
 
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return { ok: false, message: 'usage: arc:rename [<old>] <new>  — e.g. `arc:rename work` renames THIS session\'s account, or `arc:rename work personal`.' };
+  if (!tokens.length) return { ok: false, message: 'usage: /arc-rename [<old>] <new>  — e.g. `/arc-rename work` renames THIS session\'s account, or `/arc-rename work personal`.' };
   const current = currentAccount(C, cfg, session);
   const oldId = tokens.length >= 2 ? tokens[0] : current;
   const newId = tokens.length >= 2 ? tokens[1] : tokens[0];
@@ -827,7 +849,7 @@ function requestRename(session, argStr) {
     } catch (e) { return { ok: false, message: `rename signal FAILED — ${e.message}` }; }
   }
   if (live > 0) {
-    return { ok: false, message: `"${oldId}" has ${live} other live session(s) — its login folder is in use. Close them (or run \`arc:rename ${newId}\` from that session) first.` };
+    return { ok: false, message: `"${oldId}" has ${live} other live session(s) — its login folder is in use. Close them (or run \`/arc-rename ${newId}\` from that session) first.` };
   }
   // No live session on it → safe to rename right here.
   try {
@@ -848,7 +870,7 @@ function requestRemoveAccount(session, argStr) {
   const tokens = (argStr || '').trim().split(/\s+/).filter(Boolean);
   const isConfirm = tokens.some((t) => CONFIRM_WORDS.has(t.toLowerCase()));
   const id = tokens.find((t) => !t.startsWith('-') && !CONFIRM_WORDS.has(t.toLowerCase()));
-  if (!id) return { ok: false, message: 'usage: arc:remove-account <id>   (then confirm) — an account id is required.' };
+  if (!id) return { ok: false, message: 'usage: /arc-remove-account <id>   (then confirm) — an account id is required.' };
 
   const acc = C.findAccount(cfg, id);
   if (!acc) return { ok: false, message: `no account "${id}". Configured: ${cfg.accounts.map((a) => a.id).join(', ')}.` };
@@ -868,7 +890,7 @@ function requestRemoveAccount(session, argStr) {
     ? `⚠ ${live} LIVE SESSION${live > 1 ? 'S' : ''} STILL ON "${acc.id.toUpperCase()}"\n`
       + `  ${Subj} ${keep} running (removal won't stop ${them}).\n`
       + `  ${Subj} ${drop} to "${newDefault}" on next switch/restart.\n`
-      + `  Move one off now: arc:switch ${newDefault} in it.\n`
+      + `  Move one off now: /arc-switch ${newDefault} in it.\n`
     : '';
 
   if (!isConfirm) {
@@ -882,7 +904,7 @@ function requestRemoveAccount(session, argStr) {
         ` · ${acc.type}${acc.email ? ` · ${acc.email}` : ''}?` + '\n' +
         `  • arc-config.json is backed up first; references (switch order / default) are auto-fixed\n` +
         `  • its profile (login + local data) is MOVED to recoverable trash (arc-profiles/.trash), never hard-deleted\n` +
-        `  CONFIRM within 2 min:  arc:remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
+        `  CONFIRM within 2 min:  /arc-remove-account ${acc.id} confirm     ·     or ignore this to cancel`,
     };
   }
 
@@ -890,7 +912,7 @@ function requestRemoveAccount(session, argStr) {
   let pend = null;
   try { pend = JSON.parse(fs.readFileSync(pendingRmPath(session), 'utf8')); } catch {}
   if (!pend || pend.id !== acc.id || Date.now() - pend.at > 120_000) {
-    return { ok: false, message: `no pending confirmation for "${acc.id}" (or it expired) — run \`arc:remove-account ${acc.id}\` first to review what will be removed.` };
+    return { ok: false, message: `no pending confirmation for "${acc.id}" (or it expired) — run \`/arc-remove-account ${acc.id}\` first to review what will be removed.` };
   }
   let res;
   try { res = removeAccountFromConfig(C, acc.id); }
@@ -922,8 +944,8 @@ function sessionConvId(session) {
   return null;
 }
 
-// Two-step deletion of the CURRENT conversation. Step 1 (bare `arc:delete`) shows
-// the impact and arms a 2-min pending marker; step 2 (`arc:delete confirm`) drops
+// Two-step deletion of the CURRENT conversation. Step 1 (bare `/arc-delete`) shows
+// the impact and arms a 2-min pending marker; step 2 (`/arc-delete confirm`) drops
 // a delete trigger — arc-runner kills claude, moves the transcript to recoverable
 // trash, and starts a FRESH session. Returns { ok, pending?, deleting?, message }.
 function requestDelete(session, argStr) {
@@ -935,7 +957,7 @@ function requestDelete(session, argStr) {
   try { fp = require('./arc-sync').findTranscriptFile(convId); } catch {}
   if (!fp) {
     // No transcript = an EMPTY session (no messages saved yet) → nothing to trash.
-    // This is the usual "arc:delete did nothing" case: you delete a chat, a fresh
+    // This is the usual "/arc-delete did nothing" case: you delete a chat, a fresh
     // empty session starts, and deleting THAT finds nothing — so say so clearly
     // instead of arming a confirm that then reports "(not found)".
     return { ok: false, message: 'nothing to delete — this conversation has no saved messages yet. (An empty session leaves no transcript; just send a message first, or switch/exit.)' };
@@ -950,16 +972,16 @@ function requestDelete(session, argStr) {
       ok: true, pending: true,
       message:
         `DELETE the CURRENT conversation (${convId.slice(0, 8)}${sizeStr})?\n` +
-        `  • it is MOVED to recoverable trash, never hard-deleted (arc:trash to list/restore/purge)\n` +
+        `  • it is MOVED to recoverable trash, never hard-deleted (/arc-trash to list/restore/purge)\n` +
         `  • this conversation ENDS and a fresh empty session starts in its place\n` +
-        `  CONFIRM within 2 min:  arc:delete confirm     ·     or ignore this to cancel`,
+        `  CONFIRM within 2 min:  /arc-delete confirm     ·     or ignore this to cancel`,
     };
   }
 
   let pend = null;
   try { pend = JSON.parse(fs.readFileSync(pendingDelPath(session), 'utf8')); } catch {}
   if (!pend || pend.convId !== convId || Date.now() - pend.at > 120_000) {
-    return { ok: false, message: `no pending confirmation for this conversation (or it expired) — run \`arc:delete\` first to review.` };
+    return { ok: false, message: `no pending confirmation for this conversation (or it expired) — run \`/arc-delete\` first to review.` };
   }
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -983,10 +1005,10 @@ function requestRestart(session) {
   }
 }
 
-// ---- arc:trash — list / restore / permanently empty the conversation trash --
-// (~/.claude/backups/arc-deleted-*, written by arc:delete). Pure file ops that run
+// ---- /arc-trash — list / restore / permanently empty the conversation trash --
+// (~/.claude/backups/arc-deleted-*, written by /arc-delete). Pure file ops that run
 // synchronously in the hook — zero tokens, no relaunch. `plain: true` results are
-// self-contained readouts (rendered uncolored, like arc:peek).
+// self-contained readouts (rendered uncolored, like /arc-peek).
 function pendingPurgePath(session) { return path.join(CACHE_DIR, `arc-purgepending-${session || 'terminal'}.json`); }
 
 function requestTrash(session, argStr) {
@@ -1008,27 +1030,27 @@ function requestTrash(session, argStr) {
         message:
           `EMPTY TRASH — PERMANENTLY delete ${entries.length} trashed conversation${entries.length > 1 ? 's' : ''} (${sync.human(bytes)})?\n` +
           `  ⚠ NOT recoverable: this deletes the recoverable copies themselves\n` +
-          `  CONFIRM within 2 min:  arc:trash empty confirm     ·     or ignore this to cancel`,
+          `  CONFIRM within 2 min:  /arc-trash empty confirm     ·     or ignore this to cancel`,
       };
     }
     let pend = null;
     try { pend = JSON.parse(fs.readFileSync(pendingPurgePath(session), 'utf8')); } catch {}
     if (!pend || Date.now() - pend.at > 120_000) {
-      return { ok: false, message: 'no pending confirmation (or it expired) — run `arc:trash empty` first to review what gets purged.' };
+      return { ok: false, message: 'no pending confirmation (or it expired) — run `/arc-trash empty` first to review what gets purged.' };
     }
     try { fs.unlinkSync(pendingPurgePath(session)); } catch {}
     const r = sync.emptyTrash();
     return r.ok
       ? { ok: true, message: `✓ trash emptied — permanently deleted ${r.count} conversation${r.count > 1 ? 's' : ''} (${sync.human(r.bytes)}).` }
-      : { ok: false, message: `purge INCOMPLETE — ${r.failed} trash folder(s) would not delete (file in use?). arc:trash shows what's left.` };
+      : { ok: false, message: `purge INCOMPLETE — ${r.failed} trash folder(s) would not delete (file in use?). /arc-trash shows what's left.` };
   }
 
   if (sub && sub !== 'list') {
-    return { ok: false, message: `unknown trash action "${toks[0]}" — use: arc:trash · arc:trash restore <id> · arc:trash empty` };
+    return { ok: false, message: `unknown trash action "${toks[0]}" — use: /arc-trash · /arc-trash restore <id> · /arc-trash empty` };
   }
 
   const entries = sync.listTrash();
-  if (!entries.length) return { ok: true, plain: true, message: 'trash — empty. (arc:delete moves conversations here; nothing is hard-deleted until arc:trash empty.)' };
+  if (!entries.length) return { ok: true, plain: true, message: 'trash — empty. (/arc-delete moves conversations here; nothing is hard-deleted until /arc-trash empty.)' };
   const bytes = entries.reduce((s, e) => s + e.bytes, 0);
   const lines = [`trash — ${entries.length} deleted conversation${entries.length > 1 ? 's' : ''}, ${sync.human(bytes)} total (newest deletion first)`, ''];
   for (const e of entries) {
@@ -1045,8 +1067,8 @@ function requestTrash(session, argStr) {
     lines.push(`  ${e.convId.slice(0, 8)}  ${title}`);
     lines.push(`            ${turns} · ${used} · ${sync.human(e.bytes)} · ${where}${e.sidecar ? ' · +files' : ''}`);
   }
-  lines.push('', '  restore one:  arc:trash restore <id>   (then: arc --resume <id>)        purge all:  arc:trash empty');
+  lines.push('', '  restore one:  /arc-trash restore <id>   (then: arc --resume <id>)        purge all:  /arc-trash empty');
   return { ok: true, plain: true, message: lines.join('\n') };
 }
 
-module.exports = { requestSwitch, requestRestart, requestPicker, requestModePicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, nextClaudexPort, gatewayTranslatesMessages, probeGatewayGptModels, CACHE_DIR };
+module.exports = { scopedLimits, sevGlyph, requestSwitch, requestRestart, requestPicker, requestModePicker, requestAddAccount, requestRemoveAccount, requestRename, doRename, requestDelete, requestTrash, currentAccount, buildPeek, chooseLaunchAccount, accountHeadroom, oauthUsageSlice, refreshUsageNow, usageCacheFresh, readUsageCache, addApiAccountResolved, readAddKey, nextClaudexPort, gatewayTranslatesMessages, probeGatewayGptModels, CACHE_DIR };

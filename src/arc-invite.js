@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // arc-invite: STAFF a role — put a session in an empty chair on this board.
 //
-// Reached only through `arc delegate <role>` (arc-runner). There is no `arc:invite` sentinel and
+// Reached only through `arc delegate <role>` (arc-runner). There is no invite command and
 // no bare `arc invite`: a human's natural act is PROSE ("get research on this"), not a command,
 // and an agent should never have to know whether a chair is occupied before asking for work to be
 // done in it. One verb; arc decides live-vs-closed-vs-new. See requestDelegate below.
@@ -33,8 +33,8 @@
 // not env — birthEnv cannot touch it. The birth prompt disavows it first, before the role, and the
 // `peers` skill catches the rest. Context is worth that; it is not worth pretending it is free.
 //
-// AND THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL. `arc:role <role>` is blocked at
-// UserPromptSubmit — that is the point of a sentinel, zero tokens — so it never reaches the model,
+// AND THE BIRTH PROMPT IS REAL PROSE, NOT A COMMAND. A `/arc-role <role>` prompt is eaten at
+// UserPromptSubmit — zero tokens, the point of the hook — so it never reaches the model,
 // and every later input arrives as a hook injection rather than a user message. A handful of
 // tokens buys a real turn, and a real turn is what a conversation is made of.
 //
@@ -159,7 +159,7 @@ function writeBirthPrompt(text, role) {
 // and a peer investigating it reproduced the symptom with plain claude and no arc — because IT was
 // spawned from an agent process too, and inherited the same poison. It concluded the mechanism was
 // Claude Code's. We both believed it. Eight theories died against it: --session-id, --name,
-// --permission-mode, the blocked sentinel, wt, cmd-vs-pwsh, /c-vs-/k, and the window itself. Every
+// --permission-mode, the blocked prompt, wt, cmd-vs-pwsh, /c-vs-/k, and the window itself. Every
 // one of those was a difference between MY spawns and a HUMAN typing the same command — and the
 // only difference that ever mattered was the ENVIRONMENT the human's terminal did not have.
 // PROOF: same wt, same cmd /k, same flags, env stripped -> 21701 bytes, written WHILE STILL LIVE.
@@ -175,6 +175,13 @@ const INHERITED_IDENTITY = [
   'CLAUDE_CODE_EXECPATH',
   'CLAUDE_EFFORT',               // the caller's effort pin; the peer's own launch decides its own
   'ARC_SESSION',                 // or the peer's hooks read the CALLER's role, notes and cursor
+  // Not identity but the same disease — the caller's TOOL SHELL leaking into a peer that is a
+  // real terminal session. Claude Code sets NO_COLOR=1 in the subshells its tools run in (so
+  // tool output parses clean), every spawn goes through such a subshell, and wt hands the new
+  // pane the INVOKER's environment (probed 2026-07-18: both -p and profile-less panes carried
+  // NO_COLOR=1). Result: every spawned peer ever ran MONOCHROME — statusline, roster glyph
+  // colors, all of it — while a hand-launched session sat colored in the next tab.
+  'NO_COLOR',
 ];
 function birthEnv(base) {
   const env = { ...(base || process.env) };
@@ -268,7 +275,7 @@ function ensureTrusted(launchDir, opts) {
 //      over COM; a detached+unref'd spawner exits before the handoff completes and the
 //      request simply evaporates — status 0, no tab, nothing to debug. spawnSync waits the
 //      ~half-second the handoff needs; the session in the tab is independent after that.
-// The '"arc:role <role>"' nesting is deliberate: PS strips '…' → wt/cmd sees "arc:role X" →
+// The '"<prompt>"' nesting is deliberate: PS strips '…' → wt/cmd sees "/arc-role X" →
 // arc.cmd %* keeps the quotes → node receives ONE argv slot. Verified end-to-end.
 const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // `fork:false` = REVIVE: we are resuming the role's OWN conversation, so it must NOT be forked —
@@ -281,8 +288,8 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // hand was then guesswork on a list of identical names. It survives a relaunch on its own:
 // stripConvArgs only removes --continue/--fork-session/the birth prompt, and arc-runner forwards
 // anything that is not its own flag, so a switched or restarted peer keeps its name.
-// (No conflict with the tab title: --name also sets the terminal title, but the wt tab is pinned
-// by --suppressApplicationTitle, so the bare role name still wins there.)
+// (--name also sets the terminal title. The wt tab STARTS on --title <role>; Claude Code then
+// retitles it from the project folder — we stopped suppressing that so the live status icon shows.)
 // `conv` = the role's OWN conversation to REVIVE, or null to be BORN.
 //
 // A NEW PEER IS FORKED FROM THE CALLER: `--resume <CALLER's conv> --fork-session`. It starts
@@ -331,6 +338,27 @@ function spawnQuiet() { return /^(1|true|yes)$/i.test(String(process.env.ARC_SPA
 // ARC_SPAWN_WINDOW=<name> pins every peer to one named window instead. Any string wt accepts.
 function spawnWindow() { return String(process.env.ARC_SPAWN_WINDOW || '').trim() || '0'; }
 
+// WHICH wt PROFILE dresses a peer's tab. Unset (the default) launches a raw commandline —
+// wt shows a generic tab: no icon, no theme, none of the human's profile appearance. That
+// default is deliberate robustness, not taste: profile names are user-chosen, per-machine,
+// even localized (this machine's cmd profile is named 命令提示符), and a `-p` naming a
+// profile that does not exist makes wt fail the launch — the silent no-tab this launcher
+// fears most. arc cannot guess a name safely, so by default it names none.
+// ARC_SPAWN_PROFILE=<name> opts in: wt applies that profile's icon/theme/font while our
+// commandline still overrides what actually runs (wt documents -p + commandline as exactly
+// this). A wrong name fails visibly, and only for the person who set it.
+// The env var is a one-off override; the DURABLE home is arc-config.json's "spawnProfile"
+// key. An env var must exist in the CALLER's environment, and a session launched before a
+// `setx` never sees it — measured the same day this shipped: the fix was deployed, one
+// delegate ran without the var, and the peer tab came up generic again. Config is read
+// fresh from disk on every spawn, so it cannot be forgotten.
+function spawnProfile() {
+  const env = String(process.env.ARC_SPAWN_PROFILE || '').trim();
+  if (env) return env;
+  try { return String(require('./arc-config').loadConfig().spawnProfile || '').trim(); }
+  catch { return ''; }
+}
+
 function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, quiet, win) {
   const acct = account ? ` --account ${account}` : '';
   const sh = shell || launchShell();
@@ -342,9 +370,9 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // With no caller conversation to fork (a session that never persisted one), birth still works —
   // the peer is simply born cold, which is what every peer was until now.
   const resume = conv ? ` --resume ${conv}` : (from ? ` --resume ${from} --fork-session` : '');
-  // THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL — and that is what makes the peer revivable.
-  // `arc:role <role>` was blocked at UserPromptSubmit (that is the point of a sentinel: zero
-  // tokens), so it never reached the model. Everything the newborn then received arrived as hook
+  // THE BIRTH PROMPT IS REAL PROSE, NOT A COMMAND — and that is what makes the peer revivable.
+  // A `/arc-role <role>` prompt is eaten at UserPromptSubmit (zero tokens, the point of the
+  // hook), so it never reaches the model. Everything the newborn then received arrived as hook
   // injections and Stop-block reasons — never a user message. Measured: such a session leaves NO
   // conversation on disk at all. `claude --resume <its id>` answers "No conversation found" even
   // after a graceful /exit, so there is nothing to revive and staffing silently births a stranger
@@ -381,7 +409,13 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // BIRTH ONLY: a REVIVE restores the mode it was last in via arc-runner's preservedFlags, and
   // passing it here too would hand claude the flag twice.
   const mode = conv ? '' : ' --permission-mode auto';
-  const prompt = conv ? `arc:role ${role}` : birth;
+  // The revive prompt is `/arc-role <role>`. It travels programmatically (prompt file →
+  // argv → claude), which bypasses the input-box gate that rejects typed stub-less
+  // /commands — measured 2026-07-18: `claude -p "/arc-peek"` reached the hook RAW and
+  // blocked at zero tokens. stripConvArgs strips it on respawn, and if the
+  // hook were somehow absent the model receives a /arc-role line whose stub arm-body
+  // carries the full claim protocol — a graceful degrade either way.
+  const prompt = conv ? `/arc-role ${role}` : birth;
   // TWO SHAPES, and only one of them puts the prompt on a wire.
   //   PowerShell: fill the shipped template. Every value handed over is a token that CANNOT be
   //     mangled — an account id, a role name, a UUID — and the prompt goes as a file path. Both
@@ -421,11 +455,15 @@ function buildLaunch(wt, account, conv, role, root, shell, from, writeScript, qu
   // invariant hold in the FUNCTION rather than at one call site — a caller that passes both gets
   // the minimised console it asked for, not a tab that silently ignores the quiet it requested.
   if (wt && !quiet) {
-    // --suppressApplicationTitle is what makes the title STICK. Without it the tab shows "arc"
-    // like every other tab: Claude Code sets the terminal title from the project folder, and an
-    // application title escape overrides wt's --title. With two identical "arc" tabs you cannot
-    // tell the caller from the peer it spawned — so the peer's tab is pinned to its ROLE.
-    return `wt -w ${win || '0'} new-tab --title ${psQuote(role)} --suppressApplicationTitle -d ${psQuote(root)} ${pre} ${inner}`;
+    // We set --title <role> as the tab's STARTING name, but deliberately do NOT
+    // --suppressApplicationTitle. That flag pinned the role name by telling wt to ignore the
+    // app's own title/icon escapes — and it took Claude Code's green working-icon down with the
+    // title (same OSC channel), so a spawned peer's tab looked dead next to a hand-launched one
+    // (operator, 2026-07-17). The human's call: keep the icon, let Claude Code retitle the tab
+    // from the project folder like every other session. The role is still legible from the
+    // roster and the tab's initial name; the live status icon is worth more than a pinned label.
+    const prof = spawnProfile();
+    return `wt -w ${win || '0'} new-tab${prof ? ` -p ${psQuote(prof)}` : ''} --title ${psQuote(role)} -d ${psQuote(root)} ${pre} ${inner}`;
   }
   // QUIET: Start-Process -WindowStyle HIDDEN. Not Minimized — that was WRONG, and it was wrong in
   // the most expensive way available.
@@ -783,7 +821,7 @@ function staffRole(session, role, opts) {
 //
 // The work and the worker never merge into one act, though — they COMPOSE. A note is free and
 // reversible; staffing spawns a session with its own quota. So the note always posts, and the
-// spawn is gated by arc:mode (arc-pretool-hook, which checks liveness so the gate fires ONLY when
+// spawn is gated by the stance (/arc-mode; arc-pretool-hook checks liveness so the gate fires ONLY when
 // a session would actually be created).
 // arc delegate a,b "packet" — get a SUBSET on one job at once. Each role is handled by the same
 // rule as a single delegate: LIVE ones are noted, CLOSED ones REVIVED as themselves, never-held ones
@@ -798,34 +836,49 @@ function delegateMany(session, firstToken, packet, cwd, o) {
   const me = N.getRole(session, board);
   if (packet && !me) return { ok: false, message:
     `you hold no role on the "${board.name}" board, so there is no one for these roles to reply TO.\n` +
-    `  claim yours first:  arc:role <yours>    then delegate again (nothing was started).` };
+    `  claim yours first:  arc role <yours>    then delegate again (nothing was started).` };
   const targets = roles.filter((r) => r !== me);   // never delegate to yourself
   if (!targets.length) return { ok: false, message: `the only role in the list was yourself.` };
 
   // Staff each role that is not already live. One snapshot up front: staffing X makes X live, but the
   // targets are distinct, so a single roster read is correct and cheaper than re-querying per role.
-  const liveSet = new Set(R.liveRoles(board).map((l) => l.role));
+  // Same false-live edge as the single-role path (audit #259), batched: ONE fresh probe covers every
+  // target's claim pid — a powershell spawn costs its startup, not its batch size.
+  const claims = new Map(targets.map((r) => [r, R.readClaimFile(board, r)]));
+  const alivePids = [...claims.values()].filter((c) => c && c.pid && R.isAlive(c.pid)).map((c) => c.pid);
+  const freshStarts = alivePids.length ? R.procStarts(alivePids, { fresh: true }) : {};
+  const liveSet = new Set(), unverifiedSet = new Set();
+  for (const [r, c] of claims) {
+    if (!(c && c.pid && R.isAlive(c.pid))) continue;
+    if (!freshStarts) { liveSet.add(r); unverifiedSet.add(r); }   // OS unaskable: never spawn into a possibly-occupied chair, but say so
+    else if (R.isHolder(c, freshStarts)) liveSet.add(r);
+  }
   const done = [];
   for (const role of targets) {
-    if (liveSet.has(role)) { done.push({ role, how: 'live' }); continue; }
+    if (liveSet.has(role)) { done.push({ role, how: unverifiedSet.has(role) ? 'unverified' : 'live' }); continue; }
     const staffed = staffRole(session, role, o);
     if (!staffed.ok) return { ok: false, message:
       `staffing "${role}" failed — ${staffed.message}\n` +
       `  (already staffed before this: ${done.filter((x) => x.how !== 'live').map((x) => x.role).join(', ') || 'none'} — they are idle peers, harmless)` };
     done.push({ role, how: staffed.revived ? 'revived' : 'staffed' });
   }
-  const mark = (x) => x.how === 'live' ? `✉ ${x.role} (live)` : x.how === 'revived' ? `↺ ${x.role} — REVIVED as itself` : `⤴ ${x.role} — STAFFED from your context`;
+  const mark = (x) => x.how === 'live' ? `✉ ${x.role} (live)`
+    : x.how === 'unverified' ? `✉ ${x.role} (⚠ liveness UNVERIFIED — probe unavailable; note posted, check with: arc role)`
+      : x.how === 'revived' ? `↺ ${x.role} — REVIVED as itself` : `⤴ ${x.role} — STAFFED from your context`;
   const summary = done.map(mark).join('\n  ');
 
   if (!packet) return { ok: true, roles: targets, message:
     `${done.length} chair(s) filled:\n  ${summary}\n  no packet — give them a job:  arc delegate ${targets.join(',')} "<packet>"` };
 
   // ONE multi-recipient request to all targets: delivered WHOLE to each, tracked until EACH replies.
-  const note = N.requestNote(session, `${targets.join(',')} --kind request ${packet}`, cwd);
+  // chairHandled: the chairs were JUST filled above — the unheld warning would be false, so it is
+  // omitted at the SOURCE. (This used to strip it with an end-anchored regex, which would have
+  // silently matched nothing the day the warning moved off the message tail — and it did move.)
+  const note = N.requestNote(session, `${targets.join(',')} --kind request ${packet}`, cwd, { chairHandled: true });
   if (!note.ok) return note;
   return { ok: true, roles: targets, message:
     `delegated to ${targets.join(' + ')}:\n  ${summary}\n` +
-    note.message.replace(/\n\s+⚠ not currently held[\s\S]*$/, '').replace(/^✓ /, '  ✓ ') +
+    note.message.replace(/^✓ /, '  ✓ ') +
     `\n  ONE request, posted to all — tracked until EACH replies (arc notes shows per-recipient status).` };
 }
 
@@ -846,7 +899,6 @@ function requestDelegate(session, arg, cwd, opts) {
   if (!N.VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
 
   const board = R.resolveBoard(N.resolveCwd(session, null));
-  const live = R.liveRoles(board).some((l) => l.role === role);
 
   // CHECK BEFORE YOU SPAWN. A note is posted BY a role — that is what the reply is addressed back
   // to — so a caller holding no role cannot delegate work, only staff an empty chair. Verifying
@@ -858,7 +910,25 @@ function requestDelegate(session, arg, cwd, opts) {
     return { ok: false, message:
       `you hold no role on the "${board.name}" board, so there is no one for "${role}" to reply TO —\n` +
       `a delegation is a question, and the answer has to come back to somebody.\n` +
-      `  claim yours first:  arc:role <yours>    then delegate again (nothing was started).` };
+      `  claim yours first:  arc role <yours>    then delegate again (nothing was started).` };
+  }
+
+  // THE FALSE-LIVE EDGE (audit #259). The delegate path is where a false "live" costs the most:
+  // the packet lands in a dead chair and the delegator is told "its listener will wake it within
+  // seconds" — a request nobody answers, reported as handled. isHolder's two fail-open windows
+  // (the ≤30s warm pid-start cache serving a dead predecessor's start; the probe-unavailable
+  // path) are the RIGHT default everywhere else — reading a live peer as dead invites a second
+  // session into an occupied chair, the worse direction — so the default is untouched and THIS
+  // path pays ~270ms for a FRESH probe before believing "live". The fresh answer writes through
+  // to the shared cache, so the staffRole check just below cannot disagree with the verdict here.
+  // When the OS cannot be asked at all, spawning is still the dangerous direction, so the note is
+  // posted — but the receipt says "could not verify", never asserts liveness it does not have.
+  const rawClaim = R.readClaimFile(board, role);
+  let live = false, unverified = false;
+  if (rawClaim && rawClaim.pid && R.isAlive(rawClaim.pid)) {
+    const starts = R.procStarts([rawClaim.pid], { fresh: true });
+    if (!starts) { live = true; unverified = true; }
+    else live = R.isHolder(rawClaim, starts);
   }
 
   // Not live -> STAFF first, so the work lands in a chair that has someone in it. (The note would
@@ -869,17 +939,25 @@ function requestDelegate(session, arg, cwd, opts) {
     staffed = staffRole(session, role, o);
     if (!staffed.ok) return staffed;
   }
-  if (!packet) return staffed || { ok: true, message: `"${role}" is already live — nothing to staff. Give it a job:  arc delegate ${role} "<packet>"` };
+  if (!packet) {
+    if (staffed) return staffed;
+    if (unverified) return { ok: true, message: `"${role}" LOOKS held, but its liveness could not be verified (the OS pid probe was unavailable) — nothing staffed, nothing posted. Check the chair:  arc role` };
+    return { ok: true, message: `"${role}" is already live — nothing to staff. Give it a job:  arc delegate ${role} "<packet>"` };
+  }
 
   // Then the work. Always a request: a delegation is a question you are owed an answer to, and
   // that is what makes it tracked and what wakes you when they reply.
-  const note = N.requestNote(session, `${role} --kind request ${packet}`, cwd);
+  // chairHandled: this path either just staffed the chair or verified it live — the empty-chair
+  // warning would be false, so requestNote omits it at the source (no fragile tail-strip regex).
+  const note = N.requestNote(session, `${role} --kind request ${packet}`, cwd, { chairHandled: true });
   if (!note.ok) return note;
   return { ok: true, role, revived: staffed && staffed.revived, message:
     (staffed ? staffed.message + '\n' : '') +
-    note.message.replace(/\n\s+⚠ NOBODY HOLDS[\s\S]*$/, '') +
+    note.message +
     (staffed ? `\n  the note is waiting in ${role}'s inbox — it reads it on arrival.`
-             : `\n  ${role} is live: its listener will wake it within seconds.`) };
+      : unverified
+        ? `\n  ⚠ could not VERIFY "${role}" is live (the OS pid probe was unavailable) — the note is\n    posted either way; if no reply lands, check the chair:  arc role`
+        : `\n  ${role} is live: its listener will wake it within seconds.`) };
 }
 
 // ---- arc close <role> — the counterpart to delegate -------------------------------------------
@@ -943,4 +1021,4 @@ function requestClose(session, arg, cwd, opts) {
       : `  It never persisted a conversation, so there is nothing to revive — a new delegate starts fresh.`) };
 }
 
-module.exports = { staffRole, requestDelegate, requestClose, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript, transcriptPath, lastTurnAt, freshnessBrief, spawnQuiet, spawnWindow };
+module.exports = { staffRole, requestDelegate, requestClose, buildLaunch, launchShell, shellPrefix, birthEnv, INHERITED_IDENTITY, ensureTrusted, trustKey, hasWt, hasTranscript, transcriptPath, lastTurnAt, freshnessBrief, spawnQuiet, spawnWindow, spawnProfile };

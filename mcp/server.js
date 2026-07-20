@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // arc-mcp: the arc MCP (stdio) server. Lets any Claude Code session manage
 // the arc account-switcher configuration conversationally — list/add/remove/
-// update accounts, tune defaults/order/features — plus the pool metrics tools
-// (pool_status / pool_next_reset) when a pool DB is configured.
+// update accounts, tune defaults/order/features.
 //
 // Safety: every mutation backs up arc-config.json first (timestamped, kept),
 // writes atomically, and validates the result by re-loading it — a write that
@@ -22,7 +21,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 const require = createRequire(import.meta.url);
-const { Client } = require('pg'); // pg is CommonJS
 
 // arc-config.js lives at ../src/ in the kit repo and ../ when deployed to
 // ~/.claude/scripts/arc-mcp/ — try both.
@@ -108,8 +106,8 @@ function shapeAccount(a, cfg) {
 }
 
 // Running arc sessions keep their launch-time config for env building, but
-// arc:switch RE-READS the config, so new/edited accounts are switchable at once.
-const LIVE_NOTE = 'Effective immediately for arc:switch and the statusline; sessions already running on an EDITED account pick up env changes on their next arc:switch or arc:restart.';
+// /arc-switch RE-READS the config, so new/edited accounts are switchable at once.
+const LIVE_NOTE = 'Effective immediately for /arc-switch and the statusline; sessions already running on an EDITED account pick up env changes on their next /arc-switch or /arc-restart.';
 
 // ---- account tools --------------------------------------------------------------
 
@@ -121,7 +119,6 @@ function toolAccountList() {
     defaultAccount: cfg.defaultAccount,
     switchOrder: cfg.switchOrder,
     features: cfg.features,
-    poolDb: !!cfg.poolDb,
     accounts: cfg.accounts.map((a) => shapeAccount(a, cfg)),
   };
 }
@@ -189,7 +186,7 @@ function toolAccountRemove(args) {
   const backup = writeRaw(raw);
 
   // Quarantine the per-account profile dir to recoverable trash — same as the
-  // arc:remove-account hook — so a removal never leaves an orphan in arc-profiles.
+  // /arc-remove-account hook — so a removal never leaves an orphan in arc-profiles.
   let profileTrash = null, profileInUse = false;
   if (P) { try { profileTrash = P.removeProfile(args.id); } catch (e) { profileInUse = true; } }
 
@@ -199,7 +196,7 @@ function toolAccountRemove(args) {
     remaining: (raw.accounts || []).map((a) => a.id),
     migratedLegacyConfig: migrated,
     backup,
-    note: LIVE_NOTE + ' Sessions currently RUNNING on the removed account keep working until they exit or arc:switch.',
+    note: LIVE_NOTE + ' Sessions currently RUNNING on the removed account keep working until they exit or /arc-switch.',
   };
   if (profileTrash) { out.profileTrash = profileTrash; out.note += ` Its profile (login + local data) was MOVED to recoverable trash (${profileTrash}) — move it back to restore.`; }
   if (profileInUse) out.note += ' Its profile dir was left in place (a live session is using it) — remove it after that session exits.';
@@ -255,12 +252,7 @@ function toolConfigUpdate(args) {
   if (args.features != null) {
     raw.features = { ...(raw.features || {}), ...args.features }; changed.push('features');
   }
-  if ('poolDb' in args) {
-    if (args.poolDb === null) { delete raw.poolDb; changed.push('poolDb removed'); }
-    else if (args.poolDb && args.poolDb.neonUrl) { raw.poolDb = args.poolDb; changed.push('poolDb'); }
-    else throw new Error('poolDb must be null (remove) or {neonUrl: "..."}');
-  }
-  if (!changed.length) throw new Error('nothing to change — pass defaultAccount, switchOrder, thresholds, features, and/or poolDb');
+  if (!changed.length) throw new Error('nothing to change — pass defaultAccount, switchOrder, thresholds, and/or features');
   const backup = writeRaw(raw);
   const cfg = C.loadConfig();
   return {
@@ -269,114 +261,12 @@ function toolConfigUpdate(args) {
     switchOrder: cfg.switchOrder,
     thresholds: cfg.thresholds,
     features: cfg.features,
-    poolDb: !!cfg.poolDb,
     migratedLegacyConfig: migrated,
     backup,
     note: LIVE_NOTE,
   };
 }
 
-// ---- pool metrics tools (kept from the former pool-mcp) --------------------------
-
-function poolNeonUrl() {
-  const cfg = C.loadConfig();
-  if (cfg.poolDb && cfg.poolDb.neonUrl) return cfg.poolDb.neonUrl;
-  throw new Error('no pool DB configured (arc-config poolDb.neonUrl)');
-}
-
-async function query(sql, params = []) {
-  const c = new Client(poolNeonUrl());
-  c.on('error', () => {});
-  await c.connect();
-  try {
-    const r = await c.query(sql, params);
-    return r.rows;
-  } finally {
-    await c.end().catch(() => {});
-  }
-}
-
-function fmtReset(ts) {
-  if (!ts) return null;
-  const d = new Date(ts);
-  const ms = d.getTime() - Date.now();
-  let rel;
-  if (ms <= 0) rel = 'now';
-  else if (ms < 3_600_000) rel = `in ${Math.round(ms / 60_000)}m`;
-  else {
-    const totalMin = Math.round(ms / 60_000); // round first, then split — avoids "2h60m"
-    rel = `in ${Math.floor(totalMin / 60)}h${totalMin % 60}m`;
-  }
-  const local = d.toLocaleString('en-US', {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
-  });
-  return { at: d.toISOString(), local, in: rel };
-}
-
-const pct = (v) => (v == null ? null : Math.round(v));
-
-function shapePool(r) {
-  const name = r.label || r.email || (r.id ? r.id.slice(0, 8) : 'account');
-  return {
-    account: name,
-    email: r.email || null,
-    status: r.status,
-    reason_code: r.reason_code || null,
-    plan_type: r.plan_type || null,
-    five_hour: { utilization_pct: pct(r.fh), resets_at: fmtReset(r.fh_reset) },
-    seven_day: { utilization_pct: pct(r.sd), resets_at: fmtReset(r.sd_reset) },
-    cooldown_until: fmtReset(r.cooldown_until),
-    last_used_at: r.last_used_at ? new Date(r.last_used_at).toISOString() : null,
-    usage_fetched_at: r.fetched_at ? new Date(r.fetched_at).toISOString() : null,
-    usage_stale: r.fetched_at ? (Date.now() - new Date(r.fetched_at).getTime() > 15 * 60_000) : true,
-    last_error: r.usage_error || r.acct_error || null,
-    per_model: r.per_model || null,
-  };
-}
-
-const BASE_SELECT = `
-  SELECT p.id, p.email, p.label, p.status, p.reason_code,
-         p.cooldown_until, p.last_used_at, p.last_error AS acct_error,
-         au.five_hour_utilization  AS fh, au.five_hour_resets_at  AS fh_reset,
-         au.seven_day_utilization  AS sd, au.seven_day_resets_at  AS sd_reset,
-         au.plan_type, au.per_model, au.fetched_at, au.last_error AS usage_error
-  FROM pool_accounts p
-  LEFT JOIN account_usage au ON au.account_id = p.id
-  WHERE p.type = 'claude_code'
-`;
-
-async function toolPoolStatus(args = {}) {
-  const rows = await query(BASE_SELECT + ' ORDER BY p.status, p.label, p.email');
-  let out = rows.map(shapePool);
-  if (!args.include_per_model) out = out.map(({ per_model, ...rest }) => rest);
-  if (args.only_available) {
-    out = out.filter((a) => a.status === 'active' && !a.cooldown_until);
-  }
-  const summary = {
-    total: rows.length,
-    available: rows.filter((r) => r.status === 'active' && !r.cooldown_until).length,
-    with_usage: rows.filter((r) => r.fetched_at).length,
-  };
-  return { summary, accounts: out };
-}
-
-async function toolPoolNextReset(args = {}) {
-  const min = args.min_utilization_pct != null ? args.min_utilization_pct : 90;
-  const rows = await query(BASE_SELECT);
-  const withReset = rows
-    .filter((r) => r.fh_reset)
-    .map((r) => ({ ...shapePool(r), _resetMs: new Date(r.fh_reset).getTime(), _fh: r.fh }));
-  const soonestAll = [...withReset].sort((a, b) => a._resetMs - b._resetMs)[0] || null;
-  const throttled = withReset
-    .filter((r) => r._fh != null && r._fh >= min)
-    .sort((a, b) => a._resetMs - b._resetMs);
-  const strip = (x) => { if (!x) return null; const { _resetMs, _fh, per_model, ...rest } = x; return rest; };
-  return {
-    threshold_pct: min,
-    soonest_reset_over_threshold: strip(throttled[0]),
-    soonest_reset_any: strip(soonestAll),
-  };
-}
 
 // ---- tool registry ---------------------------------------------------------------
 
@@ -388,12 +278,12 @@ const TOOLS = [
   },
   {
     name: 'account_add',
-    description: 'Add an account to the arc switcher. type "oauth" = a claude.ai subscription login (capture it later with `arc capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately switchable with arc:switch.',
+    description: 'Add an account to the arc switcher. type "oauth" = a claude.ai subscription login (capture it later with `arc capture <id>` if it is a second subscription). type "api" = an Anthropic-compatible gateway (needs baseUrl + one key source: apiKey inline, apiKeyEnv env-var name, or apiKeyFrom {file, regex with one capture group}). The new account is appended to switchOrder and immediately switchable with /arc-switch.',
     inputSchema: {
       type: 'object',
       required: ['id', 'type'],
       properties: {
-        id: { type: 'string', description: 'short id used in arc:switch <id> (alphanumeric, - _)' },
+        id: { type: 'string', description: 'short id used in /arc-switch <id> (alphanumeric, - _)' },
         type: { type: 'string', enum: ['oauth', 'api'] },
         label: { type: 'string', description: 'statusline label (default: ID uppercased)' },
         color: { type: 'string', description: 'statusline hex color, e.g. #2DD4BF' },
@@ -439,7 +329,7 @@ const TOOLS = [
   },
   {
     name: 'config_update',
-    description: 'Update arc switcher globals: defaultAccount (launch account), switchOrder (the arc:switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off), poolDb ({neonUrl} to set, null to remove pool metrics).',
+    description: 'Update arc switcher globals: defaultAccount (launch account), switchOrder (the /arc-switch cycle), thresholds (warnSessionPct/warnWeekPct/switchSessionPct/switchWeekPct), features (autoBest on/off).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -447,28 +337,6 @@ const TOOLS = [
         switchOrder: { type: 'array', items: { type: 'string' } },
         thresholds: { type: 'object' },
         features: { type: 'object' },
-        poolDb: { type: ['object', 'null'] },
-      },
-    },
-  },
-  {
-    name: 'pool_status',
-    description: 'List all pool accounts (from the configured pool metrics DB) with live utilization and reset times: 5-hour and 7-day utilization %, when each window resets, status, cooldown, plan type, and staleness of the usage data.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        include_per_model: { type: 'boolean', description: 'Include the per-model utilization breakdown (verbose). Default false.' },
-        only_available: { type: 'boolean', description: 'Only return accounts that are active and not in cooldown. Default false.' },
-      },
-    },
-  },
-  {
-    name: 'pool_next_reset',
-    description: 'Return the pool account whose 5-hour window resets soonest (among accounts at/over a utilization threshold), plus the soonest reset across ALL pool accounts.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        min_utilization_pct: { type: 'number', description: 'Only consider accounts whose 5h utilization is >= this. Default 90.' },
       },
     },
   },
@@ -480,14 +348,12 @@ const HANDLERS = {
   account_remove: toolAccountRemove,
   account_update: toolAccountUpdate,
   config_update: toolConfigUpdate,
-  pool_status: toolPoolStatus,
-  pool_next_reset: toolPoolNextReset,
 };
 
 // ---- server wiring ---------------------------------------------------------------
 
 const server = new Server(
-  { name: 'arc-mcp', version: '2.0.0' },
+  { name: 'arc-mcp', version: '1.0.0' },
   { capabilities: { tools: {} } }
 );
 

@@ -1,6 +1,6 @@
 # arc
 
-**A Claude-first native-stdio wrapper that adds account switching, session tools, and a coordination layer for [Claude Code](https://claude.com/claude-code) sessions working in the same repo.** Windows 11.
+**A Claude-first native-stdio wrapper that adds account switching, session tools, and a coordination layer for [Claude Code](https://claude.com/claude-code) sessions working in the same repo.** Windows.
 
 `arc` launches Claude Code with `stdio: inherit` (claude owns the TTY, so its own
 slash menus and rendering are pixel-perfect — no PTY/ConPTY garble) and layers on
@@ -17,7 +17,7 @@ The Claude account config fits any of these setups:
 |---|---|
 | Single subscription | one claude.ai login; you just want the session tools |
 | Two subscriptions | personal + work logins, switch between them |
-| Subscription + gateway | a claude.ai login + an Anthropic-compatible API pool/proxy |
+| Subscription + gateway | a claude.ai login + an Anthropic-compatible API gateway |
 | Gateway only | API base URL + key, no claude.ai login |
 | Any mix | N accounts; switch to any of them by name or number |
 
@@ -26,10 +26,10 @@ The Claude account config fits any of these setups:
 ## Highlights
 
 - **Switch accounts mid-conversation** — same chat continues on the other account, preserving model, permission mode, and effort (including `ultracode`).
-- **Zero-token interactive picker** — type `arc:switch` for an ↑/↓ arrow-key account menu that costs **no model tokens**, shows each account's live usage, and works even when the current account is fully rate-limited.
-- **Peek at all usage, zero tokens** — `arc:peek` prints every account's usage in one readout: subscription 5h/7d %, and gateway accounts' own cost/tokens.
+- **Zero-token interactive picker** — type `/arc-switch` for an ↑/↓ arrow-key account menu that costs **no model tokens**, shows each account's live usage, and works even when the current account is fully rate-limited.
+- **Peek at all usage, zero tokens** — `/arc-peek` prints every account's usage in one readout: subscription 5h/7d %, and gateway accounts' own cost/tokens.
 - **Auto-selects the best account at launch** — every `arc` / `arc --resume` prefers your subscription while it has headroom and falls to the most-available gateway only when it's exhausted. No flag; cost-aware; launch/resume only (never mid-session).
-- **Add any account, guided** — bare `arc:add-account` opens a wizard (pick Subscription vs Gateway, then prompts). Subscriptions drive the native browser login; **gateways** verify the endpoint, auto-detect models, and store the key.
+- **Add any account, guided** — bare `/arc-add-account` opens a wizard (pick Subscription vs Gateway, then prompts). Subscriptions drive the native browser login; **gateways** verify the endpoint, auto-detect models, and store the key.
 - **Keys encrypted at rest** — a gateway key can be **DPAPI-encrypted inside the config** (no plaintext file), bound to your Windows login; `arc set-key <id>` to set/rotate.
 - **Gateway usage in the statusline + peek** — if a gateway exposes a usage endpoint, arc shows the account's real cost/tokens (a cached, zero-token metadata call) — e.g. `MATE $103.60 today · 62.9M tok`.
 - **Manage accounts conversationally** — an MCP server exposes `account_add` / `remove` / `update` / `config_update` to any session.
@@ -42,7 +42,7 @@ The Claude account config fits any of these setups:
 
 ## Demo
 
-`arc:switch` opens the picker — no tokens, driven entirely by arrow keys, with each
+`/arc-switch` opens the picker — no tokens, driven entirely by arrow keys, with each
 account's live usage inline:
 
 ```text
@@ -51,29 +51,28 @@ account's live usage inline:
    1. max   ·  MAX  [oauth]   5h 31% · 7d 26%              ← current
  ❯ 2. mate  ·  MATE [api]     $118 today · 66.3M tok · unlimited   ← selected
 
-  tip: arc:switch <name> jumps directly · arc:help lists all commands
+  tip: /arc-switch <name> jumps directly · /arc-help lists all commands
 ```
 
-`arc:peek` prints the same usage for every account as a plain, zero-token readout:
+`/arc-peek` prints the same usage for every account as a plain, zero-token readout:
 
 ```text
 arc usage — peek
-  MAX  [subscription]   5h 31% · 7d 26%  (resets 8pm)   1m ago
-  MATE [gateway]        $118 today · 66.3M tok · 493 req · unlimited   2m ago
+  MAX  [sub]   5h 31%  ·  7d 26%  (resets 8pm)   1m ago
+      7d · Fable 23%
+  MATE [gw]    $118 today · 66.3M tok · 493 req · unlimited   2m ago
       opus-4-8   64.3M tok · $116
       haiku-4-5  1.5M tok · $1.73
 ```
 
-<!-- Replace the block above with a real recording once captured:
-     drop the file at docs/picker.gif and uncomment the next line.
-![account picker](docs/picker.gif)
--->
+(The account you are currently on is tinted in the live output; per-model weekly
+lines appear when the subscription's usage payload carries them.)
 
 ---
 
 ## Requirements
 
-- **Windows 11.** arc is Windows-only — DPAPI key encryption, WinRT toasts with
+- **Windows.** arc is Windows-only — DPAPI key encryption, WinRT toasts with
   click-to-focus, and directory junctions for per-account credential isolation all
   lean on Windows. (It used to be cross-platform; that was dropped as untested weight.)
 - **Node.js**
@@ -92,7 +91,7 @@ arc doctor  # verify
 arc         # launch
 ```
 
-The installer is re-runnable and idempotent: it deploys scripts + commands into
+The installer is re-runnable and idempotent: it deploys scripts + the `/arc-*` skill stubs into
 `~/.claude`, adds a `arc` launcher to `~/.local/bin`, installs and registers the MCP
 server, generates toast icons, registers the `arc-focus:` click-to-focus protocol, and
 **merges** hooks + statusline into `settings.json` (backing it up first — never
@@ -105,7 +104,9 @@ DPAPI-encrypted `apiKeyEnc` blob in the config, bound to this Windows user+machi
 copied config is useless elsewhere). You can also point an account at an env var
 (`apiKeyEnv`) or a file + regex (`apiKeyFrom`) instead.
 
-To update later: `git pull`, re-run the installer, and `arc:restart` any live sessions.
+To update later: `git pull`, re-run the installer, and `/arc-restart` any live sessions —
+or just `arc update`, which pulls the latest GitHub Release and runs its installer for you
+(arc also checks at launch and offers when a newer release exists).
 
 ---
 
@@ -115,37 +116,35 @@ To update later: `git pull`, re-run the installer, and `arc:restart` any live se
 
 | Command | What it does | Tokens |
 |---|---|---|
-| `arc:switch` | open the interactive account picker (shows each account's usage) | **0** |
-| `arc:switch <n\|name>` | switch straight to an account | **0** |
-| `arc:peek` (`arc:usage`) | usage readout of **all** accounts (subscription 5h/7d + gateway cost/tokens) | **0** |
-| `arc:add-account` | open the add-account **wizard** — pick Subscription or Gateway, then prompts | **0** |
-| `arc:add-account <id>` | add a **subscription** via guided browser login | **0** |
-| `arc:add-account <id> --api --url <gw>` | add a **gateway/pool** — verifies it, auto-detects models, encrypts the key | **0** |
-| `arc:remove-account <id>` (alias `arc:delete-account`) | remove an account (double-confirmed; `<id> confirm` to finish) | **0** |
-| `arc:export [sel]` | archive chat sessions to a `.tgz` (bare = current conv) | **0** |
-| `arc:import <archive>` | merge sessions from an archive (newer-wins, safe) | **0** |
-| `arc:delete` | delete THIS conversation → recoverable trash, start fresh (double-confirmed) | **0** |
-| `arc:trash` | list the deleted-conversation trash | **0** |
-| `arc:trash restore <id>` (or `arc:restore <id>`) | restore a deleted conversation from trash | **0** |
-| `arc:trash empty` | **permanently** purge the trash (double-confirmed) | **0** |
-| `arc:restart` | reload the wrapper + relaunch this conversation | **0** |
-| `arc:role <name>` | claim a role in this repo's **board** (survives restart + switch) | **0** |
-| `arc:role` | who am I, and who else is working in this repo? | **0** |
-| `arc:note <role\|all> <text>` | stick a note on the board for a peer | **0** |
-| `arc:notes` | read your unread notes (they also arrive automatically) | **0** |
-| `arc:notes all` | the whole board, nothing marked read | **0** |
-| `arc:anchors` | which doc claims about the code have gone **stale** | **0** |
-| `arc:anchors reseal` | after fixing the docs, make the current code the baseline | **0** |
-| `arc:help` (`arc:arc`) | print this cheat sheet | **0** |
+| `/arc-switch` | open the interactive account picker (shows each account's usage) | **0** |
+| `/arc-switch <n\|name>` | switch straight to an account | **0** |
+| `/arc-peek` | usage readout of **all** accounts (subscription 5h/7d + gateway cost/tokens) | **0** |
+| `/arc-add-account` | open the add-account **wizard** — pick Subscription or Gateway, then prompts | **0** |
+| `/arc-add-account <id>` | add a **subscription** via guided browser login | **0** |
+| `/arc-add-account <id> --api --url <gw>` | add a **gateway** — verifies it, auto-detects models, encrypts the key | **0** |
+| `/arc-remove-account <id>` | remove an account (double-confirmed; `<id> confirm` to finish) | **0** |
+| `/arc-rename [<old>] <new>` | rename an account, keeping its login and chats (one arg = this session's account) | **0** |
+| `/arc-export [sel]` | archive chat sessions to a `.tgz` (bare = current conv) | **0** |
+| `/arc-import <archive>` | merge sessions from an archive (newer-wins, safe) | **0** |
+| `/arc-delete` | delete THIS conversation → recoverable trash, start fresh (double-confirmed) | **0** |
+| `/arc-trash` | list the deleted-conversation trash | **0** |
+| `/arc-trash restore <id>` | restore a deleted conversation from trash | **0** |
+| `/arc-trash empty` | **permanently** purge the trash (double-confirmed) | **0** |
+| `/arc-restart` | reload the wrapper + relaunch this conversation | **0** |
+| `/arc-role <name>` | claim a role in this repo's **board** (survives restart + switch) | **0** |
+| `/arc-role` | who am I, and who else is working in this repo? | **0** |
+| `/arc-note <role\|all> <text>` | stick a note on the board for a peer | **0** |
+| `/arc-notes` | read your unread notes (they also arrive automatically) | **0** |
+| `/arc-notes all` | the whole board, nothing marked read | **0** |
+| `/arc-mode [passive\|balanced\|active]` | set agent initiative (bare opens the ← / → dial) | **0** |
+| `/arc-help` | print this cheat sheet | **0** |
 
 
-The `arc:` forms are plain messages caught by a hook **before** the model runs —
-that's why they cost nothing and keep working when the account is rate-limited (a
-slash command's bash can't get past the safety classifier, because the classifier
-runs on the exhausted account). That deadlock is exactly why `arc:switch` /
-`arc:restart` / `arc:help` replaced the old `/switch`, `/restart`, and `/cl` slash
-commands — arc ships **no slash commands** now; everything is a zero-token
-`arc:` sentinel.
+The `/arc-*` commands are caught by a hook **before** the model runs — Claude Code
+hands the hook the *raw typed* `/command` before any skill expansion — which is why
+they cost nothing and keep working when the account is rate-limited. Type `/arc` for
+the autocomplete menu. `/arc-<verb>` is the only prompt spelling, and the commands
+never touch a model or classifier, so an exhausted account can't wedge them.
 
 ### The board — two sessions, one repo
 
@@ -155,8 +154,8 @@ the git repo root, so every `arc` session started anywhere inside it are peers.
 
 ```
 # terminal 1                      # terminal 2
-arc:role research                  arc:role coding
-arc:note coding P-014 spec changed
+/arc-role research                 /arc-role coding
+/arc-note coding P-014 spec changed
                                   ← statusline shows: 📌 1 from research
                                   ← the note is in the agent's context on your next prompt
 ```
@@ -172,7 +171,8 @@ to run `arc join <role>` in the background: it blocks for free until a note land
 and that exit is what re-invokes the agent. This is the only wake channel there is (arc runs
 claude on a real terminal and holds no handle into it), which is why it must be the session's own
 command. Nothing to remember: arc asks, once, every time it would otherwise go deaf. If a
-role-holder never armed one, the statusline says `⚠ <role> · DEAF`.
+role-holder never armed one and sits genuinely idle, the statusline says `⚠ <role> · DEAF`
+(a busy mid-turn session is never badged — its transcript still beating is the proof of life).
 
 **Ask for a peer in prose; there is no command for you to type.** Say *"get research on this"* and
 the agent runs `arc delegate research "<packet>"` — **one verb**, whoever that peer is right now:
@@ -189,7 +189,7 @@ branch on it drifts. Revival is the part that matters — a peer beats a subagen
 accumulated context, so refilling a chair by forking someone else would hand the role's name to a
 session with none of its memory.
 
-Staffing an empty chair spawns a real session, so the `arc:mode` dial gates that one step:
+Staffing an empty chair spawns a real session, so the `/arc-mode` dial gates that one step:
 `passive` refuses, `balanced` asks you first, `active` auto-approves (and still asks once several
 peers are live — each burns its own quota). Noting a *live* peer is never gated; it's just a note.
 
@@ -209,7 +209,7 @@ roster:
 a duplicate under a synonym. A note to an empty chair still keeps (the cursor is per-*role*, so
 whoever claims it next reads it in full), and arc says so rather than returning a silent ✓.
 
-**The agents use all of this themselves.** An agent can't *type* `arc:note` (the hook eats it
+**The agents use all of this themselves.** An agent can't *type* `/arc-note` (the hook eats it
 before the model), but it can **run** the CLI form via its shell — `arc note all "<line>"`,
 `arc note <role> --kind request "<packet>"`, `arc role`, `arc notes`, `arc join <role>`. The
 bundled `peers` skill teaches the protocol: *when* a note is worth leaving (a shared API/schema
@@ -243,7 +243,7 @@ Ticking the task *is* the handoff, and it arrives with evidence. Set the policy 
 
 | mode | behaviour |
 |---|---|
-| `note` *(default)* | always posts; a completion with no commit is posted and flagged `UNVERIFIED` |
+| `note` *(default)* | always posts; a completion with no commit posts as plain `info`, marked `(no commit — not code-backed)`, so it never outranks a tick that proves itself |
 | `strict` | **refuses** to mark a task done when no commit backs it, and tells the agent why |
 | `off` | no notes, no gate |
 
@@ -268,45 +268,6 @@ role), broadcasts a note with the sha + changed files, and is a **no-op** for an
 made outside a arc session (so manual commits don't spam). It runs after the commit, so
 it can never block or fail it. Remove the hook file to disable.
 
-### When a doc's claim about the code goes stale
-
-`done` notes prove work *happened*. The other half of drift is a doc that quietly stops
-being true. Put an **anchor** next to the claim:
-
-```markdown
-<!-- arc:anchor src/auth.ts#handleLogin -->
-P-014: handleLogin validates the nonce before issuing a session.
-```
-
-arc seals the anchor the first time it sees it (hashing that symbol's block) and
-re-checks on every commit. Rewrite `handleLogin` and a **high-priority** note lands on
-the board — which the research session receives at the top of its next turn, ranked
-above everything else, plus a desktop toast:
-
-```
-#2  from coding  [!]
-    STALE: docs/plan.md describes src/auth.ts#handleLogin, but the code it points at CHANGED.
-    refs: {"doc":"docs/plan.md","anchor":"src/auth.ts#handleLogin","why":"changed"}
-```
-
-`arc:anchors` lists them; `arc:anchors reseal` re-baselines after you've fixed the docs.
-
-Honest limits. This is a **fingerprint, not a parse** — arc has zero dependencies, so
-tree-sitter (which is the *right* answer, see
-[fiberplane/drift](https://github.com/fiberplane/drift), and would need native prebuilds)
-is out. It finds the first line
-that defines the symbol and hashes the block down to the next line indented no deeper.
-So: a **rename** reports "gone", not "renamed"; a **reformat** reports "changed" even
-when the meaning didn't. It over-reports rather than under-reports, which is the right
-bias for an alarm — a false STALE costs you a glance, a missed one costs a wrong
-decision. An anchor that never resolved (a doc *example*, or a typo) is reported as
-`unresolved` and never nags.
-
-> Trade-off: `arc:` sentinels are plain text, so they don't get the `/` menu's
-> autocomplete (Claude Code's completion is hardcoded to `/` and `@`, with no
-> extension point for a custom prefix). Zero-token + rate-limit-immune is the
-> deliberate choice over typeahead.
-
 **In your terminal** (not inside a session):
 
 | Command | What it does |
@@ -316,9 +277,9 @@ decision. An anchor that never resolved (a doc *example*, or a typo) is reported
 | `arc --effort <level>` | pin the effort for the whole session |
 | `arc --resume <uuid>` / `arc --resume` | resume, restoring model / mode / effort (incl. ultracode) |
 | `arc add-account <id>` | add a subscription (browser login) |
-| `arc add-account <id> --api --url <gw>` | add a gateway/pool account (same as the `arc:` form) |
+| `arc add-account <id> --api --url <gw>` | add a gateway account (the shell twin of `/arc-add-account`) |
 | `arc set-key <id>` | set/rotate an api account's key, DPAPI-encrypted (from clipboard / `--file` / `--stdin`) |
-| `arc peek` | usage readout of all accounts (same as `arc:peek`) |
+| `arc peek` | usage readout of all accounts (the shell twin of `/arc-peek`) |
 | `arc capture <id>` | adopt the currently-active login into an account's profile |
 | `arc setup` | (re)configure accounts |
 | `arc doctor` | print resolved config + health checks |
@@ -339,20 +300,20 @@ Everything lives in `~/.claude/arc-config.json` (created by `arc setup`):
 
     // api = any Anthropic-compatible gateway
     {
-      "id": "pool", "label": "POOL", "color": "#2DD4BF", "type": "api",
+      "id": "mate", "label": "MATE", "color": "#2DD4BF", "type": "api",
       "baseUrl": "https://my-gateway.example.com",
       "apiKeyEnv": "MY_GATEWAY_KEY",            // key: env var, or "apiKey" inline, or
       // "apiKeyFrom": { "file": "~/keys.txt", "regex": "key=(sk-[\\w-]+)" }, or
-      // "apiKeyEnc": "AQAAAN…"                 // DPAPI-encrypted; set via `arc set-key pool`
+      // "apiKeyEnc": "AQAAAN…"                 // DPAPI-encrypted; set via `arc set-key mate`
       "modelMap": { "opus": "opus", "sonnet": "sonnet", "haiku": "haiku", "fable": "fable" },
       "headers": { "x-title": "claude" }
       // "usageUrl": "<baseUrl>/v1/usage" by default (false to disable) — the gateway's own usage endpoint
     }
   ],
-  "switchOrder": ["max", "pool"],
+  "switchOrder": ["max", "mate"],
   "thresholds": { "warnSessionPct": 85, "warnWeekPct": 90, "switchSessionPct": 92, "switchWeekPct": 95 },
   "features": { "autoBest": true },
-  "poolDb": { "neonUrl": "postgresql://..." }   // optional — enables pool metrics
+  "spawnProfile": "PowerShell"   // optional — dress spawned peer tabs in this Windows Terminal profile
 }
 ```
 
@@ -368,23 +329,23 @@ Everything lives in `~/.claude/arc-config.json` (created by `arc setup`):
   `apiKeyEnv` env var, `apiKeyFrom` file+regex, or **`apiKeyEnc`** (DPAPI-encrypted
   in the config — no plaintext on disk; set with `arc set-key <id>`). `modelMap`
   maps the opus/sonnet/haiku/fable aliases to the gateway's model names. Optional
-  `usageUrl` surfaces the gateway's own usage in the statusline + `arc:peek`.
+  `usageUrl` surfaces the gateway's own usage in the statusline + `/arc-peek`.
 
-**The add-account wizard — bare `arc:add-account`** (no args): opens a `arc:switch`-style
-screen to pick **Subscription** vs **Gateway/pool**, then walks you through the details
+**The add-account wizard — bare `/arc-add-account`** (no args): opens a `/arc-switch`-style
+screen to pick **Subscription** vs **Gateway**, then walks you through the details
 (id, and for a gateway: URL, label, and reading the key from your clipboard). It delegates
 to the two flows below, so you never need to remember the flags.
 
-**Adding a subscription — `arc add-account <id>`** (terminal) **or `arc:add-account <id>`**
+**Adding a subscription — `arc add-account <id>`** (terminal) **or `/arc-add-account <id>`**
 (in-session): runs `claude auth login` (browser OAuth) with `CLAUDE_CONFIG_DIR`
 pointed at the new account's **own profile**, so the login is written privately
 there and **no other account is read, written, or disturbed**, then registers the
 account. Flags:
 `--label`, `--email` (prefill), `--color`, `--console` (API billing), `--default`.
-The `arc:` form runs it right inside a session (the wrapper takes over the terminal
+The `/arc-` form runs it right inside a session (the wrapper takes over the terminal
 for the login, then relaunches your conversation).
 
-**Adding a gateway/pool — `arc:add-account <id> --api --url <gateway>`** (or `arc add-account …`):
+**Adding a gateway — `/arc-add-account <id> --api --url <gateway>`** (or `arc add-account …`):
 no browser. arc calls the gateway's `/v1/models` to **verify the key works and it's a
 Claude gateway**, **auto-detects the model names** to build the `modelMap` (e.g.
 opus→`claude-opus-4-8`), **DPAPI-encrypts the key** into `apiKeyEnc` (no plaintext on
@@ -402,8 +363,8 @@ Unmapped families fall back to Claude Code's own default model ids. The probe se
 `anthropic-version` so a dual Claude+GPT gateway (one universal key) returns its Claude
 models, not GPT ones.
 
-**Removing an account — `arc:remove-account <id>`** (alias **`arc:delete-account`**,
-double-confirmed): step 1 shows exactly what will happen and arms a 2-minute
+**Removing an account — `/arc-remove-account <id>`** (double-confirmed):
+step 1 shows exactly what will happen and arms a 2-minute
 confirmation; step 2 (`… <id> confirm`) actually removes it. It backs up
 `arc-config.json` first, auto-fixes references (switch order / default),
 and **never deletes the captured login file** — so removal is recoverable by
@@ -411,12 +372,12 @@ restoring the backup. Refuses to remove the last account. If **live sessions are
 using the account**, step 1 warns you (in red) — removal never kills a session, but
 those sessions drop to the default on their next switch/restart.
 
-**Deleting a conversation & the trash — `arc:delete` / `arc:trash`:** `arc:delete`
+**Deleting a conversation & the trash — `/arc-delete` / `/arc-trash`:** `/arc-delete`
 (double-confirmed) never hard-deletes — it MOVES the current conversation to
-`~/.claude/backups/arc-deleted-<ts>/` and starts a fresh session. `arc:trash` lists
-what's in the trash (id, size, deletion time, project); `arc:trash restore <id>`
-(or the `arc:restore <id>` shorthand) moves one back so `arc --resume <id>` works
-again from its project folder; `arc:trash empty` (double-confirmed, red warning)
+`~/.claude/backups/arc-deleted-<ts>/` and starts a fresh session. `/arc-trash` lists
+what's in the trash (id, size, deletion time, project); `/arc-trash restore <id>`
+moves one back so `arc --resume <id>` works
+again from its project folder; `/arc-trash empty` (double-confirmed, red warning)
 **permanently** purges the trash — the only hard-delete in the kit, and it only
 ever touches `arc-deleted-*` folders (config and account backups are never trash).
 All of it also works from the terminal: `arc trash [restore <id>|empty]`.
@@ -425,7 +386,7 @@ All of it also works from the terminal: `arc trash [restore <id>|empty]`.
 every fresh `arc` and `arc --resume` picks the account with the most headroom so you
 never start on an exhausted one — *without* a flag. The policy is cost-aware: it
 **prefers a subscription** (any `oauth` account) while it still has 5h/7d headroom,
-and only falls to the most-available `api`/pool account when the subscription is
+and only falls to an `api` gateway account when the subscription is
 exhausted (over `switchSessionPct` / `switchWeekPct`); if everything is exhausted
 it stays on the subscription (least-bad). It reads the statusline's usage cache —
 no extra network call — and does nothing if there's no cache yet. This is
@@ -433,24 +394,20 @@ no extra network call — and does nothing if there's no cache yet. This is
 overrides it for one launch; `"autoBest": false` disables it. `arc doctor` prints
 the account it *would* pick right now.
 
-**Gateway usage in the statusline + `arc:peek` (`usageUrl`):** if a gateway exposes its
+**Gateway usage in the statusline + `/arc-peek` (`usageUrl`):** if a gateway exposes its
 own usage endpoint, arc shows the account's real cost/tokens. By default it tries
 `<baseUrl>/v1/usage` (what MATE-style gateways serve — `{ usage:{today}, subscription:{limits},
 model_stats, mode, unit }`); set `"usageUrl": "<url>"` to override or `false` to disable.
 arc fetches it (cached ~5 min, zero model tokens — a metadata call) and renders e.g.
-`MATE $103.60 today · 62.9M tok · unlimited`, with a per-model breakdown in `arc:peek`.
+`MATE $103.60 today · 62.9M tok · unlimited`, with a per-model breakdown in `/arc-peek`.
 Token counts/cost are the gateway's own numbers; there's no 5h/7d window unless the
 gateway reports one (that's an Anthropic-subscription concept). See `src/gw-usage.js`.
-
-**Optional pool metrics (`poolDb.neonUrl`):** point it at a Postgres DB with
-`pool_accounts` / `account_usage` tables to get per-account utilization in the
-statusline and the `pool_status` / `pool_next_reset` MCP tools.
 
 **Manage accounts conversationally (MCP):** the `arc` MCP server exposes
 `account_list` / `account_add` / `account_remove` / `account_update` /
 `config_update` — e.g. *"add my work gateway at https://… with the key in env
 WORK_KEY"*. Every write backs up `arc-config.json`, validates before committing,
-and never echoes secrets. Changes are `arc:switch`-able immediately, no restart.
+and never echoes secrets. Changes are `/arc-switch`-able immediately, no restart.
 
 ---
 
@@ -466,11 +423,11 @@ and never echoes secrets. Changes are `arc:switch`-able immediately, no restart.
   *model* costs none of that: it arrives as an account (a proxy). The runtime adapters, the
   transcript transpiler and the cross-runtime session registry were deleted; they are
   recoverable from git history if that changes.
-- **Switching is manual, via triggers.** The `arc:switch` hook drops a per-session
+- **Switching is manual, via triggers.** The `/arc-switch` hook drops a per-session
   trigger file; the wrapper polls for it, kills claude, and relaunches the *same
   conversation* (`--resume <uuid>`) on the other account, re-applying model /
   permission-mode / effort. There is **no** usage-based auto-switching.
-- **Zero-token path via hooks.** `arc:switch` / `arc:restart` are caught by a
+- **Zero-token path via hooks.** `/arc-switch` / `/arc-restart` are caught by a
   `UserPromptSubmit` hook that blocks the prompt before any model turn — so they
   cost nothing and are immune to the rate-limit deadlock that stopped the old
   `/switch` slash command (whose bash needed a classifier on the dead account).
@@ -495,14 +452,14 @@ ships a discrete **export / import** so you can carry chats between PCs (no
 realtime sync daemon, no concurrency risk):
 
 ```
-arc:export                 # archive the CURRENT conversation → ~/arc-export-<ts>.tgz
-arc:export all             # every session in THIS project folder
-arc:export global          # every session on this machine (everything)
-arc:export <project|id>    # one project's sessions, or one conversation   ·   --since <days>
-arc:export ... --out <f>   # choose the archive path
-arc:import <archive.tgz>   # merge into ~/.claude/projects  ( --dry-run / --force / --skip-existing )
-arc:import <archive> E:    # re-root every project in the bundle under E:\ so it resumes at a
-                          # LOCAL path (home's E:\whaletech\proj → E:\proj). `--dest E:` is identical.
+/arc-export                 # archive the CURRENT conversation → ~/arc-export-<ts>.tgz
+/arc-export all             # every session in THIS project folder
+/arc-export global          # every session on this machine (everything)
+/arc-export <project|id>    # one project's sessions, or one conversation   ·   --since <days>
+/arc-export ... --out <f>   # choose the archive path
+/arc-import <archive.tgz>   # merge into ~/.claude/projects  ( --dry-run / --force / --skip-existing )
+/arc-import <archive> E:    # re-root every project in the bundle under E:\ so it resumes at a
+                           # LOCAL path (home's E:\whaletech\proj → E:\proj). `--dest E:` is identical.
 ```
 
 Export bundles each session's transcript **plus** its sidecar (subagents, tool
@@ -525,10 +482,10 @@ of arc's features, because to arc it is just another account to switch to.
 
 Give arc a gateway that serves a GPT model on the OpenAI API (`/v1/chat/completions`), and arc
 runs Claude Code's harness on it: same session, same board, same hooks, same tools — only the
-model and the quota change. `arc:add-account` asks which provider first; pick **Codex / GPT**,
+model and the quota change. `/arc-add-account` asks which provider first; pick **Codex / GPT**,
 give the gateway URL and key, and arc **discovers the GPT models the gateway serves** and maps
 them onto Claude Code's tiers, so `/model opus|sonnet|haiku` switches between them in-session
-(e.g. Sol / Terra / Luna). `arc:switch <id>` moves you onto the account.
+(e.g. Sol / Terra / Luna). `/arc-switch <id>` moves you onto the account.
 
 How it works: Claude Code speaks only the Anthropic Messages API; a GPT gateway speaks OpenAI.
 So arc **auto-spawns a tiny local translator** (`arc-claudex-proxy`, 127.0.0.1 only) that
@@ -564,11 +521,11 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
 
 ## Troubleshooting
 
-- **`arc:switch` didn't open the picker / was treated as a normal message** — the
-  running wrapper predates the code change. `arc:restart` the session (it re-execs
+- **`/arc-switch` didn't open the picker / was treated as a normal message** — the
+  running wrapper predates the code change. `/arc-restart` the session (it re-execs
   the wrapper from disk). Any time arc-runner.js changes, live sessions need one
-  `arc:restart`; hooks and the statusline reload on their own.
-- **Switching while rate-limited** — `arc:switch` / `arc:restart` are caught by a
+  `/arc-restart`; hooks and the statusline reload on their own.
+- **Switching while rate-limited** — `/arc-switch` / `/arc-restart` are caught by a
   hook before the model runs, so they work even when the account is exhausted.
   (The removed `/switch` slash command couldn't: its bash needed a safety
   classifier that runs on the same dead account — the deadlock these forms fix.)
@@ -588,15 +545,14 @@ The repo has all the *code* but deliberately **not** your accounts or secrets
 ```
 src/            wrapper + hooks, account switching, the board (notes/roles/claims,
                 duty roster, peer invite), bundles, status/usage tools
-mcp/            arc MCP server (account management + pool metrics tools)
-pool/           optional pool-DB metrics tooling (pool-query, pool-neon-url)
+mcp/            arc MCP server (account management tools)
 test/           test suite (run.js; `npm test`) — Windows, incl. a real DPAPI round-trip
-install.ps1     Windows 11 installer (idempotent)
+install.ps1     Windows installer (idempotent)
 ```
 
 ## Notes & limitations
 
-- **Windows 11 only.** DPAPI key encryption, WinRT toasts with click-to-focus, and
+- **Windows only.** DPAPI key encryption, WinRT toasts with click-to-focus, and
   the directory junctions behind per-account credential isolation all lean on Windows.
   (It was tri-platform once; that support was untested weight and got removed.) Keys
   are a DPAPI `apiKeyEnc` blob by default, or `apiKeyEnv` / `apiKeyFrom`.
@@ -604,13 +560,13 @@ install.ps1     Windows 11 installer (idempotent)
   automatically (state daily, effort memories after 7 days, conversation locks by
   process liveness). Runtime-neutral aliases and logical sessions live under
   `~/.arc`.
-- `arc:switch` is the token-free interactive path. Slash commands can't match it:
-  a *custom* slash command always costs a small model turn (Claude Code reserves
-  the instant path for built-ins), which is why the old `/switch`, `/restart`, and
-  `/cl` were all removed in favor of zero-token `arc:` sentinels. The one thing the
-  `/` menu offers that `arc:` can't is **autocomplete** — Claude Code's in-input
-  completion is hardcoded to `/` and `@` with no extension point for a custom
-  prefix, so that typeahead is the price of the zero-token/rate-limit-immune path.
+- `/arc-switch` and every other `/arc-<verb>` command are token-free: a *custom*
+  slash command normally costs a small model turn, but Claude Code submits the raw
+  typed `/command` through UserPromptSubmit **before** skill expansion, and arc's
+  hook eats `/arc-<verb>` there — so the `/` menu's autocomplete costs nothing.
+  The `/arc-*` menu entries are skill stubs whose bodies never load (the hook
+  blocks first); `skillOverrides: user-invocable-only` keeps them out of the
+  model's skill listing, so they are zero ambient tokens too.
 - **`apiKeyEnc` is per user+machine** — a DPAPI blob only decrypts on the Windows
   account and machine that created it. Moving `arc-config.json` to another PC won't
   decrypt it; run `arc set-key <id>` there to re-encrypt. It's not defense against

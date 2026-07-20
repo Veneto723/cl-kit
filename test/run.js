@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// arc test suite — Windows 11. Pure Node built-ins, no dependencies, no
+// arc test suite — Windows. Pure Node built-ins, no dependencies, no
 // interactive `claude`, no GUI. Every test runs against a THROWAWAY HOME under the
 // temp dir (never the real ~/.claude); CI runs it on windows-latest. Section 7
 // exercises the real Windows key path (a DPAPI round-trip via powershell.exe).
@@ -36,6 +36,21 @@ fs.mkdirSync(CLAUDE, { recursive: true });
 const ROOT = path.join(__dirname, '..');
 const SRC = path.join(ROOT, 'src');
 
+// A pid that is PROVABLY dead on THIS machine, verified at suite start — never a guessed
+// constant. A guessed "dead" pid is machine-dependent state leaking into the suite: Windows
+// allocates pids as multiples of 4 (an ODD candidate is structurally unallocatable there),
+// but other OSes allocate densely up to pid_max, where 999999 can be a LIVE stranger on a
+// busy box — the environment-pollution class behind the listener-test flake suspicion
+// (roadmap item, audit #259). Candidates stay odd (999999, 999995, …) so the Windows
+// invariant holds even if a pid comes alive between this probe and a later liveness check,
+// and each is verified with the SAME probe the code under test uses (arc-board.isAlive),
+// so fixture and code can never disagree about what "dead" means.
+const DEAD_PID = (() => {
+  const { isAlive } = require(path.join(SRC, 'arc-board.js'));
+  for (let p = 999999; p > 4; p -= 4) if (!isAlive(p)) return p;
+  throw new Error('suite fixture: no dead pid found on this machine (should be impossible)');
+})();
+
 let pass = 0, fail = 0;
 const fails = [];
 function ok(name, cond, extra) {
@@ -49,7 +64,7 @@ console.log(`arc tests · ${process.platform} · node ${process.version} · HOME
 // ---- 1. syntax check every shipped .js --------------------------------------
 section('syntax (node --check, all platforms)');
 const jsFiles = [];
-for (const d of ['src', 'mcp', 'pool', 'test']) {
+for (const d of ['src', 'mcp', 'test']) {
   const dir = path.join(ROOT, d);
   try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.js')) jsFiles.push(path.join(dir, f)); } catch {}
 }
@@ -168,17 +183,17 @@ try {
 
   ok('sub with headroom wins (prefer the subscription)', pick(cfg([SUB, GW]), subUse(10)) === 'max');
   ok('THE FIX: exhausted sub + no-metrics gateway -> the GATEWAY', pick(cfg([SUB, GW]), subUse(100)) === 'whale');
-  ok('exhausted sub + gateway with measured headroom -> gateway', pick(cfg([SUB, GW]), withPool(subUse(100), 20)) === 'whale');
-  ok('OPTIMISM: exhausted sub + gateway measured busy -> STILL the gateway', pick(cfg([SUB, GW]), withPool(subUse(100), 100, 'cooldown')) === 'whale');
   ok('sub-only (no gateway), sub exhausted -> least-bad sub', pick(cfg([SUB]), subUse(100)) === 'max');
   ok('no cache -> null (do not guess)', core.chooseLaunchAccount(cfg([SUB, GW]), null) === null);
   ok('api-only config, no metrics -> the gateway', pick(cfg([GW]), subUse(100)) === 'whale');
-  // reasons must be HONEST about which gateway state was picked (guards the `null >= 0`
-  // JS-coercion trap that mislabels a no-metrics gateway as "most available").
   const reason = (c, cache) => core.chooseLaunchAccount(c, cache).reason;
-  ok('no-metrics gateway is labelled "assumed available"', /assumed available/.test(reason(cfg([SUB, GW]), subUse(100))));
-  ok('measured-headroom gateway is labelled "most available"', /most available/.test(reason(cfg([SUB, GW]), withPool(subUse(100), 20))));
-  ok('busy gateway is labelled "optimistic"', /optimistic/.test(reason(cfg([SUB, GW]), withPool(subUse(100), 100, 'cooldown'))));
+  ok('a gateway is labelled "assumed available" (no rate-limit metrics exist for one)',
+    /assumed available/.test(reason(cfg([SUB, GW]), subUse(100))));
+  // The pool-DB era is REMOVED (2026-07-18): a stale cache file may still carry pool rows,
+  // and they must be dead weight — never a headroom signal, never a different label.
+  ok('legacy cache.pool rows are ignored: same pick, same label',
+    pick(cfg([SUB, GW]), withPool(subUse(100), 20)) === 'whale'
+    && /assumed available/.test(reason(cfg([SUB, GW]), withPool(subUse(100), 100, 'cooldown'))));
 } catch (e) { ok('chooseLaunchAccount works', false, e.message); }
 
 // ---- 2b. per-account subscription usage attribution --------------------------
@@ -186,7 +201,7 @@ try {
 // with whichever account happened to be active. Right after a switch it was still
 // TTL-fresh, so the PREVIOUS account's numbers were painted under the new account's
 // label (and, looking fresh, suppressed the refresh that would have fixed them);
-// arc:peek and auto-select scored every oauth account off that same blob.
+// /arc-peek and auto-select scored every oauth account off that same blob.
 section('arc-switch-core (per-account usage attribution)');
 try {
   const core = require(path.join(SRC, 'arc-switch-core.js'));
@@ -304,6 +319,23 @@ try {
     fs.readFileSync(P.credsPath('acctB'), 'utf8').includes('tok-OTHER'));
   ok('ensureProfile is idempotent', P.ensureProfile('acctA') === dirA);
 
+  // THE CLOBBER REGRESSION: /permissions inside a PROFILED session writes to the profile's
+  // own settings.json; ensureProfile runs every launch and used to wholesale-replace the
+  // permissions key from root — silently deleting every rule the human added. Union, not
+  // replace: the human's grants survive, arc's new verbs still arrive, local scalars win.
+  const profSettings = path.join(dirA, 'settings.json');
+  const withUser = JSON.parse(fs.readFileSync(profSettings, 'utf8'));
+  withUser.permissions = { allow: ['Bash(git commit:*)', 'Bash(git add:*)'], defaultMode: 'auto' };
+  fs.writeFileSync(profSettings, JSON.stringify(withUser, null, 2));
+  writeJSON(path.join(CLAUDE, 'settings.json'),
+    { hooks: { Stop: [] }, statusLine: { type: 'command', command: 'x' }, permissions: { allow: ['Bash(arc close:*)'], defaultMode: 'plan' } });
+  P.ensureProfile('acctA');
+  const merged = JSON.parse(fs.readFileSync(profSettings, 'utf8')).permissions;
+  ok('sync UNION-merges permissions: the human\'s profile-local rules SURVIVE a launch',
+    merged.allow.includes('Bash(git commit:*)') && merged.allow.includes('Bash(git add:*)'));
+  ok('...while arc\'s new root verbs still arrive', merged.allow.includes('Bash(arc close:*)'));
+  ok('...and profile-local scalars win (defaultMode stays the profile\'s)', merged.defaultMode === 'auto');
+
   // removeProfile: account removal must QUARANTINE the profile dir (recoverable),
   // never abandon it in place — that abandonment is what stranded MAX/work.
   const dirB = P.profileDir('acctB');
@@ -382,14 +414,14 @@ try {
 
   // and doExport refuses `all` (rather than guessing) when the project is unknown
   const r = sync.doExport(S, 'all');
-  ok('`arc:export all` refuses when the project is undeterminable', r.ok === false && /which project folder/.test(r.message));
-  ok('  and it points at `arc:export global`', /arc:export global/.test(r.message));
+  ok('`/arc-export all` refuses when the project is undeterminable', r.ok === false && /which project folder/.test(r.message));
+  ok('  and it points at `/arc-export global`', /\/arc-export global/.test(r.message));
 
   try { fs.unlinkSync(path.join(cacheDir, `arc-state-${S}.json`)); } catch {}
 } catch (e) { ok('arc-sync export selectors work', false, e.message); }
 
-// ---- arc:import destination: a BARE positional == --dest ------------------------
-// Regression: `arc:import <archive> E:` silently IGNORED the `E:` — the import ran with
+// ---- /arc-import destination: a BARE positional == --dest -----------------------
+// Regression: `/arc-import <archive> E:` silently IGNORED the `E:` — the import ran with
 // no re-rooting and landed in the archive's original project dir, so --dest looked
 // broken. The bare form is what people actually type; it must mean the same as the flag.
 section('arc-sync (import destination)');
@@ -405,7 +437,7 @@ try {
   // a RELATIVE bare positional is caught and explained (not silently ignored, as before)
   const rel = sync.doImport('nosess', `"${tgz}" not-absolute --dry-run`);
   ok('a relative bare dest is REFUSED, not ignored', rel.ok === false && /must be an ABSOLUTE/.test(rel.message));
-  ok('  and the error shows BOTH forms', /--dest/.test(rel.message) && /arc:import <archive>/.test(rel.message));
+  ok('  and the error shows BOTH forms', /--dest/.test(rel.message) && /\/arc-import <archive>/.test(rel.message));
 
   // the explicit flag is still honoured, and wins over a positional
   const flag = sync.doImport('nosess', `"${tgz}" --dest bad-relative --dry-run`);
@@ -418,7 +450,7 @@ try {
   fs.unlinkSync(tgz);
 } catch (e) { ok('arc-sync import destination works', false, e.message); }
 
-// ---- arc-sync — arc:import --dest re-rooting (office/home path parity) ----------
+// ---- arc-sync — /arc-import --dest re-rooting (office/home path parity) ---------
 section('arc-sync (import --dest re-rooting)');
 try {
   const sync = require(path.join(SRC, 'arc-sync.js'));
@@ -487,12 +519,246 @@ try {
   }
 } catch (e) { ok('arc-sync --dest works', false, e.message); }
 
+// ---- arc-sync — the board travels (export stages .arc, import merges it) --------
+section('arc-sync (board export/import: the ledger merge + the audit-signed binning)');
+try {
+  const sync = require(path.join(SRC, 'arc-sync.js'));
+  const RM = require(path.join(SRC, 'arc-board.js'));
+
+  // -- mergeLedgers: the whole feature's correctness lives here --------------------
+  const J = (o) => JSON.stringify(o);
+  const noid1 = J({ from: 'a', body: 'legacy one' }), noid2 = J({ from: 'b', body: 'legacy two' });
+  const idA = J({ id: 'org1:aa', from: 'a', body: 'A' }), idB = J({ id: 'org1:bb', from: 'b', body: 'B' });
+  const idC = J({ id: 'org2:cc', from: 'c', body: 'C' });
+  const led = (...ls) => ls.join('\n') + '\n';
+
+  ok('merge: identical ledgers are a no-op (added 0)',
+    (() => { const m = sync.mergeLedgers(led(noid1, idA), led(noid1, idA)); return m.ok && m.added === 0 && m.text === led(noid1, idA); })());
+  ok('merge: archive ahead — new id-bearing notes append in archive order',
+    (() => { const m = sync.mergeLedgers(led(noid1, idA), led(noid1, idA, idB, idC));
+      return m.ok && m.added === 2 && m.text === led(noid1, idA, idB, idC); })());
+  ok('merge: local ahead — local kept byte-identical, nothing added',
+    (() => { const m = sync.mergeLedgers(led(noid1, idA, idB), led(noid1, idA)); return m.ok && m.added === 0 && m.text === led(noid1, idA, idB); })());
+  ok('merge: both sides new — union by id, local order first, archive-only appended',
+    (() => { const m = sync.mergeLedgers(led(idA, idB), led(idA, idC)); return m.ok && m.added === 1 && m.text === led(idA, idB, idC); })());
+  ok('merge: the LONGER id-less prefix wins whole (same synthetic ids on both machines)',
+    (() => { const m = sync.mergeLedgers(led(noid1, idA), led(noid1, noid2, idA));
+      return m.ok && m.added === 1 && m.text === led(noid1, noid2, idA); })());
+  ok('merge: DIVERGENT id-less prefixes REFUSE, naming the first diverging line',
+    (() => { const m = sync.mergeLedgers(led(noid1, idA), led(noid2, idA));
+      return m.ok === false && m.line === 1 && m.local === noid1 && m.archive === noid2 && /diverge/.test(m.reason); })());
+  ok('merge: a torn archive tail line (no id) is never imported',
+    (() => { const m = sync.mergeLedgers(led(idA), led(idA, idB) + '{"from":"x","bo'); return m.ok && m.added === 1 && m.text === led(idA, idB); })());
+  ok('merge: a fresh destination takes the whole archive',
+    (() => { const m = sync.mergeLedgers('', led(noid1, idA)); return m.ok && m.added === 2 && m.text === led(noid1, idA); })());
+
+  // -- E2E: export a repo's board, import it twice (same repo merge; --dest fresh) --
+  if (has('tar', ['--version'])) {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'brd-'));
+    const repoA = path.join(base, 'repoA');
+    fs.mkdirSync(path.join(repoA, '.git'), { recursive: true });
+    const bA = RM.resolveBoard(repoA); RM.ensureBoard(bA);
+    const cidA = '99999999-aaaa-bbbb-cccc-111111111111';
+    // the ledger: two frozen id-less lines, then two id-bearing
+    fs.writeFileSync(path.join(bA.planDir, 'notes.jsonl'), led(noid1, noid2, idA, idB));
+    // claims: one whose conversation travels (WITH a pid — export must strip it), one orphan
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', pid: DEAD_PID, sessionId: 'a-sess', convId: cidA, at: 7000 }));
+    fs.writeFileSync(path.join(bA.planDir, 'claim-ghost.json'), J({ role: 'ghost', pid: DEAD_PID, sessionId: 'g-sess', convId: 'no-such-conv-anywhere', at: 7000 }));
+    // cursors: alpha's session travels; cursor-notes is the OTHER machine's human — must stay home
+    fs.writeFileSync(path.join(bA.planDir, 'cursor-alpha.json'), J({ o: { x: 2 }, seq: 4, at: 9000 }));
+    fs.writeFileSync(path.join(bA.planDir, 'cursor-notes.json'), J({ o: { x: 1 }, seq: 1, at: 9000 }));
+    fs.writeFileSync(path.join(bA.planDir, 'seen-alpha.json'), J({ seq: 4, at: 9000 }));
+    // machine identity + transients — none of these may enter the archive
+    fs.writeFileSync(path.join(bA.planDir, 'origin.json'), J({ id: 'deadbeef', at: 1 }));
+    fs.writeFileSync(path.join(bA.planDir, 'anchor-state.json'), J({ lastHead: 'abc123' }));
+    fs.writeFileSync(path.join(bA.planDir, 'born-alpha.json'), J({ at: 1 }));
+    fs.writeFileSync(path.join(bA.planDir, 'spill-3.txt'), 'delivery cache');
+    fs.mkdirSync(path.join(repoA, '.arc', 'roles'), { recursive: true });
+    fs.writeFileSync(path.join(repoA, '.arc', 'roles', 'alpha.md'), '# alpha\nowns: x\n');
+    // the session whose launch cwd names this repo
+    const projA = sync.encodeProject(repoA);
+    const pdA = path.join(CLAUDE, 'projects', projA); fs.mkdirSync(pdA, { recursive: true });
+    fs.writeFileSync(path.join(pdA, cidA + '.jsonl'),
+      JSON.stringify({ type: 'user', cwd: repoA, message: { content: 'hi' }, timestamp: '2026-07-01T10:00:00.000Z' }) + '\n');
+
+    const tgz = path.join(base, 'board.tgz');
+    const ex = sync.doExport('brd-sess', `${projA} --out "${tgz}"`);
+    ok('export succeeds and reports the board riding along', ex.ok === true && /board "repoa"/.test(ex.message), ex.message);
+    ok('...the staging dir is cleaned up (finally)', !fs.existsSync(path.join(CLAUDE, 'projects', sync.BOARD_PREFIX + projA)));
+
+    // crack the archive open: the binning must hold ON DISK, not just in the report
+    const peek = fs.mkdtempSync(path.join(base, 'peek-'));
+    sync.runTar(['-xzf', tgz], { cwd: peek });
+    const stage = fs.readdirSync(peek).find((d) => d.startsWith(sync.BOARD_PREFIX));
+    ok('the archive holds a staged board dir', !!stage);
+    const sp = (rel) => path.join(peek, stage, rel);
+    ok('...ledger travels byte-exact', fs.readFileSync(sp('peer/notes.jsonl'), 'utf8') === led(noid1, noid2, idA, idB));
+    const tombA = JSON.parse(fs.readFileSync(sp('peer/claim-alpha.json'), 'utf8'));
+    ok('...claims are TOMBSTONED at export — pid stripped, convId kept', tombA.pid === undefined && tombA.convId === cidA && tombA.sessionId === 'a-sess');
+    ok('...origin/anchor-state/born/spill NEVER travel',
+      !fs.existsSync(sp('peer/origin.json')) && !fs.existsSync(sp('peer/anchor-state.json'))
+      && !fs.existsSync(sp('peer/born-alpha.json')) && !fs.existsSync(sp('peer/spill-3.txt')));
+    ok('...the charter travels', /# alpha/.test(fs.readFileSync(sp('roles/alpha.md'), 'utf8')));
+    ok('...board.json records the source repo root', JSON.parse(fs.readFileSync(sp('board.json'), 'utf8')).root === bA.root);
+
+    // IMPORT 1 — same repo: local moved on (a local-only note), archive merges INTO it
+    fs.appendFileSync(path.join(bA.planDir, 'notes.jsonl'), idC + '\n');
+    const im1 = sync.doImport('brd-sess', `"${tgz}"`);
+    ok('import into the SAME repo merges (0 new: archive is a subset of local)', im1.ok === true && /0 new note/.test(im1.message), im1.message);
+    ok('...local-only note survives untouched', fs.readFileSync(path.join(bA.planDir, 'notes.jsonl'), 'utf8') === led(noid1, noid2, idA, idB, idC));
+    ok('...the orphan claim is DROPPED — a revive pointer arc could not honour', /claim ghost: dropped/.test(im1.message));
+    ok('...the phantom-project guard holds: no board dir leaked into ~/.claude/projects',
+      !fs.readdirSync(path.join(CLAUDE, 'projects')).some((d) => d.startsWith(sync.BOARD_PREFIX)));
+
+    // IMPORT 2 — a HELD chair is never tombstoned (the live-destination guard, audit #232)
+    fs.writeFileSync(path.join(CLAUDE, 'cache', 'arc-state-brd-live.json'), J({ pid: process.pid, cwd: repoA }));
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', pid: process.pid, sessionId: 'brd-live', convId: cidA, at: Date.now() }));
+    const im2 = sync.doImport('brd-sess', `"${tgz}"`);
+    const liveClaim = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('a HELD chair survives import — never tombstone a live peer', /claim alpha: chair is HELD/.test(im2.message) && liveClaim.pid === process.pid, im2.message);
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', 'arc-state-brd-live.json')); } catch {}
+
+    // IMPORT 2b — a local TOMBSTONE that is newer AND revivable here beats the archive's stale
+    // one. The tiebreak must read the claim RAW: through roleClaim a tombstone is null, and the
+    // week-of-work-on-B revive pointer would be silently clobbered (audit #234).
+    const cidB = '99999999-aaaa-bbbb-cccc-222222222222';
+    fs.writeFileSync(path.join(pdA, cidB + '.jsonl'), JSON.stringify({ type: 'user', cwd: repoA, message: { content: 'newer life' }, timestamp: '2026-07-02T10:00:00.000Z' }) + '\n');
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', sessionId: 'b-sess', convId: cidB, at: 8000 }));
+    const im2b = sync.doImport('brd-sess', `"${tgz}"`);
+    const keptTomb = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('a NEWER local tombstone with a revivable conversation is KEPT (raw read, not roleClaim)',
+      /claim alpha: local revive pointer is newer/.test(im2b.message) && keptTomb.convId === cidB && keptTomb.at === 8000, im2b.message);
+
+    // IMPORT 2c — newer but BROKEN loses: a pointer this machine cannot revive is worth less
+    // than an older one it can (the local side passes the same availability gate).
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', sessionId: 'x-sess', convId: 'conv-that-exists-nowhere', at: 999999999 }));
+    const im2c = sync.doImport('brd-sess', `"${tgz}"`);
+    const healedTomb = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('a newer local pointer at an UNAVAILABLE conversation loses to a working archive one',
+      healedTomb.convId === cidA && healedTomb.pid === undefined, im2c.message);
+
+    // IMPORT 3 — --dest onto a fresh clone: the board lands whole, gated correctly
+    const destOuter = path.join(base, 'dest');
+    fs.mkdirSync(path.join(destOuter, path.basename(bA.root), '.git'), { recursive: true });
+    const im3 = sync.doImport('brd-sess', `"${tgz}" --dest "${destOuter}"`);
+    const bB = RM.resolveBoard(path.join(destOuter, path.basename(bA.root)));
+    ok('--dest: the board lands at the re-rooted repo', im3.ok === true && fs.existsSync(path.join(bB.planDir, 'notes.jsonl')), im3.message);
+    ok('...fresh destination takes the whole archive ledger', fs.readFileSync(path.join(bB.planDir, 'notes.jsonl'), 'utf8') === led(noid1, noid2, idA, idB));
+    const tombB = JSON.parse(fs.readFileSync(path.join(bB.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('...alpha claim lands as a pid-less tombstone (its transcript travelled)', tombB.pid === undefined && tombB.convId === cidA);
+    ok('...ghost claim never lands (transcript absent)', !fs.existsSync(path.join(bB.planDir, 'claim-ghost.json')));
+    ok('...cursor-alpha carried; cursor-notes stayed home',
+      fs.existsSync(path.join(bB.planDir, 'cursor-alpha.json')) && !fs.existsSync(path.join(bB.planDir, 'cursor-notes.json')));
+    ok('...origin was NOT imported — the destination mints its own', !fs.existsSync(path.join(bB.planDir, 'origin.json')));
+    ok('...the charter arrived', fs.existsSync(path.join(bB.root, '.arc', 'roles', 'alpha.md')));
+
+    // IMPORT 4 — divergence refuses E2E, local untouched, the LINE is named
+    const before = led(noid1, idA);
+    fs.writeFileSync(path.join(bA.planDir, 'notes.jsonl'), before.replace('legacy one', 'REWRITTEN HISTORY'));
+    const im4 = sync.doImport('brd-sess', `"${tgz}"`);
+    ok('divergent id-less prefixes REFUSE the merge and name the line',
+      /merge REFUSED/.test(im4.message) && /line 1/.test(im4.message), im4.message);
+    ok('...and the local board is untouched by the refusal',
+      fs.readFileSync(path.join(bA.planDir, 'notes.jsonl'), 'utf8') === before.replace('legacy one', 'REWRITTEN HISTORY'));
+
+    // IMPORT 5 — THE LANDING GATE (audit #236 defect 1): a transcript BLOCKED from landing
+    // (live-protected) must take its claim down with it AT THAT ROOT. The old gate answered
+    // "in the archive, or anywhere on disk?" — both true here — and minted a ghost pointer
+    // a revive from the new root could not honour.
+    fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-convlock-${cidA}.json`), J({ pid: process.pid }));
+    const destOuter2 = path.join(base, 'dest2');
+    fs.mkdirSync(path.join(destOuter2, path.basename(bA.root), '.git'), { recursive: true });
+    const im5 = sync.doImport('brd-sess', `"${tgz}" --dest "${destOuter2}"`);
+    const bC = RM.resolveBoard(path.join(destOuter2, path.basename(bA.root)));
+    ok('a claim whose transcript could NOT land is DROPPED at that root (the ghost gate, live-protected case)',
+      /skipped:.*open in a live session/.test(im5.message)
+      && !fs.existsSync(path.join(bC.planDir, 'claim-alpha.json'))
+      && /claim alpha: dropped — its conversation is not reachable/.test(im5.message), im5.message);
+    ok('...and its cursor/seen go with it (no inherited blindness at a root with no session)',
+      !fs.existsSync(path.join(bC.planDir, 'cursor-alpha.json')) && !fs.existsSync(path.join(bC.planDir, 'seen-alpha.json')));
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-convlock-${cidA}.json`)); } catch {}
+
+    // IMPORT 6 — DRY-RUN PREVIEWS THE REAL DECISION (audit #236 defect 2): a HELD chair must
+    // read "would keep", never "would carry" — the old branch answered before the guard ran,
+    // promising the exact mutation the real run then refused.
+    fs.writeFileSync(path.join(bA.planDir, 'notes.jsonl'), led(noid1, noid2, idA, idB, idC));   // heal the divergence from import 4
+    fs.writeFileSync(path.join(CLAUDE, 'cache', 'arc-state-brd-live.json'), J({ pid: process.pid, cwd: repoA }));
+    fs.writeFileSync(path.join(bA.planDir, 'claim-alpha.json'), J({ role: 'alpha', pid: process.pid, sessionId: 'brd-live', convId: cidA, at: Date.now() }));
+    const im6 = sync.doImport('brd-sess', `"${tgz}" --dry-run`);
+    const heldAfterDry = JSON.parse(fs.readFileSync(path.join(bA.planDir, 'claim-alpha.json'), 'utf8'));
+    ok('--dry-run previews the HELD guard ("would keep"), never a mutation the real run refuses',
+      /claim alpha: would keep — chair is HELD/.test(im6.message) && !/claim alpha: would carry/.test(im6.message), im6.message);
+    ok('...and a dry run writes nothing (the live claim is untouched)', heldAfterDry.pid === process.pid);
+
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', 'arc-state-brd-live.json')); } catch {}
+    fs.rmSync(base, { recursive: true, force: true });
+  } else {
+    ok('(tar unavailable — skipped the board round-trip)', true);
+  }
+} catch (e) { ok('arc-sync board export/import', false, e.message + '\n' + (e.stack || '')); }
+
 // ---- 5. arc-switch-core — peek + trash rendering ------------------------------
 section('arc-switch-core');
 try {
   const core = require(path.join(SRC, 'arc-switch-core.js'));
   const peek = core.buildPeek('no-session');
   ok('buildPeek returns a message (never throws)', peek && typeof peek.message === 'string' && peek.message.length > 0);
+
+  // Roadmap #10 — per-model weeklies from limits[]. Field map measured live (research
+  // #257, CORRECTED #264): weekly_scoped + scope.model.display_name is the ONLY true
+  // source; the top-level seven_day_opus/sonnet fields are null on subscriptions.
+  const FX = { limits: [
+    { kind: 'session', percent: 12, severity: 'normal' },
+    { kind: 'weekly_all', percent: 29, severity: 'normal' },
+    { kind: 'weekly_scoped', percent: 23, severity: 'normal', resets_at: '2026-07-24T00:00:00Z', scope: { model: { display_name: 'Fable' } } },
+    { kind: 'weekly_scoped', percent: 88, severity: 'warning', scope: { model: { display_name: 'Opus' } } },
+    null, { kind: 'weekly_scoped', scope: {} },
+  ] };
+  const sc = core.scopedLimits(FX);
+  ok('scopedLimits extracts ONLY weekly_scoped entries with a model name',
+    sc.length === 2 && sc[0].label === '7d · Fable' && sc[0].percent === 23 && sc[1].label === '7d · Opus');
+  ok('...and carries severity through (glyph: normal silent, non-normal ⚠, critical ⛔)',
+    core.sevGlyph(sc[0].severity) === '' && core.sevGlyph('warning') === ' ⚠'
+    && core.sevGlyph('critical') === ' ⛔' && core.sevGlyph('someday-new-value') === ' ⚠');
+  ok('...and every malformed shape yields [] (enrichment can never break peek)',
+    core.scopedLimits({}).length === 0 && core.scopedLimits(null).length === 0
+    && core.scopedLimits({ limits: 'junk' }).length === 0);
+
+  // End-to-end through buildPeek: fixture config + cache in the hermetic HOME. The
+  // enrichment line renders only when scoped data exists; a plain payload renders
+  // exactly the pre-#10 shape (no extra line).
+  // Save-write-test-RESTORE, so the e2e runs regardless of what earlier tests left in
+  // the hermetic HOME (a skip guard here silently skipped on the first run — the exact
+  // "green light wired to nothing" this suite keeps hunting in others).
+  const cfgPath = path.join(CLAUDE, 'arc-config.json');
+  const cachePath = path.join(CLAUDE, 'cache', 'usage-monitor-cache.json');
+  const savedCfg = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath) : null;
+  const savedCache = fs.existsSync(cachePath) ? fs.readFileSync(cachePath) : null;
+  try {
+    fs.writeFileSync(cfgPath, JSON.stringify({ version: 1, defaultAccount: 'fx', accounts: [{ id: 'fx', type: 'oauth', label: 'fx' }] }));
+    fs.mkdirSync(path.join(CLAUDE, 'cache'), { recursive: true });
+    fs.writeFileSync(cachePath, JSON.stringify({
+      usageByAccount: { fx: { fetchedAt: Date.now(), data: {
+        five_hour: { utilization: 12, resets_at: '2026-07-18T15:00:00Z' },
+        seven_day: { utilization: 29, resets_at: '2026-07-24T00:00:00Z' },
+        ...FX,
+      } } },
+    }));
+    const rich = core.buildPeek('no-session');
+    ok('peek renders the per-model line from limits[] (with the ⚠ glyph)',
+      /7d · Fable 23%/.test(rich.message) && /7d · Opus 88% ⚠/.test(rich.message));
+    fs.writeFileSync(cachePath, JSON.stringify({
+      usageByAccount: { fx: { fetchedAt: Date.now(), data: {
+        five_hour: { utilization: 12, resets_at: null }, seven_day: { utilization: 29, resets_at: null },
+      } } },
+    }));
+    const plain = core.buildPeek('no-session');
+    ok('...and a payload WITHOUT limits[] renders exactly the pre-enrichment shape',
+      /5h 12%/.test(plain.message) && !/7d · /.test(plain.message));
+  } finally {
+    if (savedCfg != null) fs.writeFileSync(cfgPath, savedCfg); else fs.rmSync(cfgPath, { force: true });
+    if (savedCache != null) fs.writeFileSync(cachePath, savedCache); else fs.rmSync(cachePath, { force: true });
+  }
   const tr = core.requestTrash('no-session', '');
   ok('requestTrash list renders', tr && typeof tr.message === 'string');
   const del = core.requestDelete('', '');
@@ -508,7 +774,7 @@ try {
 } catch (e) { ok('gw-usage works', false, e.message); }
 
 // ---- 7. arc-platform + storeApiKey (Windows key path: DPAPI) -------------------
-// arc is Windows 11 only, so this asserts the real DPAPI round-trip (via
+// arc is Windows only, so this asserts the real DPAPI round-trip (via
 // powershell.exe). It also proves the PORTABLE key sources (apiKeyEnv / apiKeyFrom)
 // still resolve on Windows — only the POSIX OS-keychain source was dropped.
 section('arc-platform + storeApiKey (DPAPI + portable key sources)');
@@ -624,153 +890,6 @@ try {
   ok('refuses malformed settings.json (non-zero exit)', rbad.status !== 0);
   ok('leaves the malformed file untouched (no silent clobber)', fs.readFileSync(path.join(CLAUDE, 'settings.json'), 'utf8') === bad);
 } catch (e) { ok('arc-wire-settings works', false, e.message); }
-
-// ---- arc-anchor (has a doc's claim about the code gone stale?) -------------------
-section('arc-anchor (doc/code staleness)');
-try {
-  const A = require(path.join(SRC, 'arc-anchor.js'));
-  const RM = require(path.join(SRC, 'arc-board.js'));
-  const { execFileSync } = require('child_process');
-
-  // --- parsing ---
-  const doc = 'blah\n<!-- arc:anchor src/auth.ts#handleLogin -->\nit validates the nonce\n'
-    + '# arc:anchor lib/db.py#connect\n';
-  const parsed = A.parseAnchors(doc, 'docs/plan.md');
-  ok('finds anchors in any comment syntax', parsed.length === 2);
-  ok('splits file#symbol', parsed[0].file === 'src/auth.ts' && parsed[0].symbol === 'handleLogin');
-
-  // --- definition detection (the fingerprint) ---
-  ok('js function', A.isDefinitionLine('function handleLogin(req) {', 'handleLogin'));
-  ok('js const arrow', A.isDefinitionLine('const handleLogin = (req) => {', 'handleLogin'));
-  ok('python def', A.isDefinitionLine('def connect(dsn):', 'connect'));
-  ok('object method', A.isDefinitionLine('  handleLogin(req) {', 'handleLogin'));
-  ok('a MENTION is not a definition', !A.isDefinitionLine('  return handleLogin;', 'handleLogin'));
-  ok('a COMMENT mentioning it is not a definition', !A.isDefinitionLine('// handleLogin does the thing', 'handleLogin'));
-
-  // --- block extraction + hashing ---
-  const src = ['const x = 1;', 'function handleLogin(req) {', '  check(req);', '  return ok;', '}', 'const y = 2;'].join('\n');
-  const f = A.findSymbol(src, 'handleLogin');
-  ok('block starts at the definition line', f.startLine === 2);
-  ok('block ends at the closing brace (indent <= base)', f.endLine === 5);
-  ok('missing symbol -> null', A.findSymbol(src, 'nope') === null);
-  // the brace fix must not swallow the next block in an indentation-scoped language
-  const py = ['import os', 'def connect(dsn):', '    return db(dsn)', '', 'def close():', '    pass'].join('\n');
-  const pf = A.findSymbol(py, 'connect');
-  ok('python block stops before the next def', pf.startLine === 2 && pf.endLine === 3);
-  ok('python block excludes the following function', !/def close/.test(pf.slice));
-  ok('hash is stable across trailing whitespace + CRLF',
-    A.hashSlice('a\nb') === A.hashSlice('a  \r\nb\t'));
-  ok('hash CHANGES when the body changes', A.hashSlice('a\nb') !== A.hashSlice('a\nc'));
-
-  // --- the honest limitation, asserted rather than hidden ---
-  const renamed = src.replace('handleLogin', 'handleSignIn');
-  ok('a RENAME reports gone, not renamed (fingerprint, not AST)', A.findSymbol(renamed, 'handleLogin') === null);
-
-  // --- end to end against a real repo ---
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-'));
-  const g = (...a) => execFileSync('git', a, { cwd: repo, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
-  g('init', '-q'); g('config', 'user.email', 't@t.t'); g('config', 'user.name', 't');
-  fs.mkdirSync(path.join(repo, 'src')); fs.mkdirSync(path.join(repo, 'docs'));
-  fs.writeFileSync(path.join(repo, 'src', 'auth.js'), src);
-  fs.writeFileSync(path.join(repo, 'docs', 'plan.md'),
-    '<!-- arc:anchor src/auth.js#handleLogin -->\nhandleLogin validates the request.\n');
-  g('add', '-A'); g('commit', '-qm', 'seed');
-
-  const board = RM.resolveBoard(repo);
-  ok('git grep finds the anchored doc', A.anchorDocs(board.root).includes('docs/plan.md'));
-  // an UNCOMMITTED doc still makes claims about the code — --untracked, not just tracked
-  fs.writeFileSync(path.join(repo, 'docs', 'draft.md'), '<!-- arc:anchor src/auth.js#handleLogin -->\n');
-  ok('and finds an uncommitted one too', A.anchorDocs(board.root).includes('docs/draft.md'));
-  fs.rmSync(path.join(repo, 'docs', 'draft.md'));
-  // …but never an ignored one
-  fs.writeFileSync(path.join(repo, '.gitignore'), 'secret/\n');
-  fs.mkdirSync(path.join(repo, 'secret'));
-  fs.writeFileSync(path.join(repo, 'secret', 'x.md'), '<!-- arc:anchor src/auth.js#handleLogin -->\n');
-  ok('ignored paths are never scanned', !A.anchorDocs(board.root).some((d) => d.startsWith('secret/')));
-  fs.rmSync(path.join(repo, 'secret'), { recursive: true, force: true });
-  fs.rmSync(path.join(repo, '.gitignore'));
-
-  let rep = A.inspect(board);
-  ok('first sighting SEALS the anchor', rep.results.length === 1 && rep.results[0].status === 'sealed');
-  A.writeState(board, rep.next);
-
-  // A doc EXAMPLE (`arc:anchor src/auth.ts#handleLogin` in a README) points at nothing
-  // and never has. It must never nag — arc's own README contains exactly this.
-  fs.writeFileSync(path.join(repo, 'docs', 'readme.md'),
-    'Put one next to a claim: <!-- arc:anchor src/nowhere.ts#imaginary -->\n');
-  g('add', '-A'); g('commit', '-qm', 'add a doc with an example anchor');
-  const ex = A.checkAndNotify(board, 'coding', { force: true, quiet: true });
-  const exRes = ex.results.find((r) => r.symbol === 'imaginary');
-  ok('a never-resolved anchor is "unresolved", not stale', exRes.status === 'unresolved');
-  ok('and posts no note (a doc example must not nag)', ex.posted === 0);
-  // Regression: the `unresolved` state entry must not count as "previously sealed",
-  // or the example flips to stale on the SECOND run and nags forever.
-  const ex2 = A.checkAndNotify(board, 'coding', { force: true, quiet: true });
-  ok('and it STAYS quiet on the second run', ex2.posted === 0
-    && ex2.results.find((r) => r.symbol === 'imaginary').status === 'unresolved');
-
-  rep = A.inspect(board);
-  ok('unchanged code -> ok', rep.results[0].status === 'ok');
-  ok('and head is unchanged, so a check would be skipped', rep.headChanged === false);
-  A.writeState(board, rep.next);
-
-  // change the code -> stale
-  fs.writeFileSync(path.join(repo, 'src', 'auth.js'), src.replace('  check(req);', '  skipCheck(req);'));
-  g('add', '-A'); g('commit', '-qm', 'weaken the check');
-  rep = A.inspect(board);
-  ok('changed code -> changed', rep.results[0].status === 'changed');
-  ok('and head moved, so the check runs', rep.headChanged === true);
-
-  // notify: a [!] note, once
-  const S = 'clanchortest';
-  const F = require(path.join(SRC, 'arc-notes.js'));
-  const rf = F.roleFile(S);
-  fs.mkdirSync(path.dirname(rf), { recursive: true });
-  fs.writeFileSync(rf, JSON.stringify({ board: board.root, role: 'coding' }));
-  try {
-    const n1 = A.checkAndNotify(board, 'coding', { force: true, quiet: true });
-    ok('a newly stale anchor posts exactly one note', n1.posted === 1);
-    const note = RM.allNotes(board).pop();
-    ok('the note is HIGH priority (jumps the queue)', note.priority === 'high');
-    ok('the note names the doc AND the anchor', /docs\/plan\.md/.test(note.body) && /auth\.js#handleLogin/.test(note.body));
-    ok('and carries machine-readable refs', note.refs.why === 'changed' && note.refs.doc === 'docs/plan.md');
-
-    const n2 = A.checkAndNotify(board, 'coding', { force: true, quiet: true });
-    ok('an ALREADY-stale anchor does not nag again', n2.posted === 0);
-
-    // delete the file -> a NEW kind of staleness, so it speaks again
-    fs.rmSync(path.join(repo, 'src', 'auth.js'));
-    g('add', '-A'); g('commit', '-qm', 'drop auth');
-    const n3 = A.checkAndNotify(board, 'coding', { force: true, quiet: true });
-    ok('a gone FILE is reported (status escalated)', n3.results[0].status === 'gone-file');
-
-    // reseal: the current code becomes the baseline again
-    const rr = A.requestAnchors(S, 'reseal', repo);
-    ok('arc:anchors reseal clears the stale flags', /resealed 2 anchor\(s\)/.test(rr.message));
-    // Reseal means "the current code is the baseline", NOT "stop telling me". An anchor
-    // whose target file is still gone is still a lie, so it speaks again on the next
-    // check. Only fixing the doc (or deleting the anchor) actually silences it.
-    ok('reseal does NOT silence an anchor that is still broken',
-      A.checkAndNotify(board, 'coding', { force: true, quiet: true }).posted === 1);
-    // Deleting the anchor from the doc is what ends it.
-    fs.writeFileSync(path.join(repo, 'docs', 'plan.md'), 'handleLogin used to validate the request.\n');
-    const after = A.checkAndNotify(board, 'coding', { force: true, quiet: true });
-    ok('removing the anchor ends the alarm', after.posted === 0 && after.checked === 1);
-
-    // head-unchanged short-circuit
-    const n4 = A.checkAndNotify(board, 'coding');
-    ok('no new commit -> the check is skipped entirely', n4.skipped === 'head-unchanged');
-
-    // no repo -> no anchors, no crash
-    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'noanchor-'));
-    const rb = A.requestAnchors(S, '', bare);
-    ok('outside a git repo it says so, rather than throwing', rb.ok === false && /not a git repo/.test(rb.message));
-    fs.rmSync(bare, { recursive: true, force: true });
-  } finally {
-    try { fs.unlinkSync(rf); } catch {}
-    fs.rmSync(repo, { recursive: true, force: true });
-  }
-} catch (e) { ok('arc-anchor works', false, e.message); }
 
 // ---- arc-done (derive "done" from git, not from the agent's word) ---------------
 section('arc-done (git-derived completion)');
@@ -956,8 +1075,8 @@ try {
 } catch (e) { ok('arc-postcommit works', false, e.message); }
 
 // ---- arc-runner board CLI (arc note / arc role — the AGENT-facing surface) --------
-// The agent can't TYPE arc:note (the hook eats it), but it can RUN `cl note ...` via
-// Bash. This exercises that dispatch end to end through the real arc-runner process.
+// The agent's surface is the shell: it RUNS `arc note ...` via Bash. This exercises
+// that dispatch end to end through the real arc-runner process.
 section('arc-runner board CLI (arc note / arc role)');
 try {
   const runner = path.join(SRC, 'arc-runner.js');
@@ -974,19 +1093,28 @@ try {
   ok('`arc note` exits 0', post.status === 0, (post.stderr || '').split('\n')[0]);
   ok('`arc note` posts to the board, attributed to the role',
     RM.allNotes(board).some((n) => /login is 202/.test(n.body) && n.from === 'android'));
-  ok('`arc note` output leaks no arc: sentinel form', !/arc:(note|role|notes)/.test(post.stdout));
+  ok('`arc note` output leaks no retired colon form', !/arc:(note|role|notes)/.test(post.stdout));
 
   const role = spawnSync(process.execPath, [runner, 'role'], { cwd: repo, env, encoding: 'utf8' });
   ok('`arc role` reports your role', /your role: android/.test(role.stdout));
 
-  // a session with no role can't post; the hint is rewritten to the CLI form (this is
-  // where the arc:role -> cl role rewrite is actually exercised).
+  // a session with no role can't post; the hint must point at the CLI form (`arc role`),
+  // never a retired colon spelling.
   const noRole = spawnSync(process.execPath, [runner, 'note', 'all', 'x'], { cwd: repo, env: { ...process.env, ARC_SESSION: 'no-role-sess' }, encoding: 'utf8' });
   const out = noRole.stdout + noRole.stderr;
   ok('`arc note` with no role is refused and points to `arc role`', noRole.status !== 0 && /arc role/.test(out) && !/arc:role/.test(out));
 
+  // `arc status "<text>"` self-reports activity into arc-status-<session>.json (read by the feed).
+  const stPath = path.join(CLAUDE, 'cache', `arc-status-${S}.json`);
+  const st1 = spawnSync(process.execPath, [runner, 'status', 'editing the widget'], { cwd: repo, env, encoding: 'utf8' });
+  ok('`arc status "<text>"` exits 0 and writes arc-status-<session>.json keyed by ARC_SESSION',
+    st1.status === 0 && fs.existsSync(stPath) && JSON.parse(fs.readFileSync(stPath, 'utf8')).activity === 'editing the widget');
+  const st2 = spawnSync(process.execPath, [runner, 'status', '--clear'], { cwd: repo, env, encoding: 'utf8' });
+  ok('`arc status --clear` removes the activity file', st2.status === 0 && !fs.existsSync(stPath));
+
   fs.rmSync(repo, { recursive: true, force: true });
   try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-role-${S}.json`)); } catch {}
+  try { fs.unlinkSync(stPath); } catch {}
 } catch (e) { ok('arc-runner board CLI works', false, e.message); }
 
 // ---- the bin shims: `arc` must be runnable BY THE AGENT ---------------------------
@@ -1010,6 +1138,14 @@ try {
   ok('install.ps1 ALSO writes an extensionless `arc` (bash does not do PATHEXT -> 127)',
     /Join-Path \$bin 'arc'\)/.test(ps1));
 
+  // `arc operator` spawns <scripts>/arc-operator.ps1 via __dirname — so install.ps1 MUST copy it
+  // there, or the deployed verb dies with "script not found" (the "src/ is not what runs" trap).
+  ok('install.ps1 copies arc-operator.ps1 to $scripts (else `arc operator` has nothing to launch)',
+    /Copy-Item \(Join-Path \$kit 'src\\arc-operator\.ps1'\) \$scripts/.test(ps1));
+  const runnerSrc = fs.readFileSync(path.join(SRC, 'arc-runner.js'), 'utf8');
+  ok('arc-runner launches the widget from __dirname/arc-operator.ps1 (deploy-relative, not src)',
+    /path\.join\(__dirname, 'arc-operator\.ps1'\)/.test(runnerSrc));
+
   // The shim's two content traps, both silent and both nasty:
   // Grab the whole assignment line: PowerShell escapes a quote as `" , so [^"]* would stop
   // at the first escape and silently capture a fragment (it did — and "failed" a good shim).
@@ -1030,9 +1166,9 @@ try {
 
 // ---- audit regressions (board note #2: what the research peer found) ---------------
 // The first live board request was an audit for more 127-class bugs — commands arc TEACHES
-// that do not RUN. It came back with three (docs/audit/shipping-surface-2026-07-14.md); each
-// is pinned here so it cannot regrow. All are SHIPPING-SURFACE assertions: they test the
-// string a human or agent is told to type, not the module underneath.
+// that do not RUN. It came back with three (the 2026-07-14 shipping-surface audit; its doc is
+// retired, git history has it); each is pinned here so it cannot regrow. All are SHIPPING-
+// SURFACE assertions: they test the string a human or agent is told to type, not the module.
 section('audit regressions (taught commands must run)');
 try {
   // A3 — THE CATCH-22. A config that PARSES but normalizes to zero valid accounts used to
@@ -1078,12 +1214,12 @@ try {
   ok('...and the parser still ACCEPTS the # form (tolerance stays even though docs stopped teaching it)',
     /#\?\(\\d\+\)/.test(notesSrc));
 
-  // C1 — injection() speaks ONLY to the agent, and an agent cannot type sentinels: the hook
-  // eats `arc:notes` from a human, and in the agent's shell it is not a command at all. The
-  // one runnable form for its audience is the space form.
+  // C1 — injection() speaks ONLY to the agent, and in the agent's shell a prompt
+  // command is not runnable at all. The one runnable form for its audience is the
+  // space form.
   const injStart = notesSrc.indexOf('function injection(');
   const injBody = notesSrc.slice(injStart, notesSrc.indexOf('\nfunction ', injStart + 1));
-  ok('the board injection tells the AGENT `arc notes`, never the untypeable `arc:notes`',
+  ok('the board injection tells the AGENT the runnable `arc notes`, never a retired colon form',
     injBody.length > 0 && !/arc:notes/.test(injBody) && /arc notes/.test(injBody));
 
   // D — the README documented cl-era names the code no longer uses: env vars that do nothing
@@ -1093,14 +1229,14 @@ try {
     !/CL_[A-Z_]+/.test(readme) && !/cl-(credentials|profiles|deleted|runner|export|import|notify)/.test(readme));
 } catch (e) { ok('audit regressions', false, e.message + '\n' + (e.stack || '')); }
 
-// ---- arc:role / arc:join auto-arm (the one sentinel that deliberately costs a turn) ----
-// Proven live: a responder claimed via the arc:role sentinel, went idle, and was DEAF — a
-// blocked sentinel has no turn, and only the agent's own background command can arm a
+// ---- /arc-role / /arc-join auto-arm (the one command that deliberately costs a turn) ----
+// Proven live: a responder claimed its role, went idle, and was DEAF — a blocked
+// prompt has no turn, and only the agent's own background command can arm a
 // listener. So a successful NEW claim now PASSES THROUGH: the hook does the claim (instant,
 // in-hook), then hands the model one turn with orders to `arc join`. Query, refusal, and
 // already-armed still block at zero tokens — the turn is spent only when it buys the one
 // thing a block cannot.
-section('arc:role auto-arm (fresh claim passes through; the turn runs `arc join`)');
+section('/arc-role auto-arm (fresh claim passes through; the turn runs `arc join`)');
 try {
   const AW = require(path.join(SRC, 'arc-await.js'));
   const swhook2 = path.join(SRC, 'arc-switch-hook.js');
@@ -1122,7 +1258,7 @@ try {
 
   // The headline: a fresh claim does NOT block — it hands the model a turn with join orders.
   AW.clearWaiting(JS);
-  const fresh = askRole('arc:role research');
+  const fresh = askRole('/arc-role research');
   const ctx = (fresh.hookSpecificOutput && fresh.hookSpecificOutput.additionalContext) || '';
   ok('a FRESH claim passes through as a turn (no block), with the claim already done',
     !fresh.decision && /claim is DONE/.test(ctx) && /you are "research"/.test(ctx));
@@ -1138,27 +1274,27 @@ try {
 
   // Re-claim with a LIVE listener: nothing left for a turn to buy — block at zero tokens.
   AW.markWaiting(JS, 'research', process.pid);
-  const armed = askRole('arc:role research');
+  const armed = askRole('/arc-role research');
   ok('a re-claim with a LIVE listener blocks at zero tokens ("already armed")',
     armed.decision === 'block' && /already armed/.test(armed.reason || ''));
 
   // A listener armed for the OLD role hears nothing on the new one — that is armNeeded too.
-  const moved = askRole('arc:join android');
+  const moved = askRole('/arc-join android');   // join: alias, reachable programmatically
   const mctx = (moved.hookSpecificOutput && moved.hookSpecificOutput.additionalContext) || '';
-  ok('arc:join is the same sentinel: switching roles with an OLD-role listener re-arms',
+  ok('/arc-join is the same command: switching roles with an OLD-role listener re-arms',
     !moved.decision && /OLD role "research"/.test(mctx) && /arc join android/.test(mctx));
 
   // The zero-token forms stay zero-token.
-  ok('the bare `arc:role` query still blocks (zero tokens)',
-    askRole('arc:role').decision === 'block');
+  ok('the bare `/arc-role` query still blocks (zero tokens)',
+    askRole('/arc-role').decision === 'block');
   const norepo2 = fs.mkdtempSync(path.join(os.tmpdir(), 'noboard-'));
   ok('a non-repo refusal still blocks (zero tokens) — no turn spent on a failed claim',
-    /not a git repository/.test(askRole('arc:role research', norepo2).reason || ''));
+    /not a git repository/.test(askRole('/arc-role research', norepo2).reason || ''));
 
   AW.clearWaiting(JS);
   fs.rmSync(jrepo, { recursive: true, force: true });
   fs.rmSync(norepo2, { recursive: true, force: true });
-} catch (e) { ok('arc:role auto-arm', false, e.message + '\n' + (e.stack || '')); }
+} catch (e) { ok('/arc-role auto-arm', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- arc join (claim if needed + listen, one background command) --------------------
 // The agent-facing verb: `arc role` DECLARES, `arc join` LISTENS (claiming on the way if the
@@ -1252,7 +1388,7 @@ try {
   const { spawn: spawnLive } = require('child_process');
   const liveProc = spawnLive(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
   fs.writeFileSync(path.join(C, `arc-state-${LIVE2}.json`), JSON.stringify({ pid: liveProc.pid, cwd: TMP }));
-  fs.writeFileSync(path.join(C, `arc-state-${DEAD2}.json`), JSON.stringify({ pid: 999999, cwd: TMP }));
+  fs.writeFileSync(path.join(C, `arc-state-${DEAD2}.json`), JSON.stringify({ pid: DEAD_PID, cwd: TMP }));
   const mk = (name, when) => { const p = path.join(C, name); fs.writeFileSync(p, '{}'); if (when) fs.utimesSync(p, when / 1000, when / 1000); return p; };
   const liveRole = mk(`arc-role-${LIVE2}.json`, old);      // ancient, but its session is ALIVE
   const deadRole = mk(`arc-role-${DEAD2}.json`);           // fresh, but its session is DEAD
@@ -1284,10 +1420,11 @@ try {
 } catch (e) { ok('cache sweeper', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- staffing a peer (new tab, revived-or-forked context, self-arming) -------------
-// invite adds a TAB, not a mechanism: the new tab runs `arc --account <caller's> --resume
-// <caller conv> --fork-session "arc:role <role>"`, and the existing fresh-claim pass-through
-// does the claiming + arming in the new session's first turn. These tests inject a spawn
-// recorder — nothing real opens.
+// invite adds a TAB, not a mechanism: a REVIVE runs `arc --name <role> --resume <its own
+// conv> "/arc-role <role>"` (programmatic prompts bypass the typed-command gate,
+// measured 2026-07-18) and a BIRTH forks the caller with a PROSE instruction; the
+// existing fresh-claim pass-through does the claiming + arming in the new session's first
+// turn. These tests inject a spawn recorder — nothing real opens.
 // ---- task baselines must not outlive their task --------------------------------------
 // A baseline is written at TaskCreated so a completion can be checked against git. It lived
 // forever: nothing in arc-done ever called unlink. Three leaks, none with a symptom — just
@@ -1351,7 +1488,7 @@ try {
   // ---- an ABANDONED task's baseline is swept once its session dies ----
   const DEAD = 'base-dead-' + process.pid;
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${DEAD}.json`),
-    JSON.stringify({ pid: 999999, cwd: brepo }));            // a pid that cannot be alive
+    JSON.stringify({ pid: DEAD_PID, cwd: brepo }));          // verified-dead at suite start
   DN.recordBaseline(bb, DEAD, 7, 'deadbeef');
   DN.recordBaseline(bb, LIVE, 8, 'cafebabe');
   ok('(setup) both a dead session\'s and a live session\'s baselines exist',
@@ -1375,7 +1512,7 @@ try {
 
   // And TaskCreated does the sweeping, so it happens without anyone remembering to.
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${DEAD}.json`),
-    JSON.stringify({ pid: 999999, cwd: brepo }));
+    JSON.stringify({ pid: DEAD_PID, cwd: brepo }));
   DN.recordBaseline(bb, DEAD, 10, 'deadbeef2');
   const r = DN.onTaskCreated({ cwd: brepo, task_id: 11 }, LIVE);
   ok('TaskCreated sweeps dead baselines on the way in (nobody has to remember)',
@@ -1446,13 +1583,15 @@ try {
   const b2 = RM8.resolveBoard(old);
   ok('a fresh resolve now points at .arc/peer (then the fallback never fires again)',
     b2.planDir === path.join(b2.root, '.arc', 'peer') && RM8.allNotes(b2).length === 2);
-  ok('the self-ignore came along, so the board still never enters the project history',
-    /^\*$/m.test(fs.readFileSync(path.join(old, '.arc', 'peer', '.gitignore'), 'utf8')));
-  ok('...and it does NOT swallow its committed sibling .arc/roles/',
+  ok('the self-ignore now sits ONE LEVEL UP (.arc/.gitignore) and covers the whole .arc',
+    /^\*$/m.test(fs.readFileSync(path.join(old, '.arc', '.gitignore'), 'utf8')));
+  ok('...and the retired per-dir pair inside peer/ is gone (the union merge job moved into arc import)',
+    !fs.existsSync(path.join(old, '.arc', 'peer', '.gitignore')) && !fs.existsSync(path.join(old, '.arc', 'peer', '.gitattributes')));
+  ok('...and it DOES swallow .arc/roles/ — the operator ruled the whole .arc machine state (2026-07-17)',
     (() => { fs.mkdirSync(path.join(old, '.arc', 'roles'), { recursive: true });
       fs.writeFileSync(path.join(old, '.arc', 'roles', 'code.md'), ['# code', '', 'owns: things', ''].join('\n'));
       const r = spawnSync('git', ['check-ignore', '.arc/roles/code.md'], { cwd: old, encoding: 'utf8' });
-      return r.status !== 0; })());
+      return r.status === 0; })());
 
   // A BRAND-NEW board must simply be .peer — no legacy anything.
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'mig2-'));
@@ -1611,6 +1750,14 @@ try {
   ok('a note to an EMPTY CHAIR still posts (the cursor is per-role — it keeps)', req.ok === true);
   ok('...but says so, loudly, instead of a bare ✓',
     /NOBODY HOLDS "research"/.test(req.message));
+  // THE CLIPPED-WARNING BUG (field report 2026-07-17, roadmap #1): the warning above is a
+  // prose TAIL — a sender piping through `| head -4` saw a clean ✓ while its work landed in
+  // a closed chair (the incident transcript shows the warning's orphaned leading '\n').
+  // The same truth must live ON LINE ONE, where no clip can lose it.
+  ok('...and LINE ONE carries the closed-chair marker (a `| head -4` cannot decapitate it)',
+    /is CLOSED/.test(req.message.split('\n')[0]));
+  ok('...with the chairHandled flag omitting BOTH (the delegate path fills the chair itself)',
+    !/NOBODY HOLDS|is CLOSED/.test(F8.requestNote(AS, 'research --kind request "again"', drepo, { chairHandled: true }).message));
   ok('...and uses the DUTY to make the warning actionable (the chair is real, staff it)',
     /IS a declared role/.test(req.message) && /investigation and docs/.test(req.message)
     && /arc delegate research/.test(req.message));
@@ -1680,7 +1827,7 @@ try {
     // peer's chair). close inherits roleClaim's genuine-holder check, so it kills NOTHING when the
     // claim points at a pid it cannot prove is the peer — and still frees the chair, which is the
     // part that matters. A claim held by a corpse blocks staffing forever.
-    RM7.claimRole(BRD, 'ghost', 999999, 'ghost-sess', 'ghost-conv');   // not a running process
+    RM7.claimRole(BRD, 'ghost', DEAD_PID, 'ghost-sess', 'ghost-conv');   // not a running process
     let touched = 0;
     const g = RM7.closePeer(BRD, 'ghost', { tree: () => ({ parent: 5, children: [6] }), kill: () => { touched++; return true; } });
     ok('close kills NOTHING when the claim names an unprovable pid (it may be a stranger now)',
@@ -1690,7 +1837,7 @@ try {
     ok('...but STILL frees the chair — a claim held by a corpse blocks staffing forever',
       !RM7.roleClaim(BRD, 'ghost') && RM7.vacantClaimForRole(BRD, 'ghost').convId === 'ghost-conv');
     // Only a chair with NOTHING to come back to is truly bare: no convId -> the file goes.
-    RM7.claimRole(BRD, 'bare', 999998, 'bare-sess', null);
+    RM7.claimRole(BRD, 'bare', DEAD_PID, 'bare-sess', null);
     RM7.closePeer(BRD, 'bare', { tree: () => ({ parent: null, children: [] }), kill: () => false });
     ok('close with no conversation unlinks outright — a tombstone pointing nowhere is clutter',
       !fs.existsSync(path.join(BRD.planDir, 'claim-bare.json')));
@@ -1711,7 +1858,7 @@ try {
     ok('close ABORTS the tombstone when a revive re-claimed during the kill — no clobber of a live peer',
       raceRes.reclaimed === true && racedClaim.pid === 424242 && racedClaim.convId === 'new-conv');
     // and the normal path is unaffected: no concurrent reclaim -> tombstone written, reclaimed:false
-    RM7.claimRole(BRD, 'calm', 999997, 'calm-sess', 'calm-conv');
+    RM7.claimRole(BRD, 'calm', DEAD_PID, 'calm-sess', 'calm-conv');
     const calmRes = RM7.closePeer(BRD, 'calm', { tree: () => ({ parent: null, children: [] }), kill: () => true });
     const calmTomb = JSON.parse(fs.readFileSync(path.join(BRD.planDir, 'claim-calm.json'), 'utf8'));
     ok('...while an uncontended close still tombstones normally (convId kept, pid gone, reclaimed:false)',
@@ -1789,6 +1936,38 @@ try {
       const on = QI.spawnQuiet(); if (prev === undefined) delete process.env.ARC_SPAWN_QUIET; else process.env.ARC_SPAWN_QUIET = prev;
       return on === true; })());
 
+  // ---- ARC_SPAWN_PROFILE: which wt profile dresses a peer's tab --------------------------
+  // Unset, the launch names NO profile — the only form that works on a machine arc has never
+  // seen (profile names are user-chosen, even localized; a wrong -p is wt's silent no-tab).
+  // Set, wt applies that profile's icon/theme while our commandline still overrides the run.
+  ok('by default a peer tab names NO wt profile (a guessed name is a failed launch elsewhere)',
+    // Sample BOTH the launch line AND spawnProfile() while ARC_SPAWN_PROFILE is removed — the
+    // "default" this asserts is "no env override, no config key", and spawnProfile() reads the env
+    // FIRST. Checking it AFTER restoring the ambient override read the developer's real
+    // ARC_SPAWN_PROFILE=PowerShell and failed on this box while passing on a bare CI runner.
+    (() => { const prev = process.env.ARC_SPAWN_PROFILE; delete process.env.ARC_SPAWN_PROFILE;
+      const line = winOf('0'); const prof = QI.spawnProfile();
+      if (prev !== undefined) process.env.ARC_SPAWN_PROFILE = prev;
+      return !/ -p /.test(line) && prof === ''; })());
+  ok('...and ARC_SPAWN_PROFILE dresses the tab in a named profile, quoted through the PS chain',
+    (() => { const prev = process.env.ARC_SPAWN_PROFILE; process.env.ARC_SPAWN_PROFILE = 'Power Shell';
+      const line = winOf('0'); if (prev === undefined) delete process.env.ARC_SPAWN_PROFILE; else process.env.ARC_SPAWN_PROFILE = prev;
+      return / new-tab -p 'Power Shell' --title /.test(line); })());
+  // The DURABLE home is config, not env: an env var must exist in the CALLER's environment,
+  // and a session launched before a `setx` never sees it — the day the env-only version
+  // shipped, one delegate ran without the var and the peer tab came up generic again.
+  ok('...and arc-config "spawnProfile" dresses the tab with NO env var to remember (env wins when both)',
+    (() => { const C9 = require(path.join(SRC, 'arc-config.js'));
+      const prev = process.env.ARC_SPAWN_PROFILE; delete process.env.ARC_SPAWN_PROFILE;
+      const hadCfg = fs.existsSync(C9.CONFIG_PATH) ? fs.readFileSync(C9.CONFIG_PATH, 'utf8') : null;
+      fs.writeFileSync(C9.CONFIG_PATH, JSON.stringify({ version: 1, accounts: [{ id: 'x', type: 'oauth' }], spawnProfile: 'Cfg Prof' }));
+      const fromCfg = / new-tab -p 'Cfg Prof' --title /.test(winOf('0'));
+      process.env.ARC_SPAWN_PROFILE = 'EnvWins';
+      const envWins = / new-tab -p 'EnvWins' --title /.test(winOf('0'));
+      if (hadCfg === null) fs.unlinkSync(C9.CONFIG_PATH); else fs.writeFileSync(C9.CONFIG_PATH, hadCfg);
+      if (prev === undefined) delete process.env.ARC_SPAWN_PROFILE; else process.env.ARC_SPAWN_PROFILE = prev;
+      return fromCfg && envWins; })());
+
   // ---- --board: the ONE hole in the filesystem isolation ----------------------------------
   // Built for an observed pain, not a hypothetical: a session dogfooding arc in ANOTHER repo
   // learns things about arc that belong on arc's board, and the only channel was a human
@@ -1849,8 +2028,11 @@ try {
 
   // The roster is what `arc role` shows — one line per role, full charter one Read away.
   const q = F8.requestRole(AS, '', drepo);
-  ok('`arc role` renders the roster with live/closed marks and the owns: summary',
-    /roster:/.test(q.message) && /● research/.test(q.message)
+  // The live row's lead glyph is the peer's STANCE (statusline alphabet: ○◐●), with the
+  // word beside it — the old presence-dot alphabet collided with the stance dial and a
+  // human read "● research" as ACTIVE while research sat in balanced (2026-07-18).
+  ok('`arc role` renders the roster with the stance glyph + live/closed state and the owns: summary',
+    /roster:/.test(q.message) && /◐ research/.test(q.message) && /live · balanced/.test(q.message)
     && /investigation and docs/.test(q.message));
 
   // The Stop hook must not tell you to wait for an answer that cannot come.
@@ -1921,7 +2103,7 @@ try {
 
   const claim = (session, role = 'scout') => {
     const r = spawnSync(process.execPath, [swhook3], {
-      input: JSON.stringify({ prompt: `arc:role ${role}`, cwd: irepo }), encoding: 'utf8',
+      input: JSON.stringify({ prompt: `/arc-role ${role}`, cwd: irepo }), encoding: 'utf8',
       env: { ...process.env, ARC_SESSION: session },
     });
     try {
@@ -2078,7 +2260,7 @@ try {
     F5.healClaimConv(FS_, frepo) === null);
   ok('...and it NEVER touches a claim held by another live session',
     (() => {
-      RM5.claimRole(fboard, 'other', 999999, 'someone-else', null);   // a dead pid = not ours
+      RM5.claimRole(fboard, 'other', DEAD_PID, 'someone-else', null);   // a dead pid = not ours
       F5.healClaimConv(FS_, frepo);
       return RM5.roleClaim(fboard, 'other') === null;                 // still vacant, untouched
     })());
@@ -2088,12 +2270,16 @@ try {
   // means claude resumes the peer's conversation and immediately BRANCHES it into a new one —
   // abandoning everything the peer built. The user hit this the first time an invited peer ran out
   // of tokens and switched accounts, which is precisely when its history mattered most.
-  const born = ['--account', 'whale', '--name', 'scout', '--resume', 'caller-conv', '--fork-session', 'arc:role scout'];
+  // The revive prompt is `/arc-role` (it travels programmatically, which bypasses the
+  // typed-command gate — measured); the strip must eat BOTH the live and legacy spellings.
+  const born = ['--account', 'whale', '--name', 'scout', '--resume', 'caller-conv', '--fork-session', '/arc-role scout'];
   const relaunch = RUN.stripConvArgs(born);
   ok('a relaunch NEVER re-forks: --fork-session is stripped (this is what ate a conversation)',
     !relaunch.includes('--fork-session'));
   ok('...and the birth prompt is not replayed forever (role re-adopts, listener re-arms on idle)',
-    !relaunch.some((a) => /^arc:/i.test(a)));
+    !relaunch.some((a) => /^arc:/i.test(a) || /^\/arc-/i.test(a)));
+  ok('...and the LEGACY colon spelling still strips (old argv, mixed-version respawns)',
+    !RUN.stripConvArgs(['--name', 'scout', 'arc:role scout']).some((a) => /^arc:/i.test(a)));
   // ...but it MUST survive the launch that creates the peer. This guard used to run
   // unconditionally, which was safe only because staffing passed an explicit --resume (that takes
   // the userManagesConv path, which strips nothing). The moment a peer was BORN instead of forked,
@@ -2101,7 +2287,7 @@ try {
   // the tab opened, titled itself `arc: research`, claimed NO role, and sat idle forever.
   // Once = birth. Twice = a prompt loop. The difference is `respawning`, not the args.
   ok('...but the BIRTH launch KEEPS it — stripping it there opens a tab that claims nothing',
-    RUN.stripConvArgs(born, { keepPrompt: true }).some((a) => /^arc:role scout$/i.test(a)));
+    RUN.stripConvArgs(born, { keepPrompt: true }).some((a) => /^\/arc-role scout$/i.test(a)));
   ok('...while still dropping --fork-session/--continue on birth (only the prompt is spared)',
     !RUN.stripConvArgs(born, { keepPrompt: true }).includes('--fork-session'));
   ok('...while the real flags survive untouched',
@@ -2111,6 +2297,43 @@ try {
   // what it names; this pins that, since the strip list is where a careless `continue` would land.
   ok('...including --name, so a switched/restarted peer stays findable in the picker',
     relaunch.includes('--name') && relaunch.includes('scout'));
+
+  // RE-ARM ON RESPAWN (roadmap #3): a /restart|/switch re-execs and leaves a reachable peer deaf
+  // until its next turn (a restart-then-walk-away takes none). arc cannot self-arm, so on a respawn
+  // it injects the revive's own `/arc-role <role>` — but ONLY if the session WAS armed (a surviving
+  // await marker), so a never-armed session is never forced to spend a turn. THE LIVE TEST'S LESSON
+  // (2026-07-18): a restart does NOT kill the listener — it spawnSyncs the new runner so the OLD
+  // runner stays alive as its parent, and the listener's owner-check keys on that runner, so the old
+  // listener LINGERS as an ORPHAN with a LIVE marker. That orphan can wake nobody (its claude is
+  // dead), so ANY pre-respawn marker is stale: re-arm AND clear it (else the hook's armNeeded reads
+  // the orphan as "already listening" and refuses to arm — the exact deafness this closes).
+  {
+    const A5 = require(path.join(SRC, 'arc-await.js'));
+    const RS = 'rearm-sess-' + process.pid;
+    fs.writeFileSync(path.join(cache, `arc-state-${RS}.json`), JSON.stringify({ pid: process.pid, cwd: frepo, convId: 'rearm-conv' }));
+    F5.requestRole(RS, 'rearmer', frepo);       // a role of its own (scout is held by the fixture's live session)
+    const opts = { respawning: true, convId: 'rearm-conv', userManagesConv: false, cwd: frepo };
+    A5.clearWaiting(RS);
+    ok('re-arm: a NEVER-armed role-holder is NOT forced to arm on respawn (no marker = pays nothing)',
+      RUN.reArmPromptOnRespawn(RS, opts) === null);
+    fs.writeFileSync(A5.awaitFile(RS), JSON.stringify({ pid: DEAD_PID, role: 'rearmer', at: Date.now() }));
+    ok('re-arm: a KILLED listener (dead-pid marker) re-arms AND the stale marker is cleared',
+      RUN.reArmPromptOnRespawn(RS, opts) === '/arc-role rearmer' && !fs.existsSync(A5.awaitFile(RS)));
+    // THE ORPHAN CASE the live test found: a marker whose pid is ALIVE is STILL stale after a
+    // respawn (the lingering old listener wakes nobody). It must re-arm and clear, not be trusted.
+    A5.markWaiting(RS, 'rearmer', process.pid);   // a LIVE-pid marker == the orphaned old listener
+    ok('re-arm: a LIVE orphan marker STILL re-arms and is cleared (a restart orphans, not kills)',
+      RUN.reArmPromptOnRespawn(RS, opts) === '/arc-role rearmer' && !fs.existsSync(A5.awaitFile(RS)));
+    // guards decline WITHOUT clearing the marker (a non-respawn / user-managed launch touches nothing).
+    fs.writeFileSync(A5.awaitFile(RS), JSON.stringify({ pid: DEAD_PID, role: 'rearmer', at: Date.now() }));
+    ok('re-arm: NOT on a fresh launch, and the marker is left intact (no listener to restore)',
+      RUN.reArmPromptOnRespawn(RS, { ...opts, respawning: false }) === null && fs.existsSync(A5.awaitFile(RS)));
+    ok('re-arm: NOT on a user-managed resume — that path passes args through untouched',
+      RUN.reArmPromptOnRespawn(RS, { ...opts, userManagesConv: true }) === null && fs.existsSync(A5.awaitFile(RS)));
+    A5.clearWaiting(RS);
+    try { fs.unlinkSync(path.join(cache, `arc-state-${RS}.json`)); } catch {}
+    try { fs.unlinkSync(path.join(cache, `arc-role-${RS}.json`)); } catch {}
+  }
 
   fs.rmSync(frepo, { recursive: true, force: true });
   for (const f of [`arc-state-${FS_}.json`, `arc-active-${FS_}.json`, `arc-role-${FS_}.json`]) {
@@ -2178,6 +2401,38 @@ try {
     (F6.badge(DS, drepo) || {}).deaf === true);
   A6.clearWaiting(DS); A6.clearOffered(DS); RM6.markRead(dboard2, 'code');
 
+  // THE HEARTBEAT GATE (roadmap #5): stale unread alone cannot separate idle-and-deaf from
+  // busy-mid-long-turn. A session whose TRANSCRIPT is still growing is mid-turn — the Stop hook
+  // will deliver at turn-end, so badging it is the alarm fatigue the roadmap recorded ("DEAF
+  // fires during normal long turns"). Note: every deaf assert ABOVE ran with NO transcript on
+  // disk — quiet-forever — which is itself the proof that an unresolvable beat stays fail-visible
+  // (the exact pre-heartbeat behavior). Now give the session a transcript and watch the beat gate.
+  const dproj = path.join(CLAUDE, 'projects', 'E--deaf-beat');
+  fs.mkdirSync(dproj, { recursive: true });
+  const dtx = path.join(dproj, 'dc1.jsonl');            // the state file above declared convId: dc1
+  fs.writeFileSync(dtx, '{"type":"assistant"}\n');      // fresh mtime = the turn is beating NOW
+  RM6.appendNote(dboard2, { from: 'peer', to: 'code', kind: 'info', body: 'still there?' });
+  (() => { const ls = fs.readFileSync(dnp, 'utf8').trim().split('\n').map((l) => JSON.parse(l)); ls[ls.length - 1].ts = new Date(Date.now() - 120000).toISOString(); fs.writeFileSync(dnp, ls.map((l) => JSON.stringify(l)).join('\n') + '\n'); })();
+  ok('an OLD unread note while the transcript is BEATING is NOT deaf (busy ≠ deaf — the wolf-cry)',
+    !(F6.badge(DS, drepo) || {}).deaf);
+  // The turn ends or is INTERRUPTED: no hook fires, no flag needs clearing — the transcript
+  // simply stops growing, and the evidence itself goes stale. That is the whole reason this is
+  // a timestamp and not a turn-start/turn-end flag (the a9b682c interrupt bug, mirror-imaged).
+  const dold = new Date(Date.now() - 120000);
+  fs.utimesSync(dtx, dold, dold);
+  ok('...and once the transcript goes QUIET past the threshold, the same note IS deaf (idle-and-deaf)',
+    (F6.badge(DS, drepo) || {}).deaf === true);
+  // The same beat gates the SQUAT arm (stale offer), symmetrically.
+  fs.writeFileSync(dtx, '{"type":"assistant"}\n{"type":"human"}\n');   // beating again
+  fs.writeFileSync(A6.offerFile(DS), JSON.stringify({ at: Date.now() - 120000 }));
+  ok('...a STALE offer under a beating transcript is not a squat — the session is WORKING on something',
+    !(F6.badge(DS, drepo) || {}).deaf);
+  fs.utimesSync(dtx, dold, dold);
+  ok('...and quiet again = the squat resurfaces (the heartbeat DEFERS the badge, never buries it)',
+    (F6.badge(DS, drepo) || {}).deaf === true);
+  fs.rmSync(dproj, { recursive: true, force: true });
+  A6.clearWaiting(DS); A6.clearOffered(DS); RM6.markRead(dboard2, 'code');
+
   // The statusline must actually SHOW it — a fact nobody surfaces is a fact nobody has.
   const um = fs.readFileSync(path.join(SRC, 'usage-monitor.js'), 'utf8');
   ok('the statusline renders DEAF loudly',
@@ -2223,7 +2478,7 @@ try {
   try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${DS}.json`)); } catch {}
 } catch (e) { ok('(d) rate-limit squat', false, e.message + '\n' + (e.stack || '')); }
 
-// ---- the stance GATE: arc:mode drives whether an agent may spawn a peer ------------
+// ---- the stance GATE: /arc-mode drives whether an agent may spawn a peer -----------
 // Everything else the stance governs is a model-level STEER (injected advice), which is right
 // for a note: cheap, reversible, and "was this the user's order?" is a judgment only the model
 // can make. STAFFING is different in kind — it spawns a REAL SESSION (window, process, its own
@@ -2237,10 +2492,293 @@ try {
 // gets born, and that is the moment the dial has to mean something.
 //
 // And it binds the HUMAN too, unlike the rest of the stance: a PreToolUse hook sees a tool call
-// and cannot tell the user's order from the agent's own idea. The `arc:invite` sentinel used to
-// be the escape hatch (a prompt is provably yours) and was removed on purpose — a human's
-// natural act is prose, not a command. So passive costs you the spawn whoever wanted it.
-section('arc:mode gate (fires ONLY when a delegate would spawn a session)');
+// and cannot tell the user's order from the agent's own idea. A prompt-command escape hatch
+// (a prompt is provably yours) was removed on purpose — a human's natural act is prose, not a
+// command. So passive costs you the spawn whoever wanted it.
+// ── arc alarm: the board-wide fire alarm — a broadcast that INTERRUPTS busy peers ──────────────
+// Raised by `arc alarm "<msg>"`: it broadcasts a note (wakes idle peers) AND writes a flag the
+// pretool hook reads on every tool call, denying a BUSY peer's next tool call so it must read the
+// alarm before proceeding. The design review (audit #332) required: block-once per (session,alarm),
+// FAIL-OPEN on ack-write failure, DEBOUNCE raises, CAP+frame the untrusted body, and the raiser
+// auto-acks. This exercises all of them against a real spawned hook.
+section('arc alarm (broadcast + busy-peer interrupt at the next tool boundary)');
+try {
+  const AL = require(path.join(SRC, 'arc-alarm.js'));
+  const RMa = require(path.join(SRC, 'arc-board.js'));
+  const Fa = require(path.join(SRC, 'arc-notes.js'));
+  const HOOKPa = path.join(SRC, 'arc-pretool-hook.js');
+
+  const arepo = fs.mkdtempSync(path.join(os.tmpdir(), 'alarm-'));
+  spawnSync('git', ['init', '-q'], { cwd: arepo });
+  const aboard = RMa.resolveBoard(arepo); RMa.ensureBoard(aboard);
+  const RAISER = 'alarm-raiser-' + process.pid;
+  const BUSY = 'alarm-busy-' + process.pid;
+  for (const s of [RAISER, BUSY]) fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`),
+    JSON.stringify({ pid: process.pid, cwd: arepo, convId: 'ac1' }));
+  Fa.requestRole(RAISER, 'code', arepo);
+  Fa.requestRole(BUSY, 'audit', arepo);
+
+  // the pretool gate, driven exactly as the /arc-mode gate test below drives it
+  const armgate = (command, session) => {
+    const r = spawnSync(process.execPath, [HOOKPa], {
+      input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd: arepo }),
+      encoding: 'utf8', env: { ...process.env, ARC_SESSION: session },
+    });
+    if (!r.stdout || !r.stdout.trim()) return { decision: null };
+    try { const j = JSON.parse(r.stdout); return { decision: j.hookSpecificOutput.permissionDecision, reason: j.hookSpecificOutput.permissionDecisionReason, sys: j.systemMessage }; }
+    catch { return { decision: 'PARSE-ERROR', raw: r.stdout }; }
+  };
+
+  // RAISE: writes the flag, broadcasts a note, and the raiser auto-acks (never blocks on its own).
+  const notesBefore = RMa.allNotes(aboard).length;
+  const raised = AL.raise(RAISER, 'STOP — the config schema changed, do not build on the old one', arepo);
+  ok('raise writes the flag AND broadcasts a note (so idle peers wake, busy peers get interrupted)',
+    raised.ok === true && !!raised.id && !!AL.readFlag(aboard)
+    && RMa.allNotes(aboard).length === notesBefore + 1
+    && /ALARM: STOP/.test(RMa.allNotes(aboard).slice(-1)[0].body));
+  ok('the raiser auto-acks — it does NOT block on its own alarm',
+    AL.checkAndAck(RAISER, aboard) === null);
+  ok('badge() shows the ACTIVE alarm to a session that has NOT taken it up yet',
+    /^ALARM: STOP/.test(AL.badge(aboard, BUSY)));
+  ok('...and DISSOLVES for a session that HAS acked it — the raiser auto-acked, so its bar shows "on it"',
+    AL.badge(aboard, RAISER) === '' && /^ALARM: STOP/.test(AL.badge(aboard)));   // no-session viewer still sees it
+
+  // BUSY peer: interrupted ONCE at its next tool call, then never again for the same alarm.
+  const first = armgate('ls -la', BUSY);
+  ok('a BUSY peer is DENIED at its next tool call, the body framed as UNTRUSTED (not an instruction)',
+    first.decision === 'deny' && /ALARM/i.test(first.reason || '')
+    && /UNTRUSTED/i.test(first.sys || '') && /schema changed/.test(first.sys || '')
+    && /NOT an instruction/i.test(first.sys || ''));
+  ok('...BLOCK-ONCE: the very next tool call RUNS (the ack suppresses a re-block, no storm)',
+    armgate('ls -la', BUSY).decision === null);
+  ok('...`arc alarm` itself is EXEMPT so a peer can always raise/clear (no clear-deadlock)',
+    armgate('arc alarm --clear', RAISER).decision === null);
+
+  // DEBOUNCE: a second raise inside the window coalesces — no per-id block storm.
+  const dbl = AL.raise(RAISER, 'a second, rapid alarm', arepo);
+  ok('a rapid second raise COALESCES (debounce) — one alarm, not a board-wide storm',
+    dbl.ok === false && dbl.coalesced === true && AL.readFlag(aboard).id === raised.id);
+
+  // BODY CAP: the injected body is capped at the source (untrusted, force-fed into context).
+  AL.clear(arepo);
+  const big = AL.raise(RAISER, 'x'.repeat(1000), arepo);
+  ok('the alarm body is CAPPED (a broadcast prompt-injection surface must be bounded)',
+    big.ok === true && AL.readFlag(aboard).body.length <= AL.BODY_CAP);
+
+  // STALE / TTL: an alarm older than the TTL no longer interrupts.
+  const flag = JSON.parse(fs.readFileSync(AL.flagPath(aboard), 'utf8'));
+  flag.at = Date.now() - AL.TTL_MS - 1000;
+  fs.writeFileSync(AL.flagPath(aboard), JSON.stringify(flag));
+  ok('a STALE alarm (past its TTL) no longer interrupts — readFlag and the gate fall through',
+    AL.readFlag(aboard) === null && armgate('ls', 'alarm-fresh-' + process.pid).decision === null);
+
+  // FAIL-OPEN: if the ack cannot be written, the gate lets the tool RUN (never block-forever).
+  AL.clear(arepo);
+  AL.raise(RAISER, 'fresh alarm for the fail-open probe', arepo);
+  ok('an ack-write FAILURE fails OPEN — a session whose ack cannot persist is NOT wedged',
+    AL.stampAck('bad<>:name', 'x') === false
+    && AL.checkAndAck('bad<>:name', aboard) === null
+    && AL.readFlag(aboard) !== null);   // the flag stays live for peers who CAN ack
+
+  // CLEAR: removes the flag; the gate falls through again for everyone.
+  AL.clear(arepo);
+  ok('clear removes the flag — the gate falls through for everyone, and the status-bar badge clears',
+    AL.readFlag(aboard) === null && armgate('ls', BUSY).decision === null && AL.badge(aboard) === '');
+
+  // IDLE-PEER WAKE: an alarm broadcasts a note, so a CAUGHT-UP (idle) peer's listener wake-condition
+  // — arc-await's check(), which fires on unreadFor > 0 — goes true. The idle session wakes and
+  // absorbs the alarm like any note (the note channel; the flag is the ADDITION for busy peers).
+  // Proven live with a real listener process; locked here so it can't silently regress.
+  const IDLE = 'alarm-idle-' + process.pid;
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${IDLE}.json`),
+    JSON.stringify({ pid: process.pid, cwd: arepo, convId: 'ac1' }));
+  Fa.requestRole(IDLE, 'idler', arepo);
+  RMa.markRead(aboard, 'idler');                       // catch the idle peer up: 0 unread
+  const idleBefore = RMa.unreadFor(aboard, 'idler').count;
+  AL.raise(RAISER, 'wake the idle peer', arepo);
+  ok('an alarm wakes an IDLE peer too — a caught-up listener\'s wake-condition (unread>0) goes true',
+    idleBefore === 0 && RMa.unreadFor(aboard, 'idler').count >= 1
+    && /ALARM: wake the idle peer/.test(RMa.unreadFor(aboard, 'idler').notes.slice(-1)[0].body));
+  AL.clear(arepo);
+  try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${IDLE}.json`)); } catch {}
+  try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-alarmack-${IDLE}.json`)); } catch {}
+
+  // DE-DUP (design review #332, claim 6): the alarm reaches a peer on TWO channels — the broadcast
+  // note AND the pretool flag-gate. Whichever fires first stamps the shared ack; the other is
+  // suppressed, so no peer sees the same alarm twice. Fresh board to isolate the channels cleanly.
+  const drepo = fs.mkdtempSync(path.join(os.tmpdir(), 'alarmdd-'));
+  spawnSync('git', ['init', '-q'], { cwd: drepo });
+  const dboard = RMa.resolveBoard(drepo); RMa.ensureBoard(dboard);
+  const DR = 'dd-raiser-' + process.pid, D1 = 'dd-note1st-' + process.pid, D2 = 'dd-flag1st-' + process.pid;
+  for (const s of [DR, D1, D2]) fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`),
+    JSON.stringify({ pid: process.pid, cwd: drepo, convId: 'dc1' }));
+  Fa.requestRole(DR, 'code', drepo); Fa.requestRole(D1, 'frontend', drepo); Fa.requestRole(D2, 'backend', drepo);
+
+  const r1 = AL.raise(DR, 'schema changed — stop', drepo);
+  // DIRECTION 1 (note first): the delivery SHOWS the alarm and stamps the ack -> the flag stays quiet.
+  const injA = Fa.injection(D1, drepo);
+  ok('de-dup, NOTE first: the note is shown and stamps the ack, so the flag-gate then stays quiet',
+    !!injA && /ALARM: schema changed/.test(injA.text)
+    && AL.readAck(D1) === r1.id && AL.checkAndAck(D1, dboard) === null);
+
+  // DIRECTION 2 (flag first): the gate blocks (acks), then the note is SUPPRESSED from delivery and
+  // the cursor advances so it never re-delivers. Here the alarm is the only unread note, so nothing
+  // is injected at all — the peer got it via the block; a note delivery would be the double-show.
+  const blocked = AL.checkAndAck(D2, dboard);
+  const injB = Fa.injection(D2, drepo);
+  ok('de-dup, FLAG first: the gate blocks, then the note is SUPPRESSED (no double-show, nothing injected)',
+    !!blocked && AL.readAck(D2) === r1.id && injB === null);
+  ok('...and the suppressed alarm never re-delivers — the cursor advanced past it',
+    Fa.injection(D2, drepo) === null && AL.readFlag(dboard) !== null);
+
+  for (const s of [DR, D1, D2]) {
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-alarmack-${s}.json`)); } catch {}
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`)); } catch {}
+  }
+  fs.rmSync(drepo, { recursive: true, force: true });
+
+  for (const s of [RAISER, BUSY]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-alarmack-${s}.json`)); } catch {} }
+  fs.rmSync(arepo, { recursive: true, force: true });
+} catch (e) { ok('arc alarm section ran without throwing', false, e.message); }
+
+// ── arc feed: the read-only operator status feed (127.0.0.1) ────────────────────────────────────
+// The human holds no role, so no board reader serves them. The feed answers "what are my agents
+// doing, across every repo?" — snapshot() is a pure function of on-disk state (live arc-state files
+// + the boards their cwds resolve to), so it is unit-tested here; the live SSE server is smoke-
+// tested separately. Genuine liveness (isHolder), not a bare pid, or it shows recycled-pid ghosts.
+section('arc feed (operator status snapshot + lifecycle)');
+try {
+  const F = require(path.join(SRC, 'arc-feed.js'));
+  const RMf = require(path.join(SRC, 'arc-board.js'));
+  const Ff = require(path.join(SRC, 'arc-notes.js'));
+
+  const frepo = fs.mkdtempSync(path.join(os.tmpdir(), 'feed-'));
+  spawnSync('git', ['init', '-q'], { cwd: frepo });
+  const fboard = RMf.resolveBoard(frepo); RMf.ensureBoard(fboard);
+  const CODE = 'feed-code-' + process.pid, AUD = 'feed-aud-' + process.pid;
+  for (const s of [CODE, AUD]) fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`),
+    JSON.stringify({ pid: process.pid, cwd: frepo, convId: 'fc1', account: 'sub' }));   // pid alive => live sessions
+  // v5 DETAIL fixtures: a self-reported activity (its OWN file) + a docs/ROADMAP.md to parse.
+  fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-status-${CODE}.json`), JSON.stringify({ activity: 'editing the feed', at: Date.now() }));
+  fs.mkdirSync(path.join(frepo, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(frepo, 'docs', 'ROADMAP.md'),
+    '# roadmap\n\n## 1. First item — the gap here · **BIG** · picked up 2026-07-19\n\nBody. **Next move:** `code`.\n\n## 2. Second item — another gap · **SMALL**\n\nBody. **Owner of the next move:** `research`.\n\n## Parked elsewhere — pointers\n\n- not a numbered item.\n');
+  Ff.requestRole(CODE, 'code', frepo); Ff.requestRole(AUD, 'audit', frepo);
+  RMf.appendNote(fboard, { from: 'code', to: 'audit', kind: 'request', body: 'please verify X' });   // #1
+  RMf.appendNote(fboard, { from: 'code', to: 'audit', kind: 'request', body: 'and Y' });              // #2 (stays open)
+  RMf.appendNote(fboard, { from: 'audit', to: 'code', kind: 'result', body: 'DONE X', replyTo: 1 });  // #3 answers #1
+
+  const snap = F.snapshot();
+  const repo = (snap.repos || []).find((r) => r.root === fboard.root);
+  ok('snapshot lists the repo with its genuinely-live role-holders',
+    !!repo && repo.name === fboard.name && repo.roles.map((x) => x.role).sort().join(',') === 'audit,code');
+  ok('...board summary carries the note count + last-activity timestamp',
+    !!repo && repo.board.notes === 3 && !!repo.board.lastTs);
+  ok('...the WAITING graph has code→audit for the STILL-OPEN request (#2), not the answered one (#1)',
+    !!repo && repo.waiting.some((w) => w.from === 'code' && w.to === 'audit' && w.seq === 2)
+    && !repo.waiting.some((w) => w.seq === 1));
+  ok('...the COOPERATION graph has the reply edge audit→code (re #1)',
+    !!repo && repo.cooperation.some((c) => c.from === 'audit' && c.to === 'code' && c.reSeq === 1));
+  ok('...a live role carries its self-reported ACTIVITY (arc status → per-session working-on line)',
+    !!repo && (repo.roles.find((x) => x.role === 'code') || {}).activity === 'editing the feed');
+  ok('...each WAITING/COOPERATION edge carries the note TEXT (body) so a note is click-to-read',
+    !!repo && (repo.waiting.find((w) => w.seq === 2) || {}).text === 'and Y'
+    && (repo.cooperation.find((c) => c.reSeq === 1) || {}).text === 'DONE X');
+  ok('...the repo ROADMAP is parsed from docs/ROADMAP.md — numbered items only, with owner + open/prog state',
+    !!repo && repo.roadmap.length === 2
+    && repo.roadmap[0].title === 'First item' && repo.roadmap[0].owner === 'code' && repo.roadmap[0].state === 'prog'
+    && repo.roadmap[1].title === 'Second item' && repo.roadmap[1].owner === 'research' && repo.roadmap[1].state === 'open');
+  ok('a DEAD session is NOT shown — liveness is genuine, not a stale arc-state file',
+    (() => { const D = 'feed-dead-' + process.pid;
+      fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${D}.json`), JSON.stringify({ pid: 999999, cwd: frepo }));
+      const r2 = (F.snapshot().repos || []).find((r) => r.root === fboard.root);
+      try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${D}.json`)); } catch {}
+      return !!r2 && r2.sessionCount === 2; })());   // pid 999999 is odd => structurally dead on Windows
+
+  // LIFECYCLE (sync-testable): sweepOrphans drops a DEAD feed pidfile, keeps a live one.
+  const fp = (p) => path.join(CLAUDE, 'cache', `arc-feed-${p}.json`);
+  fs.writeFileSync(fp(18990), JSON.stringify({ pid: 999999, port: 18990 }));
+  fs.writeFileSync(fp(18991), JSON.stringify({ pid: process.pid, port: 18991 }));
+  const swept = F.sweepOrphans();
+  ok('sweepOrphans drops a DEAD feed pidfile and keeps a live one',
+    swept >= 1 && !fs.existsSync(fp(18990)) && fs.existsSync(fp(18991)));
+  try { fs.unlinkSync(fp(18991)); } catch {}
+
+  // THE HOST GUARD (audit #345) — the DNS-rebinding allowlist as a PURE function, so the security
+  // logic is LOCKED in the suite (not only smoke-tested). Every angle audit probed on the wire.
+  ok('hostAllowed accepts ONLY loopback; rejects rebinding + suffix/prefix smuggling (audit #345)',
+    F.hostAllowed('127.0.0.1:8791') && F.hostAllowed('localhost:8791') && F.hostAllowed('[::1]:8791')
+    && F.hostAllowed('127.0.0.1') && F.hostAllowed('LOCALHOST:8791')
+    && !F.hostAllowed('evil.example.com') && !F.hostAllowed('evil.example.com:8791')
+    && !F.hostAllowed('127.0.0.1.evil.com') && !F.hostAllowed('localhost.evil.com')
+    && !F.hostAllowed('127.0.0.1:8791.evil') && !F.hostAllowed('[::ffff:127.0.0.1]') && !F.hostAllowed(''));
+  // A running detached feed never reloads its source, so a deployed fix must SELF-ACTIVATE — the
+  // only lever is VERSION (ensureFeed restarts a feed whose /healthz version is older). Guard the
+  // discipline: this fix must have bumped it past the original 1 (audit #345).
+  ok('the feed VERSION is bumped past 1 — a deployed fix can tell a running feed its code is stale',
+    F.VERSION >= 2);
+
+  // THE BUILT-IN DASHBOARD (so the feed is VIEWABLE, not only JSON): a pure function of the snapshot,
+  // self-contained (no external assets — CSP/doctrine-clean), embeds the data then live-updates via SSE.
+  const dash = F.dashboardHtml({ host: 'TESTBOX', at: Date.now(), version: F.VERSION,
+    repos: [{ root: 'e:\\demo', name: 'demo', roles: [{ role: 'code', pid: 111 }], sessionCount: 1,
+      board: { notes: 5, lastTs: null, unread: {} },
+      waiting: [{ from: 'code', to: 'audit', seq: 9, id: 'x', ts: new Date().toISOString(), seen: false }],
+      cooperation: [{ from: 'audit', to: 'code', seq: 10, reSeq: 8 }] }] });
+  ok('dashboardHtml: self-contained page — SSR cards (renders with NO JS) + embedded snapshot + SSE wire',
+    /arc . operator/.test(dash) && /<!doctype html>/i.test(dash)
+    && dash.indexOf("EventSource('/events')") !== -1
+    && dash.indexOf('<h2>demo</h2>') !== -1                               // SSR: the card is IN the HTML, no JS needed
+    && dash.indexOf('class="edge unseen"') !== -1                        // SSR: the unseen waiting edge rendered
+    && /"role":"code"/.test(dash)                                        // embedded snapshot drives live JS updates
+    && dash.indexOf('__ARC_') === -1                                     // every placeholder replaced
+    && !/https?:\/\//.test(dash.replace(/http:\/\/127\.0\.0\.1/g, '')));  // no EXTERNAL asset URLs (CSP-clean)
+
+  // XSS LOCK (audit #352): the escaping IS the security boundary of the served `/` HTML surface.
+  // Adversarial board data through the REAL exported renderer must never reach the DOM as markup nor
+  // break out of the embedded <script>. Locks it so a future esc()/E() refactor or a new field can't
+  // silently reopen XSS — the structural test above checks shape; this checks the escaping.
+  const evil = F.dashboardHtml({ host: '<img src=x onerror=alert(1)>', at: Date.now(), version: F.VERSION,
+    repos: [{ root: 'C:/repo/<svg/onload=alert(2)>', name: '</script><script>alert(3)</script>',
+      roles: [{ role: '<img src=x onerror=alert(4)>', pid: 111 }], sessionCount: 1,
+      board: { notes: 1, lastTs: null, unread: {} },
+      waiting: [{ from: 'a', to: '"><svg/onload=alert(5)>', seq: 1, id: 'x', ts: new Date().toISOString(), seen: false }],
+      cooperation: [] }] });
+  ok('dashboardHtml NEUTRALIZES adversarial role/path/to/host — no XSS reaches the DOM (audit #352 probe)',
+    !/<img[^>]*onerror/i.test(evil) && !/<svg[^>]*onload/i.test(evil)      // no live event-handler tags survive
+    && evil.indexOf('</script><script>alert(3)') === -1                    // the embedded-JSON </script> breakout is dead
+    && (evil.match(/<script/gi) || []).length === 1                        // exactly ONE <script — the shell's own
+    && /&lt;img src=x onerror=alert\(4\)&gt;/.test(evil));                 // the role rendered as ESCAPED text
+
+  for (const s of [CODE, AUD]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${s}.json`)); } catch {} }
+  try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-status-${CODE}.json`)); } catch {}
+  fs.rmSync(frepo, { recursive: true, force: true });
+} catch (e) { ok('arc feed section ran without throwing', false, e.message); }
+
+// ── every recurring PowerShell shell-out is windowless (audit #348) ─────────────────────────────
+// A detached, CONSOLE-LESS process (the operator feed) makes a NEW console window for a child
+// powershell UNLESS windowsHide is set — a pop-up that steals focus every ~30s cache-miss. procStarts
+// and treeOf were the two recurring PS spawns missing it; the feed (new, runs forever) turned that
+// latent gap into a continuous flash. Lint the whole class so it cannot silently come back.
+section('powershell shell-outs are windowless (audit #348 — no focus-stealing pop-up)');
+try {
+  const bad = [];
+  for (const f of fs.readdirSync(SRC)) {
+    if (!f.endsWith('.js') || f === 'arc-invite.js') continue;   // arc-invite's peer-birth window is intentional
+    const src = fs.readFileSync(path.join(SRC, f), 'utf8');
+    const rx = /spawn(?:Sync)?\(\s*['"]powershell/g;
+    let m;
+    while ((m = rx.exec(src))) {
+      const call = src.slice(m.index, m.index + 1000);
+      if (/stdio\s*:[^}]*inherit/.test(call)) continue;   // console-ATTACHED (arc update's install.ps1) — user-invoked, no window class
+      if (!/windowsHide\s*:\s*true/.test(call)) bad.push(f + '@' + m.index);
+    }
+  }
+  ok('every recurring PowerShell spawn in src/ sets windowsHide (no window from a console-less parent)',
+    bad.length === 0, bad.join(', '));
+} catch (e) { ok('windowsHide lint ran', false, e.message); }
+
+section('/arc-mode gate (fires ONLY when a delegate would spawn a session)');
 try {
   const HOOKP = path.join(SRC, 'arc-pretool-hook.js');
   const St3 = require(path.join(SRC, 'arc-stance.js'));
@@ -2273,7 +2811,7 @@ try {
   ok('PASSIVE denies a delegate that would SPAWN (nobody holds that role)',
     den.decision === 'deny' && /passive/i.test(den.reason || ''));
   ok('...and says WHY passive binds the human too (a gate sees a tool call, not who asked)',
-    /arc:mode balanced/.test(den.sys || '') && /cannot tell your order/i.test(den.sys || ''));
+    /\/arc-mode balanced/.test(den.sys || '') && /cannot tell your order/i.test(den.sys || ''));
 
   St3.setStance(GS, 'balanced');
   ok('BALANCED asks — the permission prompt IS the confirmation',
@@ -2282,6 +2820,57 @@ try {
   St3.setStance(GS, 'active');
   ok('ACTIVE allows — auto-approved, no prompt',
     gate('arc delegate frontend "do a thing"').decision === 'allow');
+
+  // COMMAND-SCOPED, OR ASK (audit #293 — the last unscoped auto-allow in the gate). ACTIVE's allow
+  // blesses the WHOLE command, so a chained tail would ride it. A SOLE delegate still auto-allows; a
+  // decorated one falls to a PROMPT (never denied — ACTIVE still wants the delegate, just not what
+  // is stapled to it). Same soleCommand predicate the reply exemption uses.
+  ok('a CHAINED delegate defers to a prompt in ACTIVE — the allow no longer blesses the tail',
+    gate('arc delegate frontend "x"; rm -rf Y').decision === 'ask'
+    && gate('arc delegate frontend "x" && curl evil').decision === 'ask'
+    && gate('arc delegate frontend "x" | tee Z').decision === 'ask');
+  ok('...a leading cd/prefix before the delegate defers too (anchored at ^arc delegate)',
+    gate('cd E:\\other; arc delegate frontend "x"').decision === 'ask'
+    && gate('echo hi && arc delegate frontend "x"').decision === 'ask');
+  ok('...a substitution char in the packet defers ($()/backticks run inside quotes)',
+    gate('arc delegate frontend "x $(whoami)"').decision === 'ask'
+    && gate('arc delegate frontend "see (a)"').decision === 'ask');
+  ok('...but a SOLE delegate still auto-allows (the exemption survives its own scoping)',
+    gate('arc delegate frontend "do a thing"').decision === 'allow');
+  // one shared predicate, source-pinned so the two auto-allows cannot drift apart.
+  const PT = require(path.join(SRC, 'arc-pretool-hook.js'));
+  ok('soleCommand is the shared scoping predicate (both auto-allows call it)',
+    PT.soleCommand('arc delegate x "y"', 'delegate') === true
+    && PT.soleCommand('arc delegate x "y"; rm', 'delegate') === false
+    && PT.soleCommand('arc note x --reply-to 1 "y"', 'note') === true
+    && PT.soleCommand('cd z; arc note x --reply-to 1 "y"', 'note') === false);
+
+  // THE BARE-ARM GUARD (self-inflicted-deafness fix, 2026-07-18). A decorated `arc join` never
+  // creates a wakeable listener — the shell `&`/redirect makes the tracked process exit at once and
+  // orphans the real listener, while "listening" prints and lies (the #317 agent-behavior cause,
+  // lived this day). The PreToolUse hook is the ONLY layer that sees the shell decoration, so a
+  // LEADING `arc join` must be sole. It fires in ANY stance and needs no board read.
+  ok('a DECORATED arc join is DENIED — the exact self-arm form that went silently deaf',
+    gate('arc join code >/dev/null 2>&1 &').decision === 'deny'
+    && gate('arc join code &').decision === 'deny'
+    && gate('arc join audit | head -1').decision === 'deny'
+    && gate('arc join code; echo done').decision === 'deny'
+    && gate('arc join code', 'PowerShell').decision === null);   // PowerShell path judged too
+  ok('...the denial names the fix (malformed arm; arm bare via run_in_background)',
+    /malformed arm/i.test(gate('arc join code &').reason || '')
+    && /run_in_background/i.test(gate('arc join code >/dev/null 2>&1 &').sys || ''));
+  ok('a BARE arc join is never touched — the CORRECT arm must pass clean',
+    gate('arc join code').decision === null
+    && gate('arc join audit').decision === null
+    && gate('  arc join code  ').decision === null                // leading/trailing space ok
+    && gate('arc join code\n').decision === null                  // trailing newline is not decoration (audit's edge-FP)
+    && gate('\narc join code').decision === null);                // leading newline either
+  ok('...but an INTERIOR newline (a real second command) still DENIES — trim keeps the bypass shut',
+    gate('arc join code\nrm -rf x').decision === 'deny');
+  ok('a note that MENTIONS or DISCUSSES arc join is NOT denied (anchored at ^, zero false positive)',
+    gate('arc note audit "run EXACTLY: arc join code; NO pipe & NO redirect >x"').decision !== 'deny'
+    && gate('arc note code --reply-to 5 "the bug: arc join x | head is malformed"').decision !== 'deny'
+    && gate('arc delegate research "scout arc join failure modes; & pipes"').decision !== 'deny');
 
   // THE MERGE'S WHOLE POINT: one verb, two costs. Delegating to a LIVE peer is a note — free,
   // reversible, the commonest thing an agent does — and gating it would be pure noise. The gate
@@ -2306,6 +2895,46 @@ try {
   ok('a non-delegate command is not touched, even in passive (no output = defer)',
     gate('git status').decision === null && gate('arc note code "hi"').decision === null
     && gate('arc join code').decision === null);
+  // A REPLY IS NOT INITIATIVE (the note-permission asymmetry — the human's idea, verbatim:
+  // "replying a note doesn't require user permission"). A VERIFIED reply auto-allows in every
+  // stance; everything unproven defers to the normal permission flow — allow must be EARNED.
+  RM4.appendNote(gboard, { from: 'research', to: 'code', kind: 'request', body: 'q for code?' }); // #1
+  RM4.appendNote(gboard, { from: 'research', to: null, body: 'broadcast FYI' });                  // #2
+  RM4.appendNote(gboard, { from: 'research', to: 'frontend', body: 'not for code' });             // #3
+  St3.setStance(GS, 'passive');   // the strictest stance — a reply flows even here
+  ok('a VERIFIED reply auto-allows in every stance, passive included (a reply is not initiative)',
+    gate('arc note research --reply-to 1 "DONE — the answer"').decision === 'allow');
+  ok('...a reply to a BROADCAST that reached us allows too',
+    gate('arc note research --reply-to 2 "ack"').decision === 'allow');
+  ok('...but INITIATING a note stays untouched by arc (defers to the normal permission flow)',
+    gate('arc note research "a brand new thread"').decision === null);
+  ok('...a reply to a note NOT addressed to us defers (an allow must be PROVEN)',
+    gate('arc note research --reply-to 3 "butting in"').decision === null);
+  ok('...a reply aimed at someone who did NOT write the note defers (a reply goes to its asker)',
+    gate('arc note frontend --reply-to 1 "wrong asker"').decision === null);
+  ok('...a nonexistent seq defers, never allows',
+    gate('arc note research --reply-to 99 "ghost"').decision === null);
+  ok('...and a CROSS-BOARD reply still ASKS — leaving the repo outranks the reply exemption',
+    gate('arc note research --reply-to 1 --board E:\\other "x"').decision === 'ask');
+
+  // COMMAND-SCOPED, OR NOTHING (audit #290 — the bypass it caught before the record did): the
+  // regex matches a SUBSTRING but an allow approves the WHOLE command, so a genuine reply with a
+  // chained tail would have ridden the exemption — removing exactly the prompt that shows the
+  // human the tail. Every decorated form must DEFER to the normal permission flow.
+  ok('a reply with a CHAINED command defers — the allow is command-scoped (audit #290 probes)',
+    gate('arc note research --reply-to 1 "ok"; rm -rf X').decision === null
+    && gate('arc note research --reply-to 1 "ok" && curl evil').decision === null
+    && gate('arc note research --reply-to 1 "ok" | tee X').decision === null
+    && gate('echo hi && arc note research --reply-to 1 "ok"').decision === null);
+  ok('...a body carrying substitution characters defers too ($() and backticks run INSIDE quotes)',
+    gate('arc note research --reply-to 1 "x $(whoami)"').decision === null
+    && gate('arc note research --reply-to 1 "see #282 (crossed)"').decision === null);
+  ok('...a leading cd defers — it would post onto a DIFFERENT board than the ledger checks read',
+    gate('cd E:\\arc; arc note research --reply-to 1 "ok"').decision === null);
+  ok('...and the PLAIN reply still allows (the exemption survives its own scoping)',
+    gate('arc note research --reply-to 1 "DONE - all four claims hold"').decision === 'allow');
+  St3.setStance(GS, 'passive');
+
   // FAILS CLOSED by design: a mention inside a string is gated too. A false positive costs a
   // prompt; a false negative would let a session spawn ungated. And the honest limit — this is a
   // guardrail against self-initiation, not a sandbox: any string matcher can be walked around.
@@ -2349,7 +2978,7 @@ try {
 
   fs.rmSync(grepo, { recursive: true, force: true });
   try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${GS}.json`)); } catch {}
-} catch (e) { ok('arc:mode gate', false, e.message + '\n' + (e.stack || '')); }
+} catch (e) { ok('/arc-mode gate', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- board permissions (an unattended peer must be able to run the board commands) -------
 // The first INVITED peer reported `No such tool available: Bash` — it had only PowerShell. A
@@ -2366,9 +2995,17 @@ try {
       && perms.includes(`${tool}(arc note:*)`) && perms.includes(`${tool}(arc role:*)`));
   }
   // `arc delegate` is deliberately NOT allowlisted: it is the one verb that can spawn a whole
-  // session, and that stays a per-spawn decision routed through the arc:mode gate.
+  // session, and that stays a per-spawn decision routed through the /arc-mode gate.
   ok('`arc delegate` is NOT auto-allowed (spawning sessions stays a gated decision)',
     !perms.some((p) => /delegate|invite/.test(p)));
+  // close/export/import joined later (they post-date the original list). close is the remedy the
+  // stop-hook's own nag prescribes — arc must never demand a command the allowlist then blocks;
+  // export/import are the board's transport. A content classifier vetoing "earlier conversation
+  // content" once locked an agent out of all three mid-session — allowlisted commands skip it.
+  for (const tool of ['Bash', 'PowerShell']) {
+    ok(`the allowlist covers ${tool} close/export/import (the nag's remedy + the board's transport)`,
+      perms.includes(`${tool}(arc close:*)`) && perms.includes(`${tool}(arc export:*)`) && perms.includes(`${tool}(arc import:*)`));
+  }
 
   const st = {};
   W.mergePermissions(st, perms);
@@ -2423,15 +3060,15 @@ try {
   // entries, 6,680,047 bytes, still on disk after the pid was gone, hasTranscript() true.
   ok('a NEW peer is FORKED from the CALLER, so it opens already knowing the project',
     /-Resume conv-abc-123\b/.test(psOf()) && /-Fork\b/.test(psOf()));
-  // THE BIRTH PROMPT IS REAL PROSE, NOT A SENTINEL — and that is what makes the peer revivable.
-  // A sentinel is BLOCKED at UserPromptSubmit (zero tokens, by design), so it never reaches the
-  // model; every later input arrives as a hook injection or a Stop-block reason, never a user
+  // THE BIRTH PROMPT IS REAL PROSE, NOT A COMMAND — and that is what makes the peer revivable.
+  // An /arc- command is BLOCKED at UserPromptSubmit (zero tokens, by design), so it never reaches
+  // the model; every later input arrives as a hook injection or a Stop-block reason, never a user
   // message. Measured: such a session leaves NO conversation on disk — `claude --resume <its id>`
   // says "No conversation found" even after a graceful /exit — so there is nothing to revive and
   // staffing silently births a stranger. A peer that never has a real turn can never come back.
-  ok('a BORN peer opens with a REAL prompt, not a blocked sentinel (a sentinel leaves no conversation)',
+  ok('a BORN peer opens with a REAL prompt, not a blocked command (a blocked command leaves no conversation)',
     !!bornPrompt && /You were BRANCHED from another session/.test(bornPrompt.text)
-    && !/^arc:role /.test(bornPrompt.text));
+    && !/^arc:role /.test(bornPrompt.text) && !/^\/arc-/.test(bornPrompt.text));
   // AND IT REACHES THE PEER AS A FILE, not as an argument. This is the property two live tabs were
   // spent learning: the prompt is prose, the chain re-parses it four times after we build it, and
   // every quoting form we tried arrived mangled or opened no tab at all. Nothing fragile may ride
@@ -2487,12 +3124,18 @@ try {
   // same command; the only one that ever mattered was the env a human's terminal does not have.
   // PROOF: identical wt + cmd /k + flags, env stripped -> 21701 bytes, written WHILE STILL LIVE.
   const dirty = { PATH: 'x', CLAUDE_CONFIG_DIR: 'profile', ARC_RUNTIME_ACCOUNT: 'veneto',
-    CLAUDE_CODE_SESSION_ID: 'caller-conv', CLAUDE_CODE_CHILD_SESSION: '1', ARC_SESSION: 'caller-sess' };
+    CLAUDE_CODE_SESSION_ID: 'caller-conv', CLAUDE_CODE_CHILD_SESSION: '1', ARC_SESSION: 'caller-sess',
+    NO_COLOR: '1' };
   const clean = I.birthEnv(dirty);
   ok('a newborn never inherits the CALLER\'s conversation id (it would never get one of its own)',
     !('CLAUDE_CODE_SESSION_ID' in clean) && !('CLAUDE_CODE_CHILD_SESSION' in clean));
   ok('...nor ARC_SESSION, or its hooks read the CALLER\'s role, notes and cursor',
     !('ARC_SESSION' in clean));
+  // Same disease, different organ: Claude Code sets NO_COLOR=1 in its TOOL subshells, every spawn
+  // runs in one, and wt hands the pane the INVOKER's env (probed live, 2026-07-18, both -p and
+  // profile-less) — so every spawned peer ever ran MONOCHROME next to a colored hand-launched tab.
+  ok('...nor the tool-shell\'s NO_COLOR, which turned every spawned peer monochrome',
+    !('NO_COLOR' in clean));
   ok('...while the account profile SURVIVES — a revive resumes a conv that exists only there',
     clean.CLAUDE_CONFIG_DIR === 'profile' && clean.ARC_RUNTIME_ACCOUNT === 'veneto' && clean.PATH === 'x');
   // And it must actually reach the spawn, not just exist as a helper.
@@ -2580,7 +3223,7 @@ try {
   // copy of the CALLER wearing the role's name; resume WITHOUT it and the real peer walks back in.
   RM3.ensureBoard(RM3.resolveBoard(vrepo));
   const vboard = RM3.resolveBoard(vrepo);
-  RM3.claimRole(vboard, 'ghost', 999999, 'ghost-sess', 'ghost-conv-777');   // held, then died
+  RM3.claimRole(vboard, 'ghost', DEAD_PID, 'ghost-sess', 'ghost-conv-777');   // held, then died
   ok('a vacant claim (dead pid + a convId) is what makes a closed peer revivable',
     !!RM3.vacantClaimForRole(vboard, 'ghost')
     && RM3.vacantClaimForRole(vboard, 'ghost').convId === 'ghost-conv-777');
@@ -2604,7 +3247,23 @@ try {
   // having been purged — it would come back knowing less than a peer who never existed.
   ok('...and it still forks the CALLER, so a purged peer is reborn with context, not blank',
     /-Resume conv-abc-123/.test(psOf()) && /-Fork/.test(psOf()));
-  RM3.releaseRole(vboard, 'ghost', 999999);
+  RM3.releaseRole(vboard, 'ghost', DEAD_PID);
+
+  // A ROLE MOVE MUST NOT BURN THE REVIVE POINTER (fired live 2026-07-18): releaseRole used to
+  // unlink the claim outright, destroying the convId — the next `arc delegate` for the old role
+  // then silently BIRTHED A STRANGER in the chair's name (audit's chair, in production, after a
+  // mis-adoption moved its session to another role). Now it tombstones exactly like closePeer.
+  const ghostTomb = RM3.readClaimFile(vboard, 'ghost');
+  ok('releaseRole leaves a TOMBSTONE, not a void — the convId survives the release',
+    !!ghostTomb && !ghostTomb.pid && ghostTomb.convId === 'ghost-conv-777');
+  ok('...which still reads VACANT (a pid-less claim holds nothing)',
+    RM3.roleClaim(vboard, 'ghost') === null);
+  ok('...and stays findable for revive (vacantClaimForRole sees the conversation)',
+    (RM3.vacantClaimForRole(vboard, 'ghost') || {}).convId === 'ghost-conv-777');
+  RM3.claimRole(vboard, 'bare-release', DEAD_PID, 'br-sess', null);
+  RM3.releaseRole(vboard, 'bare-release', DEAD_PID);
+  ok('...while releasing a claim with NO convId unlinks it (nothing to revive — the chair is bare)',
+    !RM3.readClaimFile(vboard, 'bare-release'));
 
   // ---- THE FRESHNESS BRIEF: a revived peer must not trust a world that moved -------------------
   // The zombie failure mode: a peer working from a stale snapshot is CONFIDENTLY WRONG, not slow.
@@ -2746,7 +3405,7 @@ try {
     const FRS = 'fresh-sess-' + process.pid;
     fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${FRS}.json`),
       JSON.stringify({ pid: process.pid, cwd: frepo, convId: 'caller-conv-fresh' }));
-    RM3.claimRole(fboard, 'sleeper', 999999, 'sleeper-sess', 'sleeper-conv-1');   // held, then died
+    RM3.claimRole(fboard, 'sleeper', DEAD_PID, 'sleeper-sess', 'sleeper-conv-1');   // held, then died
     const frec = [];
     const revd = I.staffRole(FRS, 'sleeper', {
       spawn: (cmd, args) => { frec.push({ cmd, args }); return { status: 0 }; },
@@ -2815,14 +3474,14 @@ try {
   ok('...but a MISSING BINARY (ENOENT) stays fatal — nothing can start without it',
     badEnoent.ok === false && /ENOENT/.test(badEnoent.message));
 
-  // The peer's tab must be identifiable. Claude Code sets the terminal title from the project
-  // folder, so without --suppressApplicationTitle both tabs read "arc" and you cannot tell the
-  // caller from the peer it spawned.
+  // The peer's tab STARTS named by its role (--title). It is no longer pinned there with
+  // --suppressApplicationTitle: that flag suppressed Claude Code's own title AND its green
+  // working-icon (one OSC channel), leaving a spawned tab looking dead beside a hand-launched
+  // one. The human chose the live icon over the pinned label (2026-07-17) — Claude Code
+  // retitles the tab from the project folder, same as every other session.
   I.staffRole(VS, 'titled', NOHIST);
-  // The bare role, no "arc: " badge — the human reads tabs by role, and the prefix pushed the
-  // one word that matters off a narrow tab (their call, 2026-07-16).
-  ok('the peer tab is titled by ROLE and keeps it (--suppressApplicationTitle)',
-    /--title 'titled' --suppressApplicationTitle/.test(psOf()));
+  ok('the peer tab STARTS titled by role (--title), and no longer suppresses the app title/icon',
+    /--title 'titled' -d /.test(psOf()) && !/--suppressApplicationTitle/.test(psOf()));
 
   // ---- the trust dialog: the invited tab has NO HUMAN to answer it -------------------
   // Claude Code asks "Do you trust the files in this folder?" per PROJECT PATH, per account
@@ -2994,10 +3653,35 @@ try {
   ok('a live waiter marks the session as already listening (no duplicate arm per turn)',
     A.isWaiting(WS) === true);
 
+  // ROLE-AWARE reachability (deafness-hunt, 2026-07-18): a listener armed for role X does not hear
+  // role Y, so a session that changed roles is DEAF on the new one even though a listener is alive.
+  ok('isWaitingAs distinguishes the role the listener is armed FOR (X-listener != reachable as Y)',
+    A.isWaitingAs(WS, 'research') === true && A.isWaitingAs(WS, 'other-role') === false);
+
+  // GENUINENESS (opt-in {genuine:true}): a marker whose pid was RECYCLED onto a new process reads
+  // alive but is not our listener. Genuine iff the process started BEFORE the marker was written;
+  // a recycled pid started after. Forge the recycle: our own live pid, but a marker timestamped
+  // LONG BEFORE this process could have started (at: 1000 = 1970) — a genuine arm stamps `at` after
+  // the process starts, so at<<start means "not the process that armed this."
+  fs.writeFileSync(A.awaitFile(WS), JSON.stringify({ pid: process.pid, role: 'research', at: 1000 }));
+  ok('a bare (cheap) check still trusts isAlive — the statusline badge pays no probe',
+    A.isWaiting(WS) === true);
+  ok('...but {genuine:true} CONVICTS a recycled pid (marker predates the live process) and sweeps it',
+    A.isWaiting(WS, { genuine: true }) === false && !fs.existsSync(A.awaitFile(WS)));
+  // ...while a GENUINE live listener (marker stamped at arm time, after start) survives {genuine:true}.
+  A.markWaiting(WS, 'research', process.pid);            // markWaiting stamps at = now (after our start)
+  ok('...and a genuine live listener survives the genuineness guard',
+    A.isWaitingAs(WS, 'research', { genuine: true }) === true);
+  // The genuine probe must be FRESH, not warm (audit #295): the 30s warm cache can serve a dead
+  // predecessor's start and so KEEP the <=30s recycle window this guard exists to close. Source-
+  // pinned (a warm/fresh contrast needs cache gymnastics in a child; the wiring is what matters).
+  ok('...and it uses a FRESH probe (procStarts {fresh}), closing the warm-cache recycle window',
+    /procStarts\(\[m\.pid\], \{ fresh: true \}\)/.test(fs.readFileSync(path.join(SRC, 'arc-await.js'), 'utf8')));
+
   // THE property that decides whether a crash makes a session permanently deaf: the test is
   // LIVENESS, not existence. A stale marker left by a dead waiter must re-arm — otherwise the
   // session never hears another note and nothing ever tells it why.
-  A.markWaiting(WS, 'research', 999999);                 // a pid that cannot be alive
+  A.markWaiting(WS, 'research', DEAD_PID);               // verified-dead at suite start
   ok('a DEAD waiter does not count — the session re-arms instead of going deaf forever',
     A.isWaiting(WS) === false);
   ok('...and the stale marker is swept, not left to rot', !fs.existsSync(A.awaitFile(WS)));
@@ -3010,22 +3694,60 @@ try {
   // that nothing could ever clean up. Re-arming is routine (a manual `arc join`, a restart's
   // re-arm), so each one would leak a process for the rest of the machine's uptime.
   // (Found by the first live peer loop: a duplicate `join code` survived a restart this way.)
-  const { spawn: spawnBg } = require('child_process');
-  const ghost = spawnBg(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-  A.markWaiting(WS, 'research', ghost.pid);
-  const prevEnv = process.env.ARC_SESSION;            // awaitOnce reads the session from the env
-  process.env.ARC_SESSION = WS;
-  A.awaitOnce('research', repo, { pollMs: 5, maxPolls: 1, write: () => {} });
-  if (prevEnv === undefined) delete process.env.ARC_SESSION; else process.env.ARC_SESSION = prevEnv;
-  ok('re-arming SUPERSEDES the session\'s previous listener (never leaks a polling orphan)',
-    (() => { try { process.kill(ghost.pid, 0); return false; } catch { return true; } })());
-  try { ghost.kill(); } catch {}
+  // GRACEFUL SUPERSEDE (2026-07-18): re-arming used to process.kill the previous listener,
+  // which enforced one-listener-per-session but reported the DESIGNED displacement as a
+  // task "failed with exit code 1" — recurring false alarm. Now the new arm just overwrites
+  // the marker; the old listener notices the ownership change within one poll and stands
+  // down ITSELF: exit 0, says "superseded", and — load-bearing — does NOT clear the marker,
+  // which now belongs to its successor. (The successor pid below is THIS test process — the
+  // marker liveness-sweep would eat a dead pid before the displaced listener could see it.)
+  const sup = spawnSync(process.execPath, ['-e',
+    `process.env.ARC_SESSION = ${JSON.stringify(WS)};`
+    + `const A = require(${JSON.stringify(path.join(SRC, 'arc-await.js'))});`
+    + `const p = A.awaitOnce('research', ${JSON.stringify(repo)}, { pollMs: 25, write: (l) => console.log(l) });`
+    + `setTimeout(() => A.markWaiting(${JSON.stringify(WS)}, 'research', ${process.pid}), 80);`   // a newer listener takes the chair
+    + `p.then((c) => { const w = A.waitingFor(${JSON.stringify(WS)});`
+    + `console.log(JSON.stringify({ code: c, marker: w && w.pid })); process.exit(c); });`,
+  ], { encoding: 'utf8', timeout: 8000, env: { ...process.env, ARC_SESSION: WS } });
+  const supTail = (() => { try { return JSON.parse(sup.stdout.trim().split('\n').pop()); } catch { return {}; } })();
+  ok('a displaced listener stands down GRACEFULLY: exit 0, says superseded (no false "failed" alarm)',
+    sup.status === 0 && /superseded by a newer listener/.test(sup.stdout));
+  ok('...and leaves the SUCCESSOR\'s marker untouched (clearing it would deafen the session)',
+    supTail.marker === process.pid);
+  A.clearWaiting(WS);   // test hygiene: release the marker we planted as the successor
+
+  // DECLINE A REDUNDANT RE-ARM (audit #317): if a GENUINE live listener already holds this role, a
+  // second `arc join` must NOT supersede it — a malformed/piped re-arm that prints "listening" then
+  // dies would otherwise trade a WORKING listener for nothing, leaving the session deaf. Plant a
+  // genuine live listener (this test process — marker.at=now is after our own start, so {genuine}
+  // accepts it), then run a real awaitOnce for the same role: it must EXIT 0 saying "already armed",
+  // and leave the existing marker INTACT (not overwrite it with its own about-to-die pid).
+  A.markWaiting(WS, 'research', process.pid);
+  const dec = spawnSync(process.execPath, ['-e',
+    `process.env.ARC_SESSION = ${JSON.stringify(WS)};`
+    + `const A = require(${JSON.stringify(path.join(SRC, 'arc-await.js'))});`
+    + `A.awaitOnce('research', ${JSON.stringify(repo)}, { pollMs: 25, write: (l) => console.log(l) })`
+    + `.then((c) => { const w = A.waitingFor(${JSON.stringify(WS)}); console.log(JSON.stringify({ code: c, marker: w && w.pid })); process.exit(c); });`,
+  ], { encoding: 'utf8', timeout: 8000, env: { ...process.env, ARC_SESSION: WS } });
+  const decTail = (() => { try { return JSON.parse(dec.stdout.trim().split('\n').pop()); } catch { return {}; } })();
+  ok('a redundant arm DECLINES when a genuine live listener already holds the role (keeps the proven one)',
+    dec.status === 0 && /ALREADY armed/i.test(dec.stdout));
+  ok('...and leaves the EXISTING listener\'s marker intact (a malformed re-arm cannot orphan a working one)',
+    decTail.marker === process.pid);
+  A.clearWaiting(WS);
 
   // awaitOnce checks the board SYNCHRONOUSLY on entry (inside the Promise executor), so a note
   // that is already waiting is reported before the first poll interval — no wait, no flake.
   RM.appendNote(board, { from: 'android', to: 'research', body: 'investigate the tap drop' });
   const said = [];
+  // Session-scoped like every other awaitOnce in the suite: bare, this inherited the DEVELOPER'S
+  // live ARC_SESSION and displaced their real listener on every suite run (as a silent kill
+  // before the graceful supersede made it visible, 2026-07-18).
+  const prevEnv3 = process.env.ARC_SESSION;
+  process.env.ARC_SESSION = WS;
   A.awaitOnce('research', repo, { pollMs: 5, write: (l) => said.push(l) });
+  if (prevEnv3 === undefined) delete process.env.ARC_SESSION; else process.env.ARC_SESSION = prevEnv3;
+  A.clearWaiting(WS);
   ok('a note already on the board is seen immediately (no polling delay)',
     said.some((l) => /investigate the tap drop/.test(l)));
   ok('...and it tells the woken agent to run `arc notes` (a wake is not a turn, so the',
@@ -3039,7 +3761,7 @@ try {
   // most of them orphans of long-dead sessions, each still polling the board every 2.5s.
   const ORPH = 'orphan-sess-' + process.pid;
   fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${ORPH}.json`),
-    JSON.stringify({ pid: 999999, cwd: repo }));          // an owner pid that cannot be alive
+    JSON.stringify({ pid: DEAD_PID, cwd: repo }));        // verified-dead at suite start
   const before = fs.existsSync(A.awaitFile(ORPH));
   const orphRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'orph-'));
   fs.mkdirSync(path.join(orphRepo, '.git'), { recursive: true });
@@ -3065,7 +3787,7 @@ try {
 section('arc-profile (adoptIntoShared: migrate, never clobber)');
 try {
   const P = require(path.join(SRC, 'arc-profile.js'));
-  ok('tasks is shared (so arc:switch keeps the task list)', P.SHARED_DIRS.includes('tasks'));
+  ok('tasks is shared (so /arc-switch keeps the task list)', P.SHARED_DIRS.includes('tasks'));
 
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'adopt-'));
   const shared = path.join(base, 'shared');
@@ -3137,27 +3859,27 @@ try {
     pickConvId('live-28118b62', null, false, has) === 'live-28118b62');
 } catch (e) { ok('arc-conv pickConvId works', false, e.message); }
 
-// ---- arc-help + the arc:help hook (zero-token cheat sheet) --------------------
-section('arc-help + arc:help hook');
+// ---- arc-help + the /arc-help hook (zero-token cheat sheet) -------------------
+section('arc-help + /arc-help hook');
 try {
   const renderHelp = require(path.join(SRC, 'arc-help.js'));
   ok('arc-help exports a render function', typeof renderHelp === 'function');
   const sheet = renderHelp();
-  ok('cheat sheet lists arc:help and arc:switch', /arc:help/.test(sheet) && /arc:switch/.test(sheet));
+  ok('cheat sheet teaches /arc-help and /arc-switch (colon retired)', /\/arc-help/.test(sheet) && /\/arc-switch/.test(sheet) && !/arc:help/.test(sheet) && !/arc:switch /.test(sheet));
 
-  // End-to-end: the hook must BLOCK arc:help / arc:cl (case-insensitive) and return
-  // the sheet as the reason — zero model tokens, exactly like arc:peek.
+  // End-to-end: the hook must BLOCK /arc-help and its alias (case-insensitive) and
+  // return the sheet as the reason — zero model tokens, exactly like /arc-peek.
   const hook = path.join(SRC, 'arc-switch-hook.js');
-  // arc: is the current prefix; arc: is the deprecated alias — BOTH must trigger.
-  for (const trig of ['arc:help', 'arc:arc', 'ARC:HELP']) {
+  // /arc-help is the primary verb; /arc-arc is the alias — BOTH must trigger.
+  for (const trig of ['/arc-help', '/arc-arc', '/ARC-HELP']) {
     const r = spawnSync(process.execPath, [hook], { input: JSON.stringify({ prompt: trig }), encoding: 'utf8' });
     let out = {}; try { out = JSON.parse(r.stdout || '{}'); } catch {}
     ok(`hook blocks "${trig}" with the cheat sheet`, out.decision === 'block' && /(arc|cl) — commands/.test(out.reason || ''));
   }
-  // A non-sentinel prompt must pass straight through (no block, empty stdout).
+  // A non-command prompt must pass straight through (no block, empty stdout).
   const pass = spawnSync(process.execPath, [hook], { input: JSON.stringify({ prompt: 'hello world' }), encoding: 'utf8' });
-  ok('non-sentinel prompt passes through (no block)', (pass.stdout || '').trim() === '');
-} catch (e) { ok('arc:help hook works', false, e.message); }
+  ok('non-command prompt passes through (no block)', (pass.stdout || '').trim() === '');
+} catch (e) { ok('/arc-help hook works', false, e.message); }
 
 // ---- arc-board (the "board": per-board append-only sticky-note ledger) ---------
 section('arc-board (sticky-note ledger)');
@@ -3175,10 +3897,11 @@ try {
   ok('no repo → the folder itself is the board', R.resolveBoard(outside).root === R.canonical(outside));
   ok('a board is never nameless', !!R.resolveBoard(repo).name && !!R.resolveBoard('C:\\').name);
 
-  // 2) the board self-ignores
+  // 2) the board self-ignores — from .arc/.gitignore, covering the WHOLE .arc
   R.ensureBoard(rTop);
-  const gi = fs.readFileSync(path.join(rTop.planDir, '.gitignore'), 'utf8');
-  ok('the board .gitignore ignores everything (incl. itself)', /^\*$/m.test(gi));
+  const gi = fs.readFileSync(path.join(path.dirname(rTop.planDir), '.gitignore'), 'utf8');
+  ok('the .arc .gitignore ignores everything (incl. itself)', /^\*$/m.test(gi));
+  ok('...and peer/ carries no per-dir pair of its own', !fs.existsSync(path.join(rTop.planDir, '.gitignore')) && !fs.existsSync(path.join(rTop.planDir, '.gitattributes')));
 
   // 3) append + seq is the LINE NUMBER (race-free: two writers can't collide)
   R.appendNote(rTop, { from: 'research', to: 'coding', body: 'spec for P-014 changed' });
@@ -3225,9 +3948,9 @@ try {
   // (This is the bug the end-to-end test caught — pid alone is not identity.)
   const second = R.claimRole(rTop, 'coding', process.pid, 's2');
   ok('a different live session is refused (even with same pid)', second.ok === false && second.holder.sessionId === 's1');
-  // arc:restart re-execs arc-runner: SAME session, NEW pid → must reclaim its own role.
+  // /arc-restart re-execs arc-runner: SAME session, NEW pid → must reclaim its own role.
   ok('same session reclaims under a NEW pid (restart-safe)', R.claimRole(rTop, 'coding', process.pid + 1, 's1').ok === true);
-  fs.writeFileSync(path.join(rTop.planDir, 'claim-coding.json'), JSON.stringify({ role: 'coding', pid: 999999, sessionId: 's9', at: Date.now() }));
+  fs.writeFileSync(path.join(rTop.planDir, 'claim-coding.json'), JSON.stringify({ role: 'coding', pid: DEAD_PID, sessionId: 's9', at: Date.now() }));
   ok('a DEAD holder\'s claim is vacant', R.roleClaim(rTop, 'coding') === null);
   ok('a vacant role can be claimed by anyone', R.claimRole(rTop, 'coding', process.pid, 's3').ok === true);
   ok('liveRoles lists live holders only', R.liveRoles(rTop).map((l) => l.role).join(',') === 'coding');
@@ -3275,7 +3998,7 @@ try {
   fs.mkdirSync(path.join(rTop.root, '.arc', 'roles'), { recursive: true });
   fs.writeFileSync(path.join(rTop.root, '.arc', 'roles', 'ghostrole.md'), 'owns: the web surface\n');
   // a vacant claim whose conversation IS still on disk => revivable
-  R.claimRole(rTop, 'ghostrole', 999999, 'gone-sess', 'ghost-conv-live');
+  R.claimRole(rTop, 'ghostrole', DEAD_PID, 'gone-sess', 'ghost-conv-live');
   const rev = N9.requestNote(S9, 'ghostrole "please review this"', rTop.root,
     { hasTranscript: () => true });
   ok('an empty chair whose conversation SURVIVES is offered as REVIVABLE, not as a stranger',
@@ -3284,7 +4007,7 @@ try {
   ok('...and it says to prefer that over rebuilding the context yourself',
     /already has the context you would be rebuilding/.test(rev.message));
   for (const f of [`arc-state-${S9}.json`, `arc-role-${S9}.json`]) { try { fs.unlinkSync(path.join(CLAUDE, 'cache', f)); } catch {} }
-  R.releaseRole(rTop, 'ghostrole', 999999);
+  R.releaseRole(rTop, 'ghostrole', DEAD_PID);
   try { fs.unlinkSync(path.join(rTop.root, '.arc', 'roles', 'ghostrole.md')); } catch {}
 
   // THE TIMEZONE TRAP, as a regression guard. PowerShell's `.StartTime.Ticks` encodes the LOCAL
@@ -3308,15 +4031,18 @@ try {
   // MUST run cold: procStarts memoises in-process AND caches to disk, so an in-process call here
   // answers from cache and never probes — the first version of this test passed with the bug
   // reintroduced, proving only that the cache worked. Fresh process, cache deleted.
+  // DEAD_PID is INTERPOLATED into the child's source (the child process has no access to the
+  // suite's consts); the all-dead batch uses its odd siblings — odd pids are unallocatable on
+  // Windows, so they stay dead even without an individual liveness probe.
   const probeJs = `const fs=require('fs'),os=require('os'),path=require('path');
     try{fs.unlinkSync(path.join(os.homedir(),'.claude','cache','arc-pidstart.json'))}catch{}
     const R=require(${JSON.stringify(path.join(SRC, 'arc-board.js'))});
-    const mixed=R.procStarts([process.pid,999999]);
-    const allDead=R.procStarts([999998,999997]);
+    const mixed=R.procStarts([process.pid,${DEAD_PID}]);
+    const allDead=R.procStarts([${DEAD_PID - 4},${DEAD_PID - 8}]);
     process.stdout.write(JSON.stringify({
       liveResolved: !!mixed && typeof mixed[process.pid]==='number',
-      deadIsGone:   !!mixed && mixed[999999]===null,
-      allDeadIsAnswer: !!allDead && allDead[999998]===null && allDead[999997]===null,
+      deadIsGone:   !!mixed && mixed[${DEAD_PID}]===null,
+      allDeadIsAnswer: !!allDead && allDead[${DEAD_PID - 4}]===null && allDead[${DEAD_PID - 8}]===null,
     }));`;
   let cold = {};
   try { cold = JSON.parse(spawnSync(process.execPath, ['-e', probeJs], { encoding: 'utf8' }).stdout || '{}'); } catch {}
@@ -3344,9 +4070,51 @@ try {
   ok('a LEGACY claim with no timestamp still resolves (no flag day, no orphaned peers)',
     R.isHolder({ role: 'old', pid: process.pid }) === true);
   for (const f of ['claim-genuine.json', 'claim-impostor.json']) fs.unlinkSync(path.join(rTop.planDir, f));
+
+  // ---- the FALSE-LIVE edge and its fresh-probe cure (audit #259) ------------------------------
+  // isHolder's warm pid-start cache can serve a DEAD predecessor's start for ≤30s: a recycled pid
+  // then reads as the genuine holder, and `arc delegate` posts a packet into a dead chair while
+  // telling the delegator it was handled. procStarts({fresh:true}) is the cure — it bypasses
+  // exactly the cache being doubted. Proven here in a FRESH child process (the suite's own memo
+  // already holds our real start, so the lie must be planted before arc-board ever loads):
+  // the child seeds the disk cache with a fabricated start (epoch 1000) for THIS suite's pid,
+  // builds a claim written BEFORE our process really started (at: 1500 — an impostor's shape),
+  // and asserts the warm path believes it while the fresh path convicts it.
+  const falseLiveJs = `const fs=require('fs'),os=require('os'),path=require('path');
+    const cachePath=path.join(os.homedir(),'.claude','cache','arc-pidstart.json');
+    fs.mkdirSync(path.dirname(cachePath),{recursive:true});
+    fs.writeFileSync(cachePath,JSON.stringify({${process.pid}:{start:1000,at:Date.now()}}));
+    const R=require(${JSON.stringify(path.join(SRC, 'arc-board.js'))});
+    const claim={role:'x',pid:${process.pid},sessionId:'s',at:1500};
+    const warmSaysLive=R.isHolder(claim);
+    const fresh=R.procStarts([${process.pid}],{fresh:true});
+    const freshStart=fresh&&fresh[${process.pid}];
+    const freshSaysLive=fresh?R.isHolder(claim,fresh):null;
+    const warmAfter=R.procStarts([${process.pid}]);
+    process.stdout.write(JSON.stringify({warmSaysLive,freshSaysLive,
+      freshIsReal:typeof freshStart==='number'&&freshStart>1000000000000,
+      wroteThrough:!!warmAfter&&warmAfter[${process.pid}]===freshStart}));`;
+  let fl = {};
+  try { fl = JSON.parse(spawnSync(process.execPath, ['-e', falseLiveJs], { encoding: 'utf8' }).stdout || '{}'); } catch {}
+  ok('the warm cache BELIEVES a fabricated predecessor start (that is the documented ≤30s window)',
+    fl.warmSaysLive === true, '(if this fails the fixture is broken, not the code)');
+  ok('...a FRESH probe bypasses the warm lie and reads the real start',
+    fl.freshIsReal === true);
+  ok('...and isHolder with fresh starts CONVICTS the impostor the warm cache admitted',
+    fl.freshSaysLive === false);
+  ok('...and the fresh answer writes through, so later warm checks in the same flow agree',
+    fl.wroteThrough === true);
+  // The cure must actually be WIRED where false-live costs the most — the delegate paths.
+  const invSrc2 = fs.readFileSync(path.join(SRC, 'arc-invite.js'), 'utf8');
+  ok('requestDelegate fresh-probes before believing "live" (single-role path)',
+    /procStarts\(\[rawClaim\.pid\], \{ fresh: true \}\)/.test(invSrc2));
+  ok('...and delegateMany batch-probes its targets the same way',
+    /procStarts\(alivePids, \{ fresh: true \}\)/.test(invSrc2));
+  ok('...and an unaskable OS is reported as "could not verify", never asserted as live',
+    /could not VERIFY/.test(invSrc2) && /liveness UNVERIFIED/.test(invSrc2));
 } catch (e) { ok('arc-board works', false, e.message + '\n' + (e.stack || '')); }
 
-// ---- arc-notes (the arc: sentinels over the ledger) ---------------------------
+// ---- arc-notes (the board commands over the ledger) ---------------------------
 section('arc-notes (role / note / notes)');
 try {
   const F = require(path.join(SRC, 'arc-notes.js'));
@@ -3359,15 +4127,36 @@ try {
   const mkSession = (sid, pid) => writeJSON(path.join(cache, `arc-state-${sid}.json`), { pid, cwd: repo2 });
   mkSession('sa', process.pid); mkSession('sb', process.pid); mkSession('sc', process.pid);
 
+  // sessionConv: THE FRESHER FILE WINS. State-first stamped audit's conv onto research's claim
+  // in the 2026-07-18 misfile (a picker-resume hosts a NEW conversation while the state still
+  // names the old one until reconcile) — the claim then misdirects the role's next revive.
+  {
+    const SC = 'conv-fresh-' + process.pid;
+    const stP = path.join(cache, `arc-state-${SC}.json`);
+    const brP = path.join(cache, `arc-active-${SC}.json`);
+    const old = new Date(Date.now() - 60000), fresh = new Date();
+    fs.writeFileSync(stP, JSON.stringify({ pid: process.pid, cwd: repo2, convId: 'conv-state' }));
+    ok('sessionConv: state alone answers (the ordinary launch)', F.sessionConv(SC) === 'conv-state');
+    fs.writeFileSync(brP, JSON.stringify({ convId: 'conv-bridge' }));
+    fs.utimesSync(stP, old, old); fs.utimesSync(brP, fresh, fresh);
+    ok('...a FRESHER bridge wins — the statusline ticks with what the session ACTUALLY hosts',
+      F.sessionConv(SC) === 'conv-bridge');
+    fs.utimesSync(stP, fresh, fresh); fs.utimesSync(brP, old, old);
+    ok('...and a FRESHER state wins back (a relaunch outdates the dead claude\'s last bridge)',
+      F.sessionConv(SC) === 'conv-state');
+    fs.unlinkSync(stP); fs.unlinkSync(brP);
+    ok('...neither file = null (never an invented conversation)', F.sessionConv(SC) === null);
+  }
+
   // roles claimed from a SUBDIR still land in the repo-root board
   const ra = F.requestRole('sa', 'research', path.join(repo2, 'sub'));
-  ok('arc:role claims a role from a subdir (board = repo root)', ra.ok === true && /the "proj" board/.test(ra.message));
+  ok('arc role claims a role from a subdir (board = repo root)', ra.ok === true && /the "proj" board/.test(ra.message));
   // The claim makes you ADDRESSABLE, not yet reachable-while-idle — a listener needs a TURN.
-  // The result carries armNeeded so the sentinel hook can SPEND one (pass-through) to arm; the
+  // The result carries armNeeded so the prompt hook can SPEND one (pass-through) to arm; the
   // message carries the instruction for the CLI path, where the agent is already mid-turn.
   ok('...and a fresh claim reports armNeeded + the exact arm command',
     ra.armNeeded === true && ra.role === 'research' && /arc join research/.test(ra.message));
-  ok('arc:role coding (second peer)', F.requestRole('sb', 'coding', repo2).ok === true);
+  ok('arc role coding (second peer)', F.requestRole('sb', 'coding', repo2).ok === true);
   const rc = F.requestRole('sc', 'coding', repo2);
   ok('a third session is REFUSED a held role', rc.ok === false && /already held by a LIVE session/.test(rc.message));
 
@@ -3417,18 +4206,18 @@ try {
   fs.rmSync(norepo, { recursive: true, force: true });
 
   // notes
-  ok('arc:note needs a role', F.requestNote('sc', 'coding hi', repo2).ok === false);
-  ok('arc:note rejects a note to yourself', F.requestNote('sa', 'research hi', repo2).ok === false);
-  ok('arc:note usage error on bad args', F.requestNote('sa', 'onlyone', repo2).ok === false);
-  ok('arc:note appends', F.requestNote('sa', 'coding P-014 spec changed', repo2).ok === true);
-  ok('arc:note broadcast (all)', F.requestNote('sa', 'all repo layout moved', repo2).ok === true);
+  ok('arc note needs a role', F.requestNote('sc', 'coding hi', repo2).ok === false);
+  ok('arc note rejects a note to yourself', F.requestNote('sa', 'research hi', repo2).ok === false);
+  ok('arc note usage error on bad args', F.requestNote('sa', 'onlyone', repo2).ok === false);
+  ok('arc note appends', F.requestNote('sa', 'coding P-014 spec changed', repo2).ok === true);
+  ok('arc note broadcast (all)', F.requestNote('sa', 'all repo layout moved', repo2).ok === true);
 
 
   // notes readout + rd()-only cursor
   const n1 = F.requestNotes('sb', '', repo2);
-  ok('arc:notes shows both (addressed + broadcast)', /2 new from research/.test(n1.message));
+  ok('arc notes shows both (addressed + broadcast)', /2 new from research/.test(n1.message));
   const n2 = F.requestNotes('sb', '', repo2);
-  ok('arc:notes is empty after reading (cursor advanced)', /nothing new/.test(n2.message));
+  ok('arc notes is empty after reading (cursor advanced)', /nothing new/.test(n2.message));
   const board2 = R2.resolveBoard(repo2);
   ok('notes were NOT consumed', R2.noteCount(board2) === 2);
   // rd()-only, proved properly: coding just read everything, yet a DIFFERENT reader
@@ -3436,7 +4225,7 @@ try {
   ok('a fresh role still sees the broadcast after coding read it', R2.unreadFor(board2, 'qa').count === 1);
   ok('research never sees its own two notes', R2.unreadFor(board2, 'research').count === 0);
   const nAll = F.requestNotes('sc', 'all', repo2);
-  ok('arc:notes all = landlord view, no role needed', /ALL 2 note\(s\)/.test(nAll.message));
+  ok('arc notes all = landlord view, no role needed', /ALL 2 note\(s\)/.test(nAll.message));
 
   // restart: same session, NEW pid → role + claim survive
   mkSession('sb', process.pid + 1);                       // simulate arc-runner re-exec
@@ -3600,7 +4389,7 @@ try {
 
   // flags parse through the real requestNote, and a dangling reference is refused
   const F3 = F2.requestNote('reader', 'research --kind request "check the thing"', path.join(base2, 'schema'));
-  ok('arc:note --kind request is accepted and reported back', F3.ok && /kind: request/.test(F3.message));
+  ok('arc note --kind request is accepted and reported back', F3.ok && /kind: request/.test(F3.message));
   ok('a dangling --reply-to is REFUSED (a note must never point at nothing)',
     !F2.requestNote('reader', 'research --reply-to #9999 "x"', path.join(base2, 'schema')).ok);
   ok('an unknown --kind is REFUSED with the valid list',
@@ -3722,16 +4511,16 @@ try {
   // The capped burst above must NOT have consumed the overflow — the cursor advances
   // only over what was actually delivered, so the rest stay unread. (Regression for the
   // bug where injection showed ~30 but marked ALL 80 read, silently dropping the tail.)
-  ok('the capped burst did NOT consume the overflow', R2.unreadFor(board2, 'coding').count === 80 - big.shown && big.shown < 80);
-  let drained = big.shown, guard = 0;
-  while (R2.unreadFor(board2, 'coding').count && guard++ < 30) drained += F.injection('sb', repo2).shown;
+  ok('the capped burst did NOT consume the overflow', R2.unreadFor(board2, 'coding').count === 80 - big.consumed && big.consumed < 80);
+  let drained = big.consumed, guard = 0;
+  while (R2.unreadFor(board2, 'coding').count && guard++ < 30) drained += F.injection('sb', repo2).consumed;
   ok('the whole backlog drains over turns — every note once, none skipped',
     drained === 80 && R2.unreadFor(board2, 'coding').count === 0);
-  // and a returning session catches up in ONE uncapped `arc:notes`
+  // and a returning session catches up in ONE uncapped `arc notes`
   R2.writeCursor(board2, 'coding', 0);
   const expected = R2.unreadFor(board2, 'coding').count;
   const catchUp = F.requestNotes('sb', '', repo2);
-  ok('arc:notes catches a returning peer up in one uncapped call',
+  ok('arc notes catches a returning peer up in one uncapped call',
     (catchUp.message.match(/#\s*\d+/g) || []).length === expected && expected > 40 && R2.unreadFor(board2, 'coding').count === 0);
 } catch (e) { ok('arc-notes works', false, e.message); }
 
@@ -3846,13 +4635,13 @@ try {
   const swhk = path.join(SRC, 'arc-switch-hook.js');
   const hookAsk = (prompt, sess) => { const r = spawnSync(process.execPath, [swhk], { input: JSON.stringify({ prompt, cwd: TMP }), encoding: 'utf8', env: { ...process.env, ARC_SESSION: sess } }); let o = {}; try { o = JSON.parse(r.stdout || '{}'); } catch {} return o; };
   const S2 = 'stance-hook-1';
-  const setOut = hookAsk('arc:mode active', S2);
-  ok('arc:mode <value> sets the stance via the hook (zero tokens, cross-process)',
+  const setOut = hookAsk('/arc-mode active', S2);
+  ok('/arc-mode <value> sets the stance via the hook (zero tokens, cross-process)',
     setOut.decision === 'block' && /stance: active/.test(setOut.reason) && St.getStance(S2) === 'active');
-  ok('arc:mode <bad> is rejected and the stance is unchanged',
-    /unknown stance/.test(hookAsk('arc:mode nope', S2).reason || '') && St.getStance(S2) === 'active');
-  ok('bare arc:mode opens the picker (drops a mode trigger)',
-    /stance picker/.test(hookAsk('arc:mode', S2).reason || '')
+  ok('/arc-mode <bad> is rejected and the stance is unchanged',
+    /unknown stance/.test(hookAsk('/arc-mode nope', S2).reason || '') && St.getStance(S2) === 'active');
+  ok('bare /arc-mode opens the picker (drops a mode trigger)',
+    /stance picker/.test(hookAsk('/arc-mode', S2).reason || '')
     && fs.existsSync(path.join(CLAUDE, 'cache', `arc-mode-${S2}.trigger`)));
 
   // injection through the REAL hook: the default is free; both deviations announce themselves.
@@ -3870,20 +4659,21 @@ try {
     aj.hookSpecificOutput && /arc stance: ACTIVE/.test(aj.hookSpecificOutput.additionalContext));
 } catch (e) { ok('arc-stance works', false, e.message + '\n' + (e.stack || '')); }
 
-// ---- arc:delegate is REMOVED (and stays removed) ----------------------------
+// ---- the headless delegate is REMOVED (and stays removed) -------------------
 // It fired a headless one-shot that re-read the repo from scratch and then died: heavier
 // than Claude Code's own subagent (in-session, on your quota, can pick its own model) and
 // dumber than a PEER (which keeps its context across turns). Squeezed from both sides.
 //
-// These tests are the tombstone. They exist because the sentinel is deliberately STILL
-// MATCHED: unmatched, `arc:delegate <task>` would fall through to the model as an ordinary
+// These tests are the tombstone. They exist because /arc-delegate is deliberately STILL
+// MATCHED: unmatched, `/arc-delegate <task>` would fall through to the model as an ordinary
 // prompt and the agent would just do the task INLINE — the one outcome nobody typing
 // "delegate" wants. So the hook must intercept AND redirect, at zero tokens.
 //
 // Assert against the REAL hook, never a hand-copied regex. The block that used to live here
-// inlined its own copy of TRIGGER_RX, and the copy drifted — it still listed the long-dead
-// `handoff`. That is exactly how a dead sentinel survives a removal unnoticed. So: no copies.
-section('arc:delegate (removed — the hook redirects, never leaks to the model)');
+// inlined its own copy of the hook's trigger regex, and the copy drifted — it still listed the
+// long-dead `handoff`. That is exactly how a dead spelling survives a removal unnoticed. So:
+// no copies.
+section('/arc-delegate tombstone (the hook redirects, never leaks to the model)');
 try {
   const swhook = path.join(SRC, 'arc-switch-hook.js');
   const ask = (prompt) => {
@@ -3894,28 +4684,30 @@ try {
   ok('the module is GONE', !fs.existsSync(path.join(SRC, 'arc-delegate.js')));
 
   // The load-bearing one: it must never reach the model. A reason == intercepted == 0 tokens.
-  const d = ask('arc:delegate codex "find why the import test is flaky"');
-  ok('arc:delegate is still INTERCEPTED (never falls through to the model as a prompt)',
+  const d = ask('/arc-delegate codex "find why the import test is flaky"');
+  ok('/arc-delegate is still INTERCEPTED on the programmatic path (never leaks as a prompt)',
     !!(d.reason || '').length);
-  // THE WORD WAS REUSED, and that makes this more than a tombstone. `arc:delegate` once fired a
-  // headless one-shot; `arc delegate <role>` is now the agent's peer verb. Someone typing the
-  // sentinel today means the CURRENT thing, so answering "that was removed" would deny a command
-  // that exists and send them to advice the merge superseded.
+  // THE WORD WAS REUSED, and that makes this more than a tombstone. The delegate command once
+  // fired a headless one-shot; `arc delegate <role>` is now the agent's peer verb. Someone typing
+  // /arc-delegate today means the CURRENT thing, so answering "that was removed" would deny a
+  // command that exists and send them to advice the merge superseded.
   ok('...and it answers what the word MEANS NOW (the peer verb), not what it used to mean',
     /arc delegate <role>/.test(d.reason || '') && !/has been removed/i.test(d.reason || ''));
   ok('...and it tells the human to ask in PROSE (we chose not to build them a command)',
     /in prose/i.test(d.reason || '') && /get research on this/i.test(d.reason || ''));
   ok('...while still redirecting the case the OLD tool really served (a stateless one-shot)',
     /SUBAGENT/i.test(d.reason || ''));
-  ok('...and it points at arc:switch for GPT (claudex SURVIVES the removal)',
-    /arc:switch/.test(d.reason || ''));
+  ok('...and it points at /arc-switch for GPT (claudex SURVIVES the removal)',
+    /\/arc-switch/.test(d.reason || ''));
   ok('the bare form redirects too (no crash on a missing task)',
-    /in prose/i.test(ask('arc:delegate').reason || ''));
+    /in prose/i.test(ask('/arc-delegate').reason || ''));
+  ok('the RETIRED colon spelling is prose now — the delegate and peek colon forms reach the model unblocked',
+    !ask('arc:delegate codex "x"').decision && !ask('arc:peek').decision && !ask('/arc:peek').decision);
 
   // The sibling removal, kept as a regression: handoff was deleted OUTRIGHT (no redirect), so
   // it must fall through with NO decision at all. Two removals, two deliberate shapes — if
   // these ever converge, someone has broken one of them.
-  ok('arc:handoff is GONE with NO redirect — falls through as a normal prompt',
+  ok('handoff is GONE with NO redirect — its colon form falls through as a normal prompt',
     !ask('arc:handoff codex').decision && !ask('arc:handoff').decision);
 
   // Nothing may still import the deleted module: a stale require() throws at RUNTIME, inside
@@ -3924,7 +4716,265 @@ try {
     .filter((f) => /require\(['"`]\.\/arc-delegate/.test(fs.readFileSync(path.join(SRC, f), 'utf8')));
   ok('no module still requires arc-delegate (a stale require would throw inside a hook)',
     importers.length === 0, importers.join(', '));
-} catch (e) { ok('arc:delegate removal', false, e.message + '\n' + (e.stack || '')); }
+} catch (e) { ok('/arc-delegate tombstone', false, e.message + '\n' + (e.stack || '')); }
+
+// ---- the /arc-<verb> slash commands (arc-slash.js) ----------------------------
+// One command set, one spelling: /arc-<verb>, with / autocomplete — machine senders
+// like the revive prompt ride the same form, programmatically.
+// Claude Code hands UserPromptSubmit the RAW typed /command BEFORE skill expansion
+// (verified live 2026-07-18: "Original prompt: /arc-peek" on the block label), so the
+// hook eats it at zero tokens. Assert against the REAL hook — no copied regexes.
+section('/arc-<verb> slash commands (one hook, real handlers, zero tokens)');
+try {
+  const swhook = path.join(SRC, 'arc-switch-hook.js');
+  // ISOLATED spawns: ARC_SESSION cleared (a live session here would let account/board
+  // verbs arm real pending markers), ARC_PEEK_NO_REFRESH=1 (peek otherwise fires a
+  // REAL synchronous usage fetch against ~/.claude from inside the suite — network
+  // I/O and a cache write per ask).
+  const ask = (prompt) => {
+    const r = spawnSync(process.execPath, [swhook], {
+      input: JSON.stringify({ prompt, cwd: TMP }), encoding: 'utf8',
+      env: { ...process.env, ARC_SESSION: '', ARC_PEEK_NO_REFRESH: '1' },
+    });
+    try { return JSON.parse(r.stdout || '{}'); } catch { return {}; }
+  };
+  const SL = require(path.join(SRC, 'arc-slash.js'));
+  // Digit-normalized compare: peek embeds live, time-derived text at SECOND
+  // granularity ("1s ago", usage %), so byte-equality across separate spawns is a
+  // coin flip on a tick boundary. Structure parity is the contract, not the clock.
+  const norm = (s) => String(s || '').replace(/\d+/g, '#');
+  const sameReason = (a, b) => {
+    const ra = ask(a).reason, rb = ask(b).reason;
+    return !!(ra || '').length && norm(ra) === norm(rb);
+  };
+
+  // PARITY: an alias must produce the same handler output as its primary verb.
+  // If these ever diverge, the aliases have become two commands.
+  ok('/arc-peek blocks with the usage readout', !!(ask('/arc-peek').reason || '').length);
+  ok('/arc-help blocks with the cheat sheet', !!(ask('/arc-help').reason || '').length);
+  ok('aliases ride the same alternation: /arc-usage === /arc-peek', sameReason('/arc-usage', '/arc-peek'));
+  ok('case-insensitive: /ARC-PEEK blocks',
+    !!(ask('/ARC-PEEK').reason || '').length);
+  ok('args pass through: /arc-switch <name> answers',
+    !!(ask('/arc-switch nosuchaccount').reason || '').length);
+
+  // ARG POLICY: autocomplete inserts the command and the human keeps typing — a
+  // trailing arg on a no-arg verb means PROSE, not a command, and firing anyway
+  // would restart/erase mid-thought.
+  ok('no-arg verb + trailing prose fails OPEN: "/arc-restart after the build finishes"',
+    !ask('/arc-restart after the build finishes').decision);
+  ok('...same for peek: "/arc-peek explain the output" passes through',
+    !ask('/arc-peek explain the output').decision);
+  ok('THE RETIREMENT: every colon spelling is prose now — bare, arg-carrying, and hybrid forms all pass',
+    !ask('arc:peek').decision && !ask('arc:role research').decision
+    && !ask('arc:peek explain').decision && !ask('/arc:peek').decision && !ask('!arc:restart').decision);
+  ok('/arc-delete takes ONLY a confirm word: "/arc-delete confirm" dispatches',
+    !!(ask('/arc-delete confirm').reason || '').length);
+  ok('..."/arc-delete this section about X" is prose and passes through',
+    !ask('/arc-delete this section about X').decision);
+  // TOKEN-ARG verbs (field report 2026-07-18): "/arc-role Besides this function has
+  // an error..." ate the human's message as an invalid role name. An arg that cannot
+  // be the argument is prose — fail open.
+  ok('/arc-role + prose passes through (a sentence is not a role name)',
+    !ask('/arc-role Besides this function has an error to label').decision);
+  ok('...but a role-shaped token still dispatches: "/arc-role" bare blocks with the roster',
+    !!(ask('/arc-role').reason || '').length);
+  ok('/arc-mode + prose passes through; only passive|balanced|active dispatch',
+    !ask('/arc-mode I think balanced fits best').decision
+    && !ask('/arc-switch to whichever account has headroom').decision);
+
+  // /arc-alarm: the human's tab can raise a board-wide fire alarm at zero tokens (dispatch + EFFECT,
+  // on a dedicated board so it can't couple to the shared TMP one). A message dispatches and raises;
+  // --clear takes it down. This drives the REAL hook, not a copied regex.
+  const AL2 = require(path.join(SRC, 'arc-alarm.js'));
+  const B2 = require(path.join(SRC, 'arc-board.js'));
+  const arepo3 = fs.mkdtempSync(path.join(os.tmpdir(), 'slashalarm-'));
+  spawnSync('git', ['init', '-q'], { cwd: arepo3 });
+  const askIn = (prompt, cwd) => {
+    const r = spawnSync(process.execPath, [swhook], {
+      input: JSON.stringify({ prompt, cwd }), encoding: 'utf8',
+      env: { ...process.env, ARC_SESSION: '', ARC_PEEK_NO_REFRESH: '1' } });
+    try { return JSON.parse(r.stdout || '{}'); } catch { return {}; }
+  };
+  const raiseAsk = askIn('/arc-alarm the schema changed, everyone stop', arepo3);
+  ok('/arc-alarm dispatches and RAISES — blocks with the result, the flag lands on the board',
+    /ALARM raised/i.test(raiseAsk.reason || '') && !!AL2.readFlag(B2.resolveBoard(arepo3)));
+  ok('...and /arc-alarm --clear dispatches and clears the flag',
+    /cleared/i.test(askIn('/arc-alarm --clear', arepo3).reason || '')
+    && AL2.readFlag(B2.resolveBoard(arepo3)) === null);
+  ok('...a bare "/arc-alarm" with prose still dispatches (a message is not a one-token verb)',
+    !!(askIn('/arc-alarm', arepo3).reason || '').length);   // empty -> a helpful "refusing empty" block
+  fs.rmSync(arepo3, { recursive: true, force: true });
+
+  // ORDERING TRAP (documented in arc-slash.js): delete-account must not misfire as a
+  // conversation delete. Same-handler equality proves the routing.
+  ok('/arc-delete-account routes to remove-account, never conversation delete',
+    norm(ask('/arc-delete-account x').reason) === norm(ask('/arc-remove-account x').reason));
+
+  // THE FALSE-POSITIVE LINE: a prompt that merely CONTAINS or RESEMBLES a command
+  // must never be eaten — a blocked prompt is ERASED, so a false positive here loses
+  // the human's message outright. The adversarial review (2026-07-18) REPRODUCED an
+  // erasure class in the first draft; each case below is one of its kills, kept as a
+  // regression so the laxity can never come back.
+  ok('mid-text mention passes through: "the /arc-peek command is neat"',
+    !ask('the /arc-peek command is neat').decision);
+  ok('prose without the slash passes through: "arc-peek is broken, look"',
+    !ask('arc-peek is broken, look').decision);
+  ok('unknown verb passes through: /arc-hello',
+    !ask('/arc-hello').decision);
+  ok('LEADING SPACE is the escape-a-slash-command idiom — " /arc-peek explain..." passes',
+    !ask(' /arc-peek explain the output please').decision);
+  ok('a second line means it is not a command: "/arc-peek\\nwhy?" passes whole',
+    !ask('/arc-peek\nwhy does it show that?').decision);
+  ok('...and can never smuggle an ARG: "/arc-switch\\nveneto" passes (no switch fires)',
+    !ask('/arc-switch\nveneto').decision);
+  ok('a hyphen EXTENDING a verb is not that verb: /arc-note-taker passes',
+    !ask('/arc-note-taker hello').decision);
+  ok('...nor a filename: "/arc-switch-hook.js is broken, look" passes',
+    !ask('/arc-switch-hook.js is broken, look at it').decision);
+  ok('a lone trailing newline is still a command: "/arc-peek\\n" blocks',
+    !!(ask('/arc-peek\n').reason || '').length);
+
+  // The tombstone: /arc-delegate must intercept — unmatched it would leak to the
+  // model as an ordinary prompt.
+  ok('/arc-delegate is intercepted and redirects (never reaches the model)',
+    /in prose/i.test(ask('/arc-delegate codex "task"').reason || ''));
+
+  // The PARTITION is total and machine-checked: every verb in the alternation is a
+  // menu entry, a declared alias, or a declared exclusion — nothing else. A verb added
+  // to VERBS without a MENU/ALIASES/EXCLUDED decision is a silent half-command
+  // (dispatched by the regex, invisible in the menu, no stub contract) and fails here.
+  const menuVerbs = new Set(SL.MENU.map((e) => e.verb));
+  const accounted = new Set([...menuVerbs, ...SL.ALIASES, ...SL.EXCLUDED]);
+  const unaccounted = SL.VERBS.split('|').filter((v) => !accounted.has(v));
+  ok('every VERBS entry is accounted for as menu, alias, or exclusion', unaccounted.length === 0, unaccounted.join(', '));
+  const phantom = [...accounted].filter((v) => !SL.VERBS.split('|').includes(v));
+  ok('...and nothing declared is missing from the alternation', phantom.length === 0, phantom.join(', '));
+  ok('MENU excludes delegate/join/restore by design',
+    !SL.MENU.some((e) => ['delegate', 'join', 'restore'].includes(e.verb)));
+
+  // DRIFT GUARD: the checked-in skill stubs are GENERATED from MENU (stubText). If a
+  // stub is edited by hand or MENU changes without regenerating, this catches it.
+  // CRLF-normalized: without a repo-wide eol policy, a Windows clone under
+  // core.autocrlf=true checks these out as CRLF and a raw byte-compare would fail on
+  // every fresh machine (.gitattributes pins them to LF, this normalization is the
+  // belt to that suspender).
+  const stale = SL.MENU.filter((e) => {
+    const p = path.join(__dirname, '..', 'skills', `arc-${e.verb}`, 'SKILL.md');
+    try { return fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n') !== SL.stubText(e); } catch { return true; }
+  }).map((e) => e.verb);
+  ok('every /arc-* skill stub on disk matches stubText(MENU) exactly', stale.length === 0, stale.join(', '));
+
+  // THE RESPAWN LOOP GUARD: anything the hook will EAT must be stripped from
+  // preserved argv, or it re-submits on every respawn, the hook eats it, drops a
+  // trigger, and the runner kills/relaunches FOREVER. The strip asks the hook's OWN
+  // regexes: the first fix paired SLASH_RX with a bare hand-copied prefix check and
+  // missed the HYBRID spellings the legacy strip tolerates — the same loop through a
+  // spelling the fix skipped
+  // (both reviews, 2026-07-18, proven with node). stripConvArgs IS exported
+  // (arc-runner.js module.exports) — call it directly; if it is ever un-exported this
+  // test must FAIL LOUDLY, not silently downgrade to a source grep.
+  const RUNNER = require(path.join(SRC, 'arc-runner.js'));
+  ok('stripConvArgs strips both spellings on respawn (the infinite-restart guard)',
+    RUNNER.stripConvArgs(['/arc-restart']).length === 0
+    && RUNNER.stripConvArgs(['/arc-role research']).length === 0
+    && RUNNER.stripConvArgs(['arc:restart']).length === 0);
+  ok('...including the HYBRID colon spellings the legacy strip tolerates (leading slash, bang, whitespace)',
+    RUNNER.stripConvArgs(['/arc:restart']).length === 0
+    && RUNNER.stripConvArgs(['!arc:restart']).length === 0
+    && RUNNER.stripConvArgs(['  arc:restart']).length === 0);
+  ok('...but a plain positional survives (only command spellings are stripped)',
+    RUNNER.stripConvArgs(['hello']).length === 1);
+
+  // skillOverrides wiring: only-if-absent — a user's own per-skill choice survives.
+  const W = require(path.join(SRC, 'arc-wire-settings.js'));
+  const s1 = {};
+  W.mergeSkillOverrides(s1);
+  ok('mergeSkillOverrides seeds every stub as user-invocable-only (menu yes, model listing no)',
+    SL.MENU.every((e) => s1.skillOverrides[`arc-${e.verb}`] === 'user-invocable-only'));
+  const s2 = { skillOverrides: { 'arc-peek': 'off', 'somebody-elses': 'on' } };
+  W.mergeSkillOverrides(s2);
+  ok('...but NEVER overwrites an existing user value ("off" stays "off")',
+    s2.skillOverrides['arc-peek'] === 'off' && s2.skillOverrides['somebody-elses'] === 'on'
+    && s2.skillOverrides['arc-help'] === 'user-invocable-only');
+  // The namespace sweep, mirroring the installer's stub sweep: a verb removed from
+  // MENU (anchors, 2026-07-18) must not leave an override key configuring a skill
+  // that no longer exists — while non-arc names stay untouchable.
+  const s3 = { skillOverrides: { 'arc-anchors': 'user-invocable-only', 'arc-peek': 'off', 'my-own-skill': 'off' } };
+  W.mergeSkillOverrides(s3);
+  ok('a removed verb\'s override is swept; user keys and live arc keys survive',
+    !('arc-anchors' in s3.skillOverrides) && s3.skillOverrides['arc-peek'] === 'off'
+    && s3.skillOverrides['my-own-skill'] === 'off');
+  // The shared policy itself, behaviorally: right side wins per key; corrupt shapes
+  // (arrays, strings, null — typeof [] === 'object') sanitize to {} on EITHER side
+  // instead of poisoning the merge.
+  ok('overlayMaps: right side wins per key, left fills the gaps',
+    JSON.stringify(W.overlayMaps({ a: 1, b: 1 }, { b: 2 })) === '{"a":1,"b":2}');
+  ok('overlayMaps sanitizes corrupt inputs on both sides',
+    JSON.stringify(W.overlayMaps([], { a: 1 })) === '{"a":1}'
+    && JSON.stringify(W.overlayMaps({ a: 1 }, 'junk')) === '{"a":1}'
+    && JSON.stringify(W.overlayMaps(null, null)) === '{}');
+
+  // Profile sync — THE POLICY TRAVELS WITH THE KEY (roadmap #7): the bare name-list
+  // whose loop defaulted to wholesale replace ate profile-local values twice; now
+  // every declared key carries its merge policy and an unknown policy SKIPS (never
+  // replaces). Behavioral, against a real temp profile dir:
+  const P7 = require(path.join(SRC, 'arc-profile.js'));
+  ok('every ARC_SETTINGS_KEYS entry declares a KNOWN merge policy — no silent default left',
+    Array.isArray(P7.ARC_SETTINGS_KEYS) && P7.ARC_SETTINGS_KEYS.length >= 4
+    && P7.ARC_SETTINGS_KEYS.every((e) => e && typeof e.key === 'string'
+      && ['replace', 'union', 'overlay'].includes(e.merge)));
+  {
+    const masterPath = path.join(CLAUDE, 'settings.json');
+    const savedMaster = fs.existsSync(masterPath) ? fs.readFileSync(masterPath) : null;
+    const pdir = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-'));
+    try {
+      fs.writeFileSync(masterPath, JSON.stringify({
+        hooks: { UserPromptSubmit: ['arc-master'] },
+        permissions: { defaultMode: 'default', allow: ['Bash(arc role:*)'] },
+        skillOverrides: { 'arc-peek': 'user-invocable-only' },
+      }));
+      fs.writeFileSync(path.join(pdir, 'settings.json'), JSON.stringify({
+        hooks: { UserPromptSubmit: ['profile-drift'] },
+        permissions: { defaultMode: 'auto', allow: ['Bash(my own:*)'] },
+        skillOverrides: { 'arc-peek': 'off' },
+        theme: 'dark',
+      }));
+      P7.syncSettings(pdir);
+      const out = JSON.parse(fs.readFileSync(path.join(pdir, 'settings.json'), 'utf8'));
+      ok('replace: arc-owned hooks take the ROOT copy (profile drift is not a choice to keep)',
+        JSON.stringify(out.hooks) === JSON.stringify({ UserPromptSubmit: ['arc-master'] }));
+      ok('union: profile scalars win, rule lists union — a profiled /permissions grant survives',
+        out.permissions.defaultMode === 'auto'
+        && out.permissions.allow.includes('Bash(my own:*)') && out.permissions.allow.includes('Bash(arc role:*)'));
+      ok('overlay: the profile\'s own skill choice wins over the root default',
+        out.skillOverrides['arc-peek'] === 'off');
+      ok('...and keys arc does not own (theme) are untouched', out.theme === 'dark');
+    } finally {
+      if (savedMaster != null) fs.writeFileSync(masterPath, savedMaster); else fs.rmSync(masterPath, { force: true });
+      fs.rmSync(pdir, { recursive: true, force: true });
+    }
+  }
+
+  // The machine-sender contract, updated 2026-07-18: the revive prompt is
+  // `/arc-role <role>`. Safe because it travels PROGRAMMATICALLY — measured:
+  // `claude -p "/arc-peek"` reached the hook raw and blocked; the typed-command gate
+  // only guards the input box. The strip covering both spellings (tested above) is
+  // what makes this safe against the respawn replay loop.
+  const inviteSrc = fs.readFileSync(path.join(SRC, 'arc-invite.js'), 'utf8');
+  ok('the revive prompt is /arc-role — programmatic path, gate-immune',
+    /`\/arc-role \$\{role\}`/.test(inviteSrc) && !/`arc:role \$\{role\}`/.test(inviteSrc));
+
+  // THE /exit ROLE-DROP (field report 2026-07-17, roadmap #2, 20-check fixture repro):
+  // /exit deletes session state, so on `arc --resume <uuid>` the resumed conversation id
+  // lives only in explicitId — refreshRole received the null convId, adopted nothing, and
+  // the session came back roleless: no stop-hook nag, no listener, notes rotting unread.
+  // The launch loop must hand refreshRole the id it already knows — but NEVER on a fork,
+  // whose explicitId names the CALLER's conversation (adopting it would steal the chair).
+  const runnerSrc2 = fs.readFileSync(path.join(SRC, 'arc-runner.js'), 'utf8');
+  ok('the resume launch hands refreshRole the explicit conversation id, fork-guarded',
+    /refreshRole\(SESSION_ID, process\.pid, process\.cwd\(\), convId \|\| \(isFork \? null : explicitId\)\)/.test(runnerSrc2));
+} catch (e) { ok('/arc slash commands', false, e.message + '\n' + (e.stack || '')); }
 
 // ---- receipts: a note reports whether it landed, so an ack is never needed ---
 section('arc-notes receipts (seenBy — a result is terminal, no "received" note)');
@@ -4245,6 +5295,46 @@ try {
   ok('a note that lands MID-TURN is fed to the model at turn end — no human keystroke',
     fed.decision === 'block' && /ANSWER: the flake is a tar bug/.test(fed.reason) && /END of your turn/.test(fed.reason));
 
+  // THE ARM-NUDGE RIDES THE DELIVERY (measured fix, 2026-07-18). This session holds a role and is
+  // NOT armed, so the delivery it is already getting must ALSO tell it to arm — otherwise a busy
+  // session (one that always has a note pending) reaches the standalone offer NEVER, because the
+  // delivery block returns first. That is exactly how audit stayed deaf all day (reproduced cold).
+  ok('a delivery to an UNARMED role-holder folds in the arm-nudge (the busy-session deaf fix)',
+    /NO listener armed/.test(fed.reason) && /arc join code/.test(fed.reason));
+  // ...but an ARMED role-holder sees NOTHING extra — the nudge is for the deaf, never a nag.
+  {
+    const A9 = require(path.join(SRC, 'arc-await.js'));
+    A9.markWaiting(SESSION, 'code', process.pid);   // now listening
+    RM.appendNote(board, { from: 'research', to: 'code', body: 'second note while armed', priority: 'normal' });
+    const armedFed = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('...while an ARMED role-holder gets the note with NO arm-nudge appended (never a nag)',
+      /second note while armed/.test(armedFed.reason) && !/NO listener armed/.test(armedFed.reason));
+    A9.clearWaiting(SESSION);
+    RM.markRead(board, 'code');
+
+    // ARMED FOR THE WRONG ROLE is DEAF, not reachable (robustness — the role-blind isWaiting hole
+    // the code's own comment warned about, and the exact shape of the 2026-07-18 role-misfile).
+    // A listener for role X does not hear role Y, so a session that changed roles must STILL be
+    // nudged/offered. isWaitingAs(role) is the fix; a bare isWaiting would call it reachable.
+    ok('(setup) isWaitingAs distinguishes the role a listener is armed FOR',
+      A9.isWaitingAs === undefined ? false : (() => { A9.markWaiting(SESSION, 'OTHER', process.pid);
+        const wrong = A9.isWaitingAs(SESSION, 'code'); const right = A9.isWaitingAs(SESSION, 'OTHER');
+        A9.clearWaiting(SESSION); return wrong === false && right === true; })());
+    A9.clearOffered(SESSION);                          // a fresh cycle, so the offer can fire
+    A9.markWaiting(SESSION, 'OLDROLE', process.pid);   // live listener, but for a role we no longer hold
+    const misOffer = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('a session armed for the WRONG role is still OFFERED (a stale-role listener is deaf, not reachable)',
+      misOffer.decision === 'block' && /hold the role "code"/.test(misOffer.reason || ''));
+    RM.appendNote(board, { from: 'research', to: 'code', body: 'note while mis-armed', priority: 'normal' });
+    A9.markWaiting(SESSION, 'OLDROLE', process.pid);   // re-plant (the offer above may have cleared markers)
+    const misFed = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('...and a delivery to a wrong-role-armed holder STILL folds in the nudge',
+      /note while mis-armed/.test(misFed.reason || '') && /NO listener armed/.test(misFed.reason || ''));
+    // Restore the linear flow's state for the tests that follow: no listener, notes read, and the
+    // offer marker SET (the original flow has been "already offered" since the first fire above).
+    A9.clearWaiting(SESSION); A9.markOffered(SESSION); RM.markRead(board, 'code');
+  }
+
   // idempotent: injection() advanced the cursor, so the SAME note cannot block twice
   ok('the same note can never block twice (cursor advanced -> no Stop loop)',
     !fire({ hook_event_name: 'Stop', cwd: sboard }).decision);
@@ -4259,11 +5349,55 @@ try {
   RM.appendNote(board, { from: 'research', to: 'code', body: 'second answer', priority: 'normal' });
   ok('a note IS delivered mid-continuation (a capped batch must drain, not wait for a keystroke)',
     /second answer/.test(fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true }).reason || ''));
-  ok('...and it still cannot block twice — the cursor advanced, so the chain TERMINATES',
+  // The SAME note never blocks twice — the cursor advanced, so it is not re-delivered. (A delivery
+  // to an unarmed role-holder now RE-OPENS the arm offer, so an arm-offer block may follow — that is
+  // the deafness fix, 2026-07-18: a still-deaf session is re-prompted after handling a task. What
+  // this pins is that the NOTE does not re-deliver, never that the chain goes fully silent.)
+  const afterDeliver = fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true });
+  ok('...and the same note never RE-delivers (cursor advanced); an arm re-offer may follow, not the note',
+    !/second answer/.test(afterDeliver.reason || ''));
+  // ...and that arm offer is bounded by its marker — the NEXT fire stays silent (once per cycle).
+  ok('the re-opened offer fires once, then the marker bounds it (no nag loop mid-continuation)',
     !fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true }).decision);
-  // The offers are advice, not a queue that drains — they must never nag mid-continuation.
-  ok('an OFFER never chains onto our own block (advice has no terminating property)',
+
+  // THE DEAF-AFTER-DELIVERY HOLE (fired live TWICE in one day, 2026-07-18 — audit went deaf both
+  // times): a woken session's turn ends in a chain — Stop -> deliver a note (block) -> reply ->
+  // Stop with stop_hook_active — and the old blanket guard silenced EVERY offer there. So the
+  // listener arm was never offered on exactly the turn shape a busy board produces: wake, answer,
+  // idle, DEAF until a human typed. A fresh cycle (as after a wake consumed the listener) must
+  // get the offer even mid-continuation; the once-per-cycle marker is what bounds it, not the flag.
+  const A9 = require(path.join(SRC, 'arc-await.js'));
+  A9.clearOffered(SESSION);
+  const armAfterFeed = fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true });
+  ok('a FRESH cycle gets the listener offer even mid-continuation (the deaf-after-delivery fix)',
+    armAfterFeed.decision === 'block' && /arc join code/.test(armAfterFeed.reason || ''));
+  ok('...exactly once — the offer marker bounds the chain, never a nag loop',
     !fire({ hook_event_name: 'Stop', cwd: sboard, stop_hook_active: true }).decision);
+  // The one offer WITHOUT a marker keeps the hard guard — source-pinned so it cannot drift.
+  const shSrc = fs.readFileSync(HOOK, 'utf8');
+  ok('the spawns-leak nag (unmarked, would re-fire forever) alone keeps the hard guard',
+    /if \(!hook\.stop_hook_active\) try \{/.test(shSrc) && !/^\s*if \(hook\.stop_hook_active\) return null;/m.test(shSrc));
+
+  // A DELIVERY RE-OPENS THE OFFER CYCLE — the deafness root (audit's confession, 2026-07-18): the
+  // offer marker is cleared ONLY when a listener actually arms, so an arm that DID NOT TAKE (a
+  // malformed foreground/piped `arc join`, or an ignored offer) leaves it stuck TRUE and every
+  // future offer is muted FOREVER — even across new delegated tasks. Delivering a note is proof the
+  // session is engaged and still deaf, so it re-opens the cycle: a session gets re-prompted once per
+  // task it handles, not one failed arm then permanent silence.
+  {
+    const A8 = require(path.join(SRC, 'arc-await.js'));
+    A8.clearWaiting(SESSION); A8.markOffered(SESSION); RM.markRead(board, 'code');   // offered before, arm never took -> marker stuck
+    ok('(setup) the offer marker is stuck TRUE and a quiet turn is muted (the deafness state)',
+      A8.wasOffered(SESSION) === true && !fire({ hook_event_name: 'Stop', cwd: sboard }).decision);
+    RM.appendNote(board, { from: 'research', to: 'code', kind: 'request', body: 'a NEW delegated task' });
+    const del = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('a new delivery to the still-deaf holder RE-OPENS the offer (clears the stuck marker)',
+      del.decision === 'block' && /a NEW delegated task/.test(del.reason) && A8.wasOffered(SESSION) === false);
+    RM.markRead(board, 'code');
+    ok('...so the next quiet turn OFFERS the listener again (re-prompted per task, not silenced forever)',
+      /hold the role "code"/.test(fire({ hook_event_name: 'Stop', cwd: sboard }).reason || ''));
+    A8.clearWaiting(SESSION); A8.clearOffered(SESSION); RM.markRead(board, 'code');
+  }
 
   // a non-arc session (no ARC_SESSION) must be left completely alone
   const bare = spawnSync(process.execPath, [HOOK], {
@@ -4283,6 +5417,22 @@ try {
     && /why is the import flaky/.test(asked.reason));
   ok('...and it is offered ONCE, never nagged every turn',
     !fire({ hook_event_name: 'Stop', cwd: sboard }).decision);
+
+  // CASE 2 MUST ALSO BE ROLE-AWARE (deafness-hunt, 2026-07-18: the ONE re-arm site left on the
+  // role-blind isWaiting after case 1 and case 3 were converted). A session that asked a peer,
+  // then holds a listener armed for a DIFFERENT role, is DEAF to the reply (that listener polls
+  // the old role's notes) — so the request offer MUST still fire. A role-blind check would call it
+  // "already listening" and silently drop the answer it is owed.
+  {
+    const A2 = require(path.join(SRC, 'arc-await.js'));
+    RM.markRead(board, 'code');                          // clear the delivered reply so case 1 is empty
+    RM.appendNote(board, { from: 'code', to: 'research', kind: 'request', body: 'second question, still open' });
+    A2.markWaiting(SESSION, 'SOME-OLD-ROLE', process.pid);   // a live listener, but for the wrong role
+    const misAsk = fire({ hook_event_name: 'Stop', cwd: sboard });
+    ok('case 2: a wrong-role listener does NOT count as reachable — the request offer STILL fires',
+      misAsk.decision === 'block' && /STILL UNANSWERED/.test(misAsk.reason || ''));
+    A2.clearWaiting(SESSION); A2.clearOffered(SESSION); RM.markRead(board, 'code');
+  }
   // once a peer REPLIES, it is no longer open — and the reply itself is delivered as a note
   RM.appendNote(board, { from: 'research', to: 'code', replyTo: askSeq, body: 'DONE — tar --force-local' });
   const replied = fire({ hook_event_name: 'Stop', cwd: sboard });

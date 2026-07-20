@@ -9,7 +9,7 @@ Two `arc` sessions in one repo are **peers**: independent Claude Code sessions t
 see each other's context. The **board** — an append-only ledger of sticky notes, one per board
 (a board = the git repo root) — is the only channel between them.
 
-You, the agent, use it by **running terminal commands**. Do not submit `arc:note` as a *prompt*;
+You, the agent, use it by **running terminal commands**. Do not submit `/arc-note` as a *prompt*;
 that form is consumed by a hook before it ever reaches you.
 
 ```sh
@@ -22,7 +22,7 @@ If `arc role` reports no peer (*"nobody else here yet"*), you're solo — **do n
 
 ## Your stance governs both halves
 
-How much you may do *unprompted* is the arc **stance** (`arc:mode`). The default is **balanced**
+How much you may do *unprompted* is the arc **stance** (`/arc-mode`). The default is **balanced**
 and says nothing — so **no stance line at the start of your turn means balanced**. Only a
 deviation announces itself:
 
@@ -156,7 +156,7 @@ subagent would re-derive that history every single time, and confidently get it 
 
 > There used to be an `arc delegate` that fired a headless one-shot. It was removed — worse than
 > a subagent (heavier, no context, dies anyway) and worse than a peer (no memory). If you were
-> reaching for it: pick a row above. To run work on GPT, `arc:switch` to a codex account.
+> reaching for it: pick a row above. To run work on GPT, `/arc-switch` to a codex account.
 
 **Write it as a bounded packet, not a shout.** A good request states the objective, hands over
 the evidence you already have, says what is ALREADY SETTLED so they don't re-derive it, and asks

@@ -1,7 +1,9 @@
-// arc-notes: the zero-token `arc:` sentinels for the sticky-note ledger.
-//   arc:role <name>        claim a role in this board (research | coding | …)
-//   arc:note <to> <text>   leave a note for a role ("all" = broadcast)
-//   arc:notes [all]        read your unread notes (marks them read); `all` = whole board
+// arc-notes: the zero-token board commands over the sticky-note ledger.
+//   /arc-role <name>       claim a role in this board (research | coding | …)
+//   /arc-note <to> <text>  leave a note for a role ("all" = broadcast)
+//   /arc-notes [all]       read your unread notes (marks them read); `all` = whole board
+// (the /arc-* slash form is the human surface — the prompt hook dispatches it to the
+//  handlers here. Agents use the space form — `arc note …` — via the CLI.)
 //
 // The board is derived from the SESSION'S cwd (git repo root) — see arc-board.js.
 // Everything here runs inside the UserPromptSubmit hook: local, no model, zero tokens.
@@ -34,9 +36,23 @@ function sessionPid(session) {
 // id to disk every single turn, so the truth was already sitting there, unread. Read it.
 // (Found by the scout peer, whose own claim proved it: convId null while the bridge had the id.)
 const activeFile = (session) => path.join(CACHE_DIR, `arc-active-${session}.json`);
+// THE FRESHER FILE WINS, not a fixed priority. The state file lags a picker-resume: resume a
+// DIFFERENT conversation into a live session and the state still names the old conv until the
+// runner reconciles — while the statusline bridge is rewritten every tick with what the session
+// ACTUALLY hosts. State-first stamped audit's conv onto research's claim in the 2026-07-18
+// misfile, which would have misdirected the next revive of that role into the wrong
+// conversation. mtime settles both staleness directions: a live claude's ticking bridge
+// outdates the launch-time state (bridge = live truth); a fresh relaunch's state outdates the
+// dead claude's last bridge (state = launch truth).
 function sessionConv(session) {
-  try { const c = JSON.parse(fs.readFileSync(stateFile(session), 'utf8')).convId; if (c) return c; } catch {}
-  try { return JSON.parse(fs.readFileSync(activeFile(String(session)), 'utf8')).convId || null; } catch { return null; }
+  const read = (p) => {
+    try { return { conv: JSON.parse(fs.readFileSync(p, 'utf8')).convId || null, at: fs.statSync(p).mtimeMs }; }
+    catch { return null; }
+  };
+  const st = read(stateFile(session));
+  const br = read(activeFile(String(session)));
+  const pick = [st, br].filter((x) => x && x.conv).sort((a, b) => b.at - a.at)[0];
+  return pick ? pick.conv : null;
 }
 
 // A claim written BEFORE the conversation id was knowable (every fork) carries convId:null, and
@@ -178,11 +194,22 @@ function peers(board, meRole) {
 // the case an agent could not see before: it would either do that role's work itself, or spawn
 // a duplicate under a synonym. Now it can read the duty of an empty chair and choose.
 function rosterLines(board, meRole) {
-  let rows;
-  try { rows = require('./arc-duty').roster(board, R.liveRoles(board)); } catch { return null; }
+  let rows, liveList = [];
+  try {
+    liveList = R.liveRoles(board);
+    rows = require('./arc-duty').roster(board, liveList);
+  } catch { return null; }
   const others = rows.filter((r) => r.role !== meRole);
   if (!others.length) return null;
   const w = Math.max(...others.map((r) => r.role.length));
+  // A LIVE row's lead glyph is that peer's STANCE (○ passive · ◐ balanced · ● active) — the
+  // same alphabet the statusline dial uses, followed by the word so the glyph never has to be
+  // decoded alone. It used to be a PRESENCE dot (● live / ◑ revivable / ○ never) — the exact
+  // three glyphs the stance dial owns, with different meanings: a human read "● research" as
+  // "research is ACTIVE" while research sat in balanced (field report 2026-07-18). One
+  // alphabet, one meaning; presence is carried by the state word, which was always there.
+  const sess = new Map(liveList.map((l) => [l.role, l.sessionId]));
+  const STANCE_GLYPH = { passive: '○', balanced: '◐', active: '●' };
   return others.map((r) => {
     const what = r.summary ? ` — ${r.summary}`
       : r.declared ? '' : ` — (no duty declared: ${r.path})`;
@@ -196,11 +223,17 @@ function rosterLines(board, meRole) {
         revivable = !!(v && require('./arc-invite').hasTranscript(v.convId));
       } catch { /* a hint must never break the roster */ }
     }
-    const state = r.live ? 'live  ' : revivable ? 'closed' : 'closed';
+    let lead = '·', state = r.live ? 'live' : 'closed';
+    if (r.live) {
+      try {
+        const st = require('./arc-stance').getStance(sess.get(r.role));
+        if (STANCE_GLYPH[st]) { lead = STANCE_GLYPH[st]; state = `live · ${st}`; }
+      } catch { /* stance is a hint; presence must render without it */ }
+    }
     const hint = r.live ? ''
       : revivable ? `   ← was here; REVIVE as itself: arc delegate ${r.role} "<packet>"`
         : r.declared ? `   ← empty chair: arc delegate ${r.role} "<packet>"` : '';
-    return `    ${r.live ? '●' : revivable ? '◑' : '○'} ${r.role.padEnd(w)}  ${state}${what}${hint}`;
+    return `    ${lead} ${r.role.padEnd(w)}  ${state.padEnd(15)}${what}${hint}`;
   }).join('\n');
 }
 
@@ -213,7 +246,7 @@ function myDuty(board, role) {
   } catch { return null; }
 }
 
-// ---- arc:role -----------------------------------------------------------------
+// ---- /arc-role ----------------------------------------------------------------
 function requestRole(session, arg, cwd) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const role = String(arg || '').trim().toLowerCase();
@@ -223,7 +256,7 @@ function requestRole(session, arg, cwd) {
     const ros = rosterLines(board, mine);
     return { ok: true, plain: true, message:
       `arc board "${board.name}"  (${board.root})\n` +
-      `  your role: ${mine ? mine + (myDuty(board, mine) || '') : '(none — set one: arc:role research)'}\n` +
+      `  your role: ${mine ? mine + (myDuty(board, mine) || '') : '(none — set one: /arc-role research)'}\n` +
       (ros ? `  roster:\n${ros}` : `  peers: (nobody else here yet)`) };
   }
   if (!VALID_ROLE.test(role)) return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
@@ -294,7 +327,7 @@ function requestRole(session, arg, cwd) {
   // The claim makes you ADDRESSABLE, not yet REACHABLE-while-idle: a listener can only be
   // armed by the agent's own background command, and that takes a turn. A listener armed for a
   // DIFFERENT role counts as unarmed — it hears notes for the old name, not this one. The
-  // caller decides what to do with armNeeded: the sentinel hook turns it into a pass-through
+  // caller decides what to do with armNeeded: the prompt hook turns it into a pass-through
   // turn that arms (see arc-switch-hook); the CLI path just shows the instruction, because the
   // agent reading it is already mid-turn and can arm right now.
   const waiting = require('./arc-await').waitingFor(session);
@@ -320,18 +353,18 @@ function requestRole(session, arg, cwd) {
     `✓ you are "${role}" on the "${board.name}" board  (${board.root})\n` +
     dutyLine +
     (ros ? `  roster:\n${ros}\n` : '') +
-    (unread.count ? `  📌 ${unread.count} unread note(s) — read them: arc:notes\n` : '  board is empty for you\n') +
+    (unread.count ? `  📌 ${unread.count} unread note(s) — read them: /arc-notes\n` : '  board is empty for you\n') +
     listen };
 }
 
-// ---- arc:note -----------------------------------------------------------------
+// ---- /arc-note ----------------------------------------------------------------
 // `opts.hasTranscript` is injectable so a test can exercise the REVIVABLE branch without
 // fabricating a transcript in the user's real ~/.claude/projects.
 function requestNote(session, arg, cwd, opts) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const board = R.resolveBoard(resolveCwd(session, cwd));
   const me = getRole(session, board);
-  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  arc:role research` };
+  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  /arc-role research` };
 
   const s = String(arg || '').trim();
   const m = s.match(/^(\S+)\s+([\s\S]+)$/);
@@ -462,19 +495,33 @@ function requestNote(session, arg, cwd, opts) {
   // to whoever claims that role next (proven: a fresh session inherits the whole inbox). That is
   // a real feature, not a leak, so refusing would destroy something useful. What was missing was
   // the truth, out loud, at the only moment it can be acted on.
-  let chair = '';
+  // chairLead is the SAME truth as the chair block, compressed onto LINE ONE of the
+  // receipt. The block alone was a clippable prose TAIL opening with '\n' — a sender
+  // piping through `| head -4` saw a clean ✓ while its work landed in a closed chair
+  // (the 2026-07-17 field report: the check FIRED and was decapitated; the transcript
+  // still shows the warning's orphaned blank line). Line 1 is the one line every
+  // caller reads, so the status lives there too. `opts.chairHandled` skips both: the
+  // delegate path fills the chair itself, and the warning would be false there — it
+  // used to strip it with an end-anchored regex that would have silently broken the
+  // moment the warning moved off the tail... which is exactly what this change does.
+  let chair = '', chairLead = '';
+  if (opts && opts.chairHandled) { /* the caller is staffing the chair — no warning */ } else
   if (Array.isArray(to)) {
     // MULTI-RECIPIENT: name any addressee nobody holds. The rich revive offer below is for a SINGLE
     // recipient; for a subset keep it terse, so the sender is not misled about who actually got it.
     const held = new Set(R.liveRoles(crossFrom ? target : board).map((l) => l.role));
     const empty = to.filter((r) => !held.has(r));
-    if (empty.length) chair = `\n  ⚠ not currently held: ${empty.join(', ')} — the note keeps for ${empty.length === 1 ? 'that role' : 'them'} (whoever claims it next reads it in full)`
-      + (note.kind === 'request' ? `; a REQUEST stays unanswered by ${empty.length === 1 ? 'it' : 'those'} until staffed (arc delegate <role> "<packet>").` : '.');
+    if (empty.length) {
+      chairLead = ` — ⚠ unheld: ${empty.join(', ')}`;
+      chair = `\n  ⚠ not currently held: ${empty.join(', ')} — the note keeps for ${empty.length === 1 ? 'that role' : 'them'} (whoever claims it next reads it in full)`
+        + (note.kind === 'request' ? `; a REQUEST stays unanswered by ${empty.length === 1 ? 'it' : 'those'} until staffed (arc delegate <role> "<packet>").` : '.');
+    }
   } else
   // ACROSS A BOARD, the empty-chair OFFER is not yours to take: `arc delegate` acts on YOUR board,
   // so telling a whalephone peer to revive arc's `frontend` would be advice it cannot follow. Say
   // the true half (nobody is there, the note keeps) and stop.
   if (crossFrom && to && !R.liveRoles(target).some((l) => l.role === to)) {
+    chairLead = ` — ⚠ "${to}" unheld on "${target.name}"`;
     chair = `\n  ⚠ NOBODY HOLDS "${to}" on "${target.name}" right now — the note waits in an empty chair.\n`
       + `    It keeps: whoever claims "${to}" there next reads it in full. You cannot staff their\n`
       + `    board from here, and should not try — that is their side's call.\n`;
@@ -493,6 +540,7 @@ function requestNote(session, arg, cwd, opts) {
       const hasT = (opts && opts.hasTranscript) || require('./arc-invite').hasTranscript;
       revivable = !!(v && hasT(v.convId));
     } catch { /* never let a hint break a note */ }
+    chairLead = ` — ⚠ "${to}" is CLOSED${revivable ? ` (revive: arc delegate ${to} "<packet>")` : ''}`;
     chair = `\n  ⚠ NOBODY HOLDS "${to}" right now — your note is waiting in an empty chair.\n`
       + (revivable
         ? `    BUT "${to}" HAS WORKED HERE BEFORE and can come back AS ITSELF — its own conversation\n`
@@ -529,7 +577,7 @@ function requestNote(session, arg, cwd, opts) {
   const stored = note.body.length;
   return { ok: true, message:
     `✓ note #${seq} posted for ${Array.isArray(to) ? to.join(' + ') : (to || 'everyone')} (from "${crossFrom || me}", on the "${target.name}" board)` +
-    `  — ${stored} chars stored\n` +
+    `  — ${stored} chars stored${chairLead}\n` +
     (crossFrom ? `  ⇄ CROSS-BOARD: this left "${board.name}" and landed on "${target.name}". One-way — they\n`
                + `    cannot reply to you here. Anything you need BACK goes through your human.\n` : '') +
     (extra ? `  ${extra}\n` : '') +
@@ -541,10 +589,10 @@ const NOTE_USAGE =
   // NB the examples teach `--reply-to 8`, NOT `#8`: this usage ALSO surfaces on the terminal
   // path (arc note …), where `#` starts a comment in BOTH sh and PowerShell — the rest of the
   // line silently vanishes and a garbage note posts "successfully". The parser accepts both.
-  'usage: arc:note <role|all> [--kind <k>] [--reply-to N] [--supersedes N] [--board <path>]\n' +
+  'usage: /arc-note <role|all> [--kind <k>] [--reply-to N] [--supersedes N] [--board <path>]\n' +
   '                 [--body-file <path>] <text>\n' +
-  '  plain:    arc:note coding "P-014 spec changed"          (kind defaults to info)\n' +
-  '  ask:      arc:note research --kind request "can you check X?"\n' +
+  '  plain:    /arc-note coding "P-014 spec changed"          (kind defaults to info)\n' +
+  '  ask:      /arc-note research --kind request "can you check X?"\n' +
   // The one flag that is not a convenience. See the --body-file block in requestNote.
   '  LONG/multi-line: write the body to a file and pass the PATH — never the text:\n' +
   '            arc note research --kind request --body-file ./packet.md\n' +
@@ -555,8 +603,8 @@ const NOTE_USAGE =
   '  another board: arc note code --board E:/arc "arc\'s stop hook fires twice when …"\n' +
   '            ← one-way ANNOUNCEMENT to a DIFFERENT repo\'s board; asks your human first, arrives\n' +
   '              as "<thisboard>/<yourrole>". No requests, no replies: they cannot answer you there.\n' +
-  '  answer:   arc:note android --reply-to 8 "DONE — here is what I found"   (kind: result)\n' +
-  '  retract:  arc:note android --supersedes 13 "CORRECTION — I was wrong because…"\n' +
+  '  answer:   /arc-note android --reply-to 8 "DONE — here is what I found"   (kind: result)\n' +
+  '  retract:  /arc-note android --supersedes 13 "CORRECTION — I was wrong because…"\n' +
   `  kinds: ${R.KINDS.join(' · ')}   (blocker + correction are auto-HIGH priority)\n` +
   '  a --supersedes note WARNS every future reader of the note it retracts — that is how an\n' +
   '  append-only ledger stays honest: you never rewrite history, you correct it.';
@@ -597,7 +645,7 @@ function receiptBlock(board, me, all) {
   return `\n  your recent sent (receipts — no ack needed):\n${rows.join('\n')}`;
 }
 
-// ---- arc:notes ----------------------------------------------------------------
+// ---- /arc-notes ---------------------------------------------------------------
 function requestNotes(session, arg, cwd) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const board = R.resolveBoard(resolveCwd(session, cwd));
@@ -623,7 +671,7 @@ function requestNotes(session, arg, cwd) {
     return { ok: true, plain: true, message: `${head}   — ALL ${all.length} note(s), nothing marked read\n${rows.join('\n')}${openLine}` };
   }
 
-  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  arc:role research\n(or read everything anyway:  arc:notes all)` };
+  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  /arc-role research\n(or read everything anyway:  /arc-notes all)` };
   const u = R.unreadFor(board, me);
   if (!u.count) {
     return { ok: true, plain: true, message:
@@ -657,7 +705,7 @@ function requestNotes(session, arg, cwd) {
 }
 
 // Re-assert this session's role claim under a NEW pid. Called by arc-runner on every
-// (re)launch, because `arc:restart` re-execs the wrapper: ARC_SESSION survives, but the
+// (re)launch, because `/arc-restart` re-execs the wrapper: ARC_SESSION survives, but the
 // pid changes, so the old claim would look DEAD and another session could steal the
 // role. The role itself lives in arc-role-<session>.json, which survives restart and
 // switch — exactly like the session's model and effort.
@@ -696,6 +744,36 @@ function refreshRole(session, pid, cwd, convId) {
 // A role-holder with no listener THIS long is genuinely deaf, not mid-arm: the threshold clears the
 // transient no-listener windows (arming/post-wake) and most turns, so DEAF means DEAF (audit #200).
 const DEAF_STALE_MS = 90_000;
+
+// THE HEARTBEAT (roadmap #5): how long since this session's conversation TRANSCRIPT
+// last grew. The transcript is the one file that beats ONLY during work — it advances
+// with every tool call and assistant token while a turn runs, and stops the moment the
+// session idles. That is the discriminator the staleness test alone cannot see: a
+// session mid-way through a >90s turn has stale unread AND no listener, but its Stop
+// hook will deliver at turn-end — badging it is alarm fatigue: DEAF fires when nothing
+// is wrong, the human learns to ignore it, and then misses the real idle-and-deaf case.
+// Two designs deliberately NOT used, each with its measured killer:
+//   - a turn-start/turn-end FLAG: an interrupted turn fires no Stop hook, the flag
+//     sticks, and the session reads busy forever — a9b682c's bug, mirror-imaged.
+//   - stamping the STATUSLINE render (the roadmap item's original sketch): the
+//     statusline ticks every ~10s IDLE OR BUSY (refreshInterval + the idle-cadence
+//     measurement that accompanied board #208), so that stamp is always fresh and
+//     DEAF would simply never fire.
+// A freshness timestamp derived from evidence degrades gracefully instead: an
+// interrupted turn just stops beating. Unresolvable (no conv id, no transcript file
+// yet) reads as quiet-forever — fail-VISIBLE, preserving exactly the pre-heartbeat
+// behavior for the cases the old check was built to catch.
+function transcriptQuietFor(session) {
+  try {
+    const conv = sessionConv(session);
+    if (!conv) return Infinity;
+    const projects = path.join(os.homedir(), '.claude', 'projects');
+    for (const d of fs.readdirSync(projects)) {
+      try { return Date.now() - fs.statSync(path.join(projects, d, conv + '.jsonl')).mtimeMs; } catch {}
+    }
+  } catch {}
+  return Infinity;
+}
 function badge(session, cwd) {
   try {
     if (!session) return null;
@@ -722,7 +800,10 @@ function badge(session, cwd) {
     let deaf = false;
     try {
       const A = require('./arc-await');
-      if (!A.isWaiting(session)) {
+      // isWaitingAs(role), NOT isWaiting: a listener armed for an OLD role hears nothing on this
+      // one, so a role-blind check would SUPPRESS the DEAF badge for a genuinely-deaf role-changed
+      // session — hiding exactly the state the operator needs to see (deafness-hunt, 2026-07-18).
+      if (!A.isWaitingAs(session, role)) {
         const now = Date.now();
         const offAt = A.offeredAt(session);
         const offerStale = offAt != null && now - offAt > DEAF_STALE_MS;
@@ -732,7 +813,11 @@ function badge(session, cwd) {
         const times = u.count ? u.notes.map((n) => new Date(n.ts).getTime()).filter(Number.isFinite) : [];
         const oldestUnread = times.length ? Math.min(...times) : now;
         const unreadStale = times.length > 0 && now - oldestUnread > DEAF_STALE_MS;
-        deaf = offerStale || unreadStale;
+        // ...AND the heartbeat gate (roadmap #5): stale notes alone cannot separate
+        // idle-and-deaf (badge it) from busy-mid-long-turn (the Stop hook will deliver
+        // at turn-end — badging is alarm fatigue). Only a session that is BOTH
+        // note-stale AND transcript-quiet is genuinely doing nothing.
+        deaf = (offerStale || unreadStale) && transcriptQuietFor(session) > DEAF_STALE_MS;
       }
     } catch {}
     if (u.count) return { count: u.count, senders: u.senders, role, board: board.name, deaf };
@@ -757,7 +842,7 @@ function badge(session, cwd) {
 // a path — the same way a large tool result is handled. So nothing would be lost by dumping. What
 // would be lost is the READING: the spill turns a note into a file the agent must choose to open,
 // and we MEASURED that choice — a referenced duty file was opened 5 times out of 8 (the paths-vs-
-// owns run, docs/review/paths-nudge-results-2026-07-15.md). An inline digest is seen every time.
+// owns run, 2026-07-15; its doc is retired, git history has it). An inline digest is seen every time.
 // So the clip does not defend the data; it defends the DELIVERY, which is the only thing a board
 // exists to do. The 60% is also why `--ref`-style pointers are for EVIDENCE, never for the ask.
 //
@@ -855,21 +940,42 @@ function injection(session, cwd) {
     // catches up in chronological order, batch by batch, and the tail is NEVER
     // consumed. (The old code ranked newest-first, capped, then marked ALL read — so
     // the oldest overflow was silently lost. That is the bug this fixes.)
-    const picked = [];
-    let used = 0;
+    // ALARM DE-DUP (design review #332, claim 6). The active alarm reaches a peer on TWO channels:
+    // this note AND the pretool flag-gate. Whichever fires first stamps a shared ack (keyed by the
+    // note's id — never a seq); the other is then suppressed, so no peer is shown the same alarm
+    // twice. Here, at the note channel: if the flag already blocked this session (ack == alarm id),
+    // CONSUME the alarm's note — advance the cursor past it so it never re-delivers — but do NOT show
+    // it again. If it has NOT been seen, show it AND stamp the ack, so the flag-gate won't block for
+    // it. Fail-open on any hiccup (a require/read failure just leaves the pre-review double-show).
+    let alarmId = null, alarmSeen = false;
+    try { const AL = require('./arc-alarm'); const f = AL.readFlag(board);
+      if (f) { alarmId = f.id; alarmSeen = AL.readAck(session) === f.id; } } catch { /* fail-open */ }
+
+    const picked = [];   // CONSUMED — the cursor advances over all of these (shown or suppressed)
+    const shown = [];    // actually surfaced to the peer
+    let used = 0, showAlarm = false;
     for (const n of u.notes) {
-      const row = rowFor(n);
-      if (picked.length && used + row.length > INJECT_MAX) break;     // always show ≥1
-      picked.push(n); used += row.length;
+      const suppress = !!alarmId && n.id === alarmId && alarmSeen;    // already seen via the flag-block
+      const row = suppress ? '' : rowFor(n);
+      if (shown.length && used + row.length > INJECT_MAX) break;      // cap by SHOWN content; always show ≥1
+      picked.push(n);
+      if (!suppress) { shown.push(n); used += row.length; if (n.id === alarmId) showAlarm = true; }
     }
+    const suppressed = picked.length - shown.length;
     const more = u.count - picked.length;
-    const newCursor = picked[picked.length - 1].seq;                  // last DELIVERED note
+    const newCursor = picked.length ? picked[picked.length - 1].seq : R.latestSeq(board);
+    if (showAlarm) { try { require('./arc-alarm').stampAck(session, alarmId); } catch { /* fail-open */ } }
+
+    // Everything consumed was a suppressed (already-seen) alarm note: advance past it and inject
+    // NOTHING — the peer already got this alarm via the flag-block, so a note delivery would be the
+    // exact double-show the ack exists to prevent.
+    if (!shown.length) { R.writeCursor(board, role, newCursor); return null; }
 
     // Display: float what MATTERS to the top of THIS batch — high priority first, then by
     // KIND (a blocker or a retraction must never sit under routine news), then oldest-first.
     // This only reorders what we're already showing; the cursor still advances by seq.
     const rank = (n) => R.KIND_RANK[n.kind || R.DEFAULT_KIND] ?? 5;
-    const display = [...picked].sort((a, b) =>
+    const display = [...shown].sort((a, b) =>
       (b.priority === 'high') - (a.priority === 'high') || rank(a) - rank(b) || a.seq - b.seq);
     spills.length = 0;   // the accounting pass above also called rowFor; collect spills from the SHOWN rows only
 
@@ -880,7 +986,7 @@ function injection(session, cwd) {
       : '';
 
     const text =
-      `[arc board] ${u.count} unread note(s) for "${role}" on the "${board.name}" board ` +
+      `[arc board] ${u.count - suppressed} unread note(s) for "${role}" on the "${board.name}" board ` +
       `(left by another arc session working in this folder):\n` +
       display.map(rowFor).join('\n') +
       (more > 0 ? `\n  …and ${more} more still unread — run \`arc notes\` to read the next batch.` : '') +
@@ -894,7 +1000,10 @@ function injection(session, cwd) {
       `\`arc notes all\` shows the whole board.)`;
 
     R.writeCursor(board, role, newCursor);   // advance ONLY over what we delivered — lossless
-    return { text, count: u.count, role, board: board.name, shown: picked.length, spills };
+    // `consumed` = notes the cursor advanced over (shown + any suppressed alarm note), NOT the
+    // displayed count — its consumer is `count > consumed` ("is the batch capped?"), which wants
+    // consumed. A displayed count would under-report by a suppressed alarm and mis-answer that.
+    return { text, count: u.count, role, board: board.name, consumed: picked.length, spills };
   } catch { return null; }    // the board must NEVER wedge a prompt
 }
 

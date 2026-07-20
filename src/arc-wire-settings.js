@@ -78,8 +78,8 @@ function mergeHooks(settings, entries) {
 // refreshInterval". 10s costs ~77ms of node per tick and no extra network (the usage API stays
 // behind its own 60s cache), so what a tick actually does is re-read three local files.
 //
-// It also happens to fix the stance dial lagging after `arc:mode`, but that was the symptom, not
-// the reason: a SENTINEL is blocked at UserPromptSubmit and a blocked prompt is not a turn — the
+// It also happens to fix the stance dial lagging after `/arc-mode`, but that was the symptom, not
+// the reason: the command is blocked at UserPromptSubmit and a blocked prompt is not a turn — the
 // very property that makes it cost zero tokens is what starves the bar of its refresh.
 const STATUSLINE_REFRESH_SECONDS = 10;
 
@@ -133,14 +133,21 @@ function coreHookEntries(scriptsDir) {
 // it sat forever at a Bash permission prompt instead, claimed but deaf. The same prompt would
 // wedge every Stop-hook re-arm in an unattended session. These are coordination commands
 // (claim, listen, read, post) — nothing destructive is on this list, and `arc delegate` is
-// deliberately NOT: it is the one verb that can spawn a session, so it stays gated by arc:mode.
+// deliberately NOT: it is the one verb that can spawn a session, so it stays gated by the stance (/arc-mode).
 // EVERY shell tool, not just Bash. A session does not always get the Bash tool: the first
 // INVITED peer reported `No such tool available: Bash` and had only PowerShell — so a Bash-only
 // allowlist matched nothing, `arc join` raised a permission prompt, and the tab sat there
 // claimed-but-deaf. That is precisely the failure this allowlist exists to prevent, so it must
 // cover whichever shell the harness hands the session. (Found by the scout peer, in its own
 // runtime.)
-const BOARD_COMMANDS = ['arc join', 'arc await', 'arc role', 'arc notes', 'arc note'];
+// `arc close` is HERE because the stop-hook's own nag prescribes it — a remedy the hook demands
+// must never be permission-blocked (a content classifier once vetoed it mid-session and the agent
+// could not comply with arc's own instruction). `arc export`/`arc import` are the board's transport
+// verbs — post-dating the original list, they were missing by staleness, not decision. `arc
+// delegate` stays OFF the list on purpose and by doctrine: it is the one verb that spawns a
+// session, and the operator's rule is that a spawn is permitted by the human — the permission
+// prompt IS that permission.
+const BOARD_COMMANDS = ['arc join', 'arc await', 'arc role', 'arc notes', 'arc note', 'arc close', 'arc export', 'arc import'];
 const SHELL_TOOLS = ['Bash', 'PowerShell'];
 const BOARD_PERMISSIONS = SHELL_TOOLS.flatMap((tool) =>
   BOARD_COMMANDS.flatMap((cmd) => [`${tool}(${cmd}:*)`, `${tool}(${cmd})`]));
@@ -152,16 +159,50 @@ function mergePermissions(settings, allow) {
   return settings;
 }
 
+// A plain-object overlay where the RIGHT side wins per key — the ONE merge policy both
+// skillOverrides writers share (here: arc defaults laid UNDER the user's values; in
+// arc-profile.syncSettings: root values laid under the profile's). Non-plain-object
+// inputs sanitize to {}: typeof [] === 'object' and string keys set on an array are
+// dropped by JSON.stringify, so a corrupt "skillOverrides": [] would otherwise make a
+// merge report success while writing nothing, forever. Shared so the two call sites
+// cannot drift (the drift WAS real: the first draft hand-rolled this twice with two
+// different corrupt-value guards).
+const asMap = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+function overlayMaps(base, wins) { return { ...asMap(base), ...asMap(wins) }; }
+
+// The /arc-* skill stubs exist ONLY for the / menu — the hook intercepts the typed
+// command before the model runs, so their bodies must never reach the model's ambient
+// skill listing either. "user-invocable-only" hides a skill from the model's listing
+// while keeping it in the human's / menu: zero ambient tokens, full autocomplete.
+// Defaults-under-user: a user's own override (e.g. "off" to hide one from the menu
+// too) is their call and must survive every reinstall/update.
+function mergeSkillOverrides(settings) {
+  const SL = require('./arc-slash');
+  const defaults = {};
+  for (const e of SL.MENU) defaults[`arc-${e.verb}`] = 'user-invocable-only';
+  settings.skillOverrides = overlayMaps(defaults, settings.skillOverrides);
+  // SWEEP the arc-* namespace, mirroring the installer's stub sweep: when a verb is
+  // removed from MENU, its stub is deleted but an overlay can only ever ADD — the
+  // override key would outlive the skill forever, silently configuring nothing.
+  // Only arc-* names, only when MENU no longer ships them; a user's overrides for
+  // their own skills are out of this namespace and untouchable.
+  for (const k of Object.keys(settings.skillOverrides)) {
+    if (/^arc-/.test(k) && !(k in defaults)) delete settings.skillOverrides[k];
+  }
+  return settings;
+}
+
 function wireArcSettings(scriptsDir = path.join(CLAUDE_DIR, 'scripts'), settingsPath = settingsPathDefault) {
   const { settings, raw } = readSettings(settingsPath);
   mergeHooks(settings, coreHookEntries(scriptsDir));
   mergePermissions(settings, BOARD_PERMISSIONS);
+  mergeSkillOverrides(settings);
   setStatusline(settings, `node "${scriptsDir.replace(/\\/g, '/')}/usage-monitor.js" --compact`);
   writeSettings(settingsPath, settings, raw);
   return { settingsPath, backedUp: raw != null };
 }
 
-module.exports = { readSettings, writeSettings, mergeHooks, mergePermissions, BOARD_PERMISSIONS, setStatusline, STATUSLINE_REFRESH_SECONDS, coreHookEntries, wireArcSettings };
+module.exports = { readSettings, writeSettings, mergeHooks, mergePermissions, mergeSkillOverrides, overlayMaps, BOARD_PERMISSIONS, setStatusline, STATUSLINE_REFRESH_SECONDS, coreHookEntries, wireArcSettings };
 
 if (require.main === module) {
   try {

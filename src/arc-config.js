@@ -1,6 +1,6 @@
 // arc-config: shared loader for the arc account-switcher configuration.
 // One config file (~/.claude/arc-config.json) defines N accounts; every arc
-// component (runner, statusline, hooks, pool tools) resolves accounts from it.
+// component (runner, statusline, hooks) resolves accounts from it.
 //
 // Account types:
 //   oauth  — a claude.ai subscription login. Optional `credentials` = path to a
@@ -15,7 +15,7 @@
 //            disk, bound to this Windows user+machine; set via `arc set-key <id>`).
 //            Optional `usageUrl` (default `<baseUrl>/v1/usage`, set false to
 //            disable): the gateway's own usage endpoint — arc fetches it and shows
-//            the account's cost/tokens in the statusline + arc:peek (see gw-usage.js).
+//            the account's cost/tokens in the statusline + /arc-peek (see gw-usage.js).
 //
 // Minimal example (single subscription):
 //   { "version": 1, "accounts": [ { "id": "main", "label": "MAX", "type": "oauth" } ] }
@@ -53,7 +53,6 @@ function legacyConfig() {
     accounts: [{ id: 'max', label: 'MAX', color: '#D97757', type: 'oauth' }],
     thresholds: {},
     features: {},
-    poolDb: null,
     _legacy: true,
   };
 }
@@ -74,7 +73,6 @@ function normalize(cfg) {
   out.defaultAccount = ids.has(cfg.defaultAccount) ? cfg.defaultAccount : out.accounts[0].id;
   out.thresholds = { ...DEFAULT_THRESHOLDS, ...(cfg.thresholds || {}) };
   out.features = { ...(cfg.features || {}) };
-  out.poolDb = cfg.poolDb && cfg.poolDb.neonUrl ? cfg.poolDb : null;
   out.switchOrder = (Array.isArray(cfg.switchOrder) ? cfg.switchOrder : out.accounts.map((a) => a.id))
     .filter((id) => ids.has(id));
   if (!out.switchOrder.length) out.switchOrder = out.accounts.map((a) => a.id);
@@ -92,7 +90,7 @@ function findAccount(cfg, id) {
   return cfg.accounts.find((a) => a.id === id) || null;
 }
 
-// The account arc:switch moves to: an explicit valid target, else the next id in
+// The account /arc-switch moves to: an explicit valid target, else the next id in
 // switchOrder after `currentId` (cyclic).
 function nextAccount(cfg, currentId, targetId) {
   const target = findAccount(cfg, targetId);

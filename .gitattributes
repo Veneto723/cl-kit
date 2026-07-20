@@ -1,0 +1,5 @@
+# The /arc-* skill stubs are GENERATED from src/arc-slash.js (stubText) and a test
+# asserts byte-equality against the generator. This repo has no committed line-ending
+# policy and Windows checkouts default to core.autocrlf=true, which would rewrite the
+# stubs to CRLF on a fresh clone and fail that drift guard on every machine. Pin them.
+skills/*/SKILL.md text eol=lf

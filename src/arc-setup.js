@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // arc setup: interactive wizard that writes ~/.claude/arc-config.json.
 // Lets anyone pick their style — single subscription, two subscriptions,
-// subscription + API gateway (pool), gateway only, or any custom mix.
+// subscription + gateway, gateway only, or any custom mix.
 'use strict';
 
 const fs = require('fs');
@@ -32,7 +32,7 @@ async function askId(q, taken, def) {
 }
 
 async function buildOauth(taken, suggestedId, suggestedLabel) {
-  const id = await askId('  account id (short, used in arc:switch)', taken, suggestedId);
+  const id = await askId('  account id (short, used in /arc-switch)', taken, suggestedId);
   const label = (await ask(`  display label (${suggestedLabel || id.toUpperCase()}): `)) || suggestedLabel || id.toUpperCase();
   const color = (await ask('  statusline color hex (#D97757): ')) || '#D97757';
   console.log('  (if this is a SECOND subscription, run `arc capture ' + id + '` later while logged in as it)');
@@ -40,7 +40,7 @@ async function buildOauth(taken, suggestedId, suggestedLabel) {
 }
 
 async function buildApi(taken, suggestedId) {
-  const id = await askId('  account id (short, used in arc:switch)', taken, suggestedId);
+  const id = await askId('  account id (short, used in /arc-switch)', taken, suggestedId);
   const label = (await ask(`  display label (${id.toUpperCase()}): `)) || id.toUpperCase();
   const color = (await ask('  statusline color hex (#2DD4BF): ')) || '#2DD4BF';
   let baseUrl = '';
@@ -73,7 +73,7 @@ async function main() {
   console.log('Styles:');
   console.log('  1. single subscription        (one claude.ai login; arc adds session tools only)');
   console.log('  2. two subscriptions          (switch between two claude.ai logins)');
-  console.log('  3. subscription + gateway     (claude.ai login + an API pool/proxy)');
+  console.log('  3. subscription + gateway     (claude.ai login + an API gateway)');
   console.log('  4. gateway only               (API base URL + key, no claude.ai login)');
   console.log('  5. custom                     (build any list of accounts)\n');
 
@@ -94,8 +94,8 @@ async function main() {
   } else if (style === '3') {
     console.log('\n[subscription]');
     add(await buildOauth(taken, 'max', 'MAX'));
-    console.log('\n[API gateway / pool]');
-    add(await buildApi(taken, 'pool'));
+    console.log('\n[API gateway]');
+    add(await buildApi(taken, 'gw'));
   } else if (style === '4') {
     console.log('\n[API gateway]');
     add(await buildApi(taken, 'gateway'));
@@ -111,14 +111,6 @@ async function main() {
     ? accounts[0].id
     : await askChoice('\ndefault account at launch', accounts.map((a) => a.id), accounts[0].id);
 
-  // Optional pool metrics DB (renders per-account utilization in the statusline
-  // and powers the pool MCP server). Fully optional.
-  let poolDb = null;
-  if (accounts.some((a) => a.type === 'api')) {
-    const want = await askChoice('\nconfigure a pool metrics DB (Neon Postgres pool_accounts/account_usage schema)?', ['y', 'n'], 'n');
-    if (want === 'y') poolDb = { neonUrl: await ask('  Neon connection URL: ') };
-  }
-
   const cfgOut = {
     version: 1,
     defaultAccount: def,
@@ -126,7 +118,6 @@ async function main() {
     switchOrder: accounts.map((a) => a.id),
     thresholds: { warnSessionPct: 85, warnWeekPct: 90, switchSessionPct: 92, switchWeekPct: 95 },
     features: {},
-    ...(poolDb ? { poolDb } : {}),
   };
 
   if (fs.existsSync(C.CONFIG_PATH)) {

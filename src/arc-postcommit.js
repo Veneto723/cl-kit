@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // arc-postcommit: turn every git commit into a board note, so two arc sessions working
-// in one repo see each other's work WITHOUT anyone typing arc:note and WITHOUT needing
+// in one repo see each other's work WITHOUT anyone typing /arc-note and WITHOUT needing
 // the task list. Wired as a repo's .git/hooks/post-commit; runs AFTER the commit, so it
 // can never block or fail it.
 //

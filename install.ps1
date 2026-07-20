@@ -1,4 +1,4 @@
-﻿# arc installer (Windows 11). Deploys the arc account switcher into ~/.claude
+﻿# arc installer (Windows). Deploys the arc account switcher into ~/.claude
 # and ~/.local/bin, wires hooks + statusline into settings.json (merging, never
 # clobbering), registers the arc-focus: toast-click protocol, and generates icons.
 # Re-runnable: existing files are overwritten from the kit, user settings merged.
@@ -26,6 +26,8 @@ Copy-Item (Join-Path $kit 'src\arc-focus.vbs') $scripts -Force
 # The birth template MUST land beside arc-invite.js — birthTemplate() resolves it via __dirname, so a
 # missing copy here is a launcher that opens no tab at all.
 Copy-Item (Join-Path $kit 'src\arc-birth.ps1') $scripts -Force
+# The operator widget (`arc operator`) — arc-runner spawns it via __dirname, so it must land here too.
+Copy-Item (Join-Path $kit 'src\arc-operator.ps1') $scripts -Force
 Copy-Item (Join-Path $kit 'src\icons\make-icons.ps1') (Join-Path $scripts 'icons') -Force
 Write-Host "  scripts -> $scripts"
 
@@ -39,12 +41,7 @@ $marker = @{ version = $pkgVer; installedAt = (Get-Date).ToString('o'); source =
 [System.IO.File]::WriteAllText((Join-Path $scripts 'arc-version.json'), $marker)
 Write-Host "  version -> arc v$pkgVer"
 
-# pool-DB metrics tooling (feeds the statusline + pool MCP tools when arc-config
-# has poolDb; harmless otherwise). No /pool slash command — it wasn't universal.
-Copy-Item (Join-Path $kit 'pool\pool-query.js') $scripts -Force
-Copy-Item (Join-Path $kit 'pool\pool-neon-url.js') $scripts -Force
-
-# arc MCP server (account management + pool metrics tools)
+# arc MCP server (account management tools)
 $mcpDest = Join-Path $scripts 'arc-mcp'
 New-Item -ItemType Directory -Force $mcpDest | Out-Null
 Copy-Item (Join-Path $kit 'mcp\server.js') $mcpDest -Force
@@ -63,7 +60,7 @@ if ($hasClaude) {
   claude mcp remove --scope user arc 2>$null | Out-Null
   claude mcp add --scope user arc node (Join-Path $mcpDest 'server.js') 2>$null | Out-Null
   $ErrorActionPreference = $eap
-  Write-Host "  arc MCP server installed + registered (account_* / config_update / pool_* tools)"
+  Write-Host "  arc MCP server installed + registered (account_* / config_update tools)"
 } else {
   Write-Host "  arc MCP server installed (register later: claude mcp add --scope user arc node `"$mcpDest\server.js`")"
 }
@@ -121,8 +118,11 @@ if (($userPath -split ';') -notcontains $bin) {
   Write-Host "  arc      -> $bin  (POSIX shim, so 'arc' also works in Git Bash / the agent's Bash tool)"
 }
 
-# 3. no slash commands — every arc action is a zero-token arc: sentinel (arc:switch,
-#    arc:restart, arc:peek, arc:help, …) caught by the UserPromptSubmit hook.
+# 3. every arc action is caught by the UserPromptSubmit hook at zero model tokens, in
+#    ONE spelling (src/arc-slash.js): /arc-<verb>, whose / menu autocomplete comes
+#    from the skill stubs copied below. Claude Code hands the hook the RAW typed
+#    /command before any skill expansion, so it stays classifier-immune and
+#    rate-limit-proof — these never reach a model.
 
 # 3b. core agent skills — capabilities any agent can discover + invoke.
 $skills = Join-Path $claudeDir 'skills'
@@ -145,6 +145,20 @@ foreach ($stale in @('share-with-roommate', 'fridge-responder', 'roommates')) {
   foreach ($root in @($agentSkills, (Join-Path $env:USERPROFILE '.claude\skills'))) {
     $p = Join-Path $root $stale
     if (Test-Path $p) { Remove-Item -Recurse -Force $p; Write-Host "  removed superseded skill -> $p" -ForegroundColor DarkGray }
+  }
+}
+# The /arc-* slash stubs are GENERATED from src/arc-slash.js and ride the copy above —
+# but a copy only ever ADDS. When a verb is removed or renamed, its stale stub would
+# keep advertising a /command the hook no longer matches, and (for the first time) its
+# fallback BODY would actually load and teach a dead verb. Sweep deployed arc-* stubs
+# the kit no longer ships. Deliberately narrow: only ~/.claude/skills, only arc-* names,
+# only when the kit lacks them; junctions are skipped (not ours — the copy deploys real
+# directories, and deleting through a user's junction would reach a foreign tree).
+Get-ChildItem -Path $skills -Directory -Filter 'arc-*' -ErrorAction SilentlyContinue | ForEach-Object {
+  if ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) { return }
+  if (-not (Test-Path (Join-Path $kit "skills\$($_.Name)"))) {
+    Remove-Item -Recurse -Force $_.FullName
+    Write-Host "  removed stale /arc stub -> $($_.FullName)" -ForegroundColor DarkGray
   }
 }
 
@@ -188,12 +202,16 @@ Write-Host "  toast banners enabled for the PowerShell AppID"
 node "$($scripts -replace '\\','/')/arc-wire-settings.js" "$scripts"
 if ($LASTEXITCODE -ne 0) { throw 'settings.json wiring failed — nothing was changed.' }
 #   (arc-wire-settings writes UTF-8 WITHOUT a BOM: Node's JSON.parse rejects a BOM'd settings.json.)
-# (No Bash allow-rule: switching/restart use the zero-token arc:switch / arc:restart
-# sentinels caught by the UserPromptSubmit hook — no !-bash, no classifier. The
-# old /switch /restart slash commands that needed the allow-rule were removed.)
+# (No Bash allow-rule: switching/restart use the zero-token /arc-switch /
+# /arc-restart commands, caught by the UserPromptSubmit hook: no !-bash, no
+# classifier. The OLD /switch /restart slash commands were !-bash-backed and
+# needed the allow-rule; the NEW /arc-* commands are hook-eaten before any model
+# runs, so the deadlock they were removed for cannot recur. arc-wire-settings
+# also writes skillOverrides ("user-invocable-only") for every /arc-* stub, so
+# the / menu shows them while the model's skill listing never pays for them.)
 
 Write-Host ""
 Write-Host "Done. Next:" -ForegroundColor Green
-Write-Host "  arc setup    # choose your account style (single / two subs / sub+pool / pool only)"
+Write-Host "  arc setup    # choose your account style (single / two subs / sub+gateway / gateway only)"
 Write-Host "  arc doctor   # verify"
 Write-Host "  arc          # launch"

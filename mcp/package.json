@@ -1,11 +1,10 @@
 {
   "name": "arc-mcp",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "arc MCP server: manage switcher accounts + pool metrics",
+  "description": "arc MCP server: manage switcher accounts",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "pg": "^8.11.0"
+    "@modelcontextprotocol/sdk": "^1.0.0"
   }
 }
