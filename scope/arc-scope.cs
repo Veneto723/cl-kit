@@ -1032,6 +1032,53 @@ namespace ArcScope {
       return new Point(to.X - ux * t, to.Y - uy * t);
     }
 
+    // ---- CARDINAL-PORT edge anchoring (operator design, 2026-07-21) -------------------------------
+    // A card exposes four ports — the mid-points of its right/bottom/left/top edges. Every connection
+    // is assigned a DISTINCT port per card (the one nearest the neighbour's direction; conflicts are
+    // pushed to the next free port), and the TWO directions of a pair take two PARALLEL slots on that
+    // port's side. So no directed edge shares a start or end point with another, and a card's arrows
+    // spread across its sides instead of piling on one anchor — the operator's overlap fix. Replaces
+    // the old centre-to-centre boundary anchoring (Inset), which put every edge on the same point.
+    const double EDGE_SLOT = 6;    // half the gap between a pair's two directions, at the card
+    const double EDGE_BOW  = 16;   // how far the bezier bows; the two directions bow to opposite sides
+    static readonly double[] SIDE_ANGLE = { 0, 90, 180, 270 };   // R, B, L, T (screen y-down)
+    static double AngGap(double a, double b) { double d = Math.Abs(a - b) % 360; return d > 180 ? 360 - d : d; }
+    static double BestGap(double a) { double b = 1e9; foreach (var pa in SIDE_ANGLE) b = Math.Min(b, AngGap(a, pa)); return b; }
+    static Point PortPoint(Point c, double hw, double hh, int side) {
+      switch (side) {
+        case 0: return new Point(c.X + hw, c.Y);   // right-middle
+        case 1: return new Point(c.X, c.Y + hh);   // bottom-centre
+        case 2: return new Point(c.X - hw, c.Y);   // left-middle
+        default: return new Point(c.X, c.Y - hh);  // top-centre
+      }
+    }
+    // node -> (neighbour -> distinct side index). The most "decided" neighbour (closest to a cardinal
+    // direction) claims its side first, so a clear direction is never bumped; a node with >4 neighbours
+    // (rare) lets the extras share the nearest side rather than crash.
+    static Dictionary<string, Dictionary<string, int>> AssignSides(
+        List<string> nodes, Dictionary<string, Point> pos, Dictionary<string, HashSet<string>> nbr) {
+      var res = new Dictionary<string, Dictionary<string, int>>();
+      foreach (var n in nodes) {
+        if (!pos.ContainsKey(n) || !nbr.ContainsKey(n)) continue;
+        var ideal = new List<KeyValuePair<string, double>>();
+        foreach (var m in nbr[n]) {
+          if (!pos.ContainsKey(m)) continue;
+          double ang = Math.Atan2(pos[m].Y - pos[n].Y, pos[m].X - pos[n].X) * 180 / Math.PI; if (ang < 0) ang += 360;
+          ideal.Add(new KeyValuePair<string, double>(m, ang));
+        }
+        ideal.Sort((x, y) => BestGap(x.Value).CompareTo(BestGap(y.Value)));
+        var used = new HashSet<int>(); var map = new Dictionary<string, int>();
+        foreach (var kv in ideal) {
+          int best = -1; double bd = 1e9;
+          for (int p = 0; p < 4; p++) { if (used.Contains(p)) continue; double d = AngGap(kv.Value, SIDE_ANGLE[p]); if (d < bd) { bd = d; best = p; } }
+          if (best < 0) for (int p = 0; p < 4; p++) { double d = AngGap(kv.Value, SIDE_ANGLE[p]); if (d < bd) { bd = d; best = p; } }  // >4 neighbours: share
+          if (best >= 0) { used.Add(best); map[kv.Key] = best; }
+        }
+        res[n] = map;
+      }
+      return res;
+    }
+
     // A session on ANOTHER board. Deliberately unlike a node pill: DASHED border, no state dot
     // (arc knows nothing about its state from here — it lives in a different board's ledger), and
     // the board it belongs to shown dim ahead of its role, so "arc/code" reads as "code, over on arc"
@@ -1417,6 +1464,18 @@ namespace ArcScope {
       }
 
       // ---- live edges ----
+      // Assign each node's neighbours to distinct card sides ONCE, up front, so both directions of a
+      // pair agree on which side to use. Neighbours = every node this one shares an edge with (either
+      // direction). Outside pills are absent from `ring`, so an edge to one falls back to Inset below.
+      var nbr = new Dictionary<string, HashSet<string>>();
+      foreach (var key in groups.Keys) {
+        string[] kp = key.Split('|'); if (kp.Length != 2) continue;
+        if (!nbr.ContainsKey(kp[0])) nbr[kp[0]] = new HashSet<string>();
+        if (!nbr.ContainsKey(kp[1])) nbr[kp[1]] = new HashSet<string>();
+        nbr[kp[0]].Add(kp[1]); nbr[kp[1]].Add(kp[0]);
+      }
+      var sideOf = AssignSides(ring, pos, nbr);
+
       var chipRects = new List<Rect>();   // chips placed so far, so later ones can dodge them
       foreach (var key in order) {
         string[] pr = key.Split('|');
@@ -1426,9 +1485,22 @@ namespace ArcScope {
         // THE EDGE RUNS THROUGH ITS LABEL. The label is a node in the layout, so the wire is a
         // POLYLINE — from -> label -> to — and the label sits on the path by construction rather
         // than being squeezed in beside it afterwards.
-        // pill to pill — there is no chip in the middle to aim at any more
-        Point a = Inset(pos[pr[1]], pos[pr[0]], halfW[pr[0]], halfH[pr[0]]);
-        Point b2 = Inset(pos[pr[0]], pos[pr[1]], halfW[pr[1]], halfH[pr[1]]);
+        // pill to pill — anchored at distinct CARD PORTS, two parallel slots per pair (see AssignSides).
+        Point a, b2;
+        if (sideOf.ContainsKey(pr[0]) && sideOf[pr[0]].ContainsKey(pr[1])
+         && sideOf.ContainsKey(pr[1]) && sideOf[pr[1]].ContainsKey(pr[0])) {
+          Point pcI = PortPoint(pos[pr[0]], halfW[pr[0]], halfH[pr[0]], sideOf[pr[0]][pr[1]]);
+          Point pcJ = PortPoint(pos[pr[1]], halfW[pr[1]], halfH[pr[1]], sideOf[pr[1]][pr[0]]);
+          double cdx = pcJ.X - pcI.X, cdy = pcJ.Y - pcI.Y, clen = Math.Sqrt(cdx * cdx + cdy * cdy); if (clen < 0.001) clen = 1;
+          // slot: offset each end perpendicular to the chord. The reverse edge (pr swapped) flips the
+          // perpendicular, so the two directions land on OPPOSITE slots — nothing shared.
+          double sx = -cdy / clen * EDGE_SLOT, sy = cdx / clen * EDGE_SLOT;
+          a = new Point(pcI.X + sx, pcI.Y + sy);
+          b2 = new Point(pcJ.X + sx, pcJ.Y + sy);
+        } else {
+          a = Inset(pos[pr[1]], pos[pr[0]], halfW[pr[0]], halfH[pr[0]]);   // outside pill — no port assignment
+          b2 = Inset(pos[pr[0]], pos[pr[1]], halfW[pr[1]], halfH[pr[1]]);
+        }
         // Two-way pairs no longer need a hand-tuned perpendicular nudge: each direction owns its own
         // label node, and the ordering phase has already given them different positions.
         // A NOTE IN FLIGHT IS NOT AN ALARM. These arrows were ALERT red, which reads as "something is
@@ -1443,65 +1515,15 @@ namespace ArcScope {
         string col = alert ? ALERT : unseen ? ACCENT : WAIT;
         double thick = Math.Min(1.2 + list.Count * 0.35, 4.0);
         double opa = unseen ? 0.95 : 0.55;
-        // CURVES, NOT STRAIGHT LINES. Several straight edges converging on one pill arrive as a
-        // bundle of near-parallel spikes and the eye cannot separate them; a curve pulls each edge
-        // onto its own visible path, and its APEX is a naturally uncrowded anchor for the label
-        // (research #239 §5). The control point bends toward wherever the label was placed, so wire
-        // and chip agree instead of the chip sitting off to the side of a line it belongs to.
-        // SHORT EDGES BOW INSIDE, LONG ONES SWEEP OUTSIDE (Gansner & Koren, "Improved Circular
-        // Layouts"). A ring's failure mode is that every edge is a chord through the middle — which
-        // is both where the crossings pile up and where the labels want to sit. Routing the long ones
-        // around the exterior keeps the interior clear, and it is cheaper and better-looking than the
-        // dummy-chain I was considering for the same problem on the layered version.
-        int ri = ringIndex.ContainsKey(pr[0]) ? ringIndex[pr[0]] : 0;
-        int rj = ringIndex.ContainsKey(pr[1]) ? ringIndex[pr[1]] : 0;
-        int rd = Math.Abs(ri - rj); if (ring.Count > 0) rd = Math.Min(rd, ring.Count - rd);
-        // A CURVE MUST BE EARNED. Bending every edge made the drawing busier than the data: six
-        // curves where three straight arrows would have read instantly. A straight line is the
-        // clearest possible statement of "A to B", so it is the default and a curve is only used
-        // where a straight line would actually fail — it must dodge a pill, or separate a pair that
-        // talks both ways.
-        bool blocked = ChordHitsNode(a, b2, pr[0], pr[1], pos, halfW, halfH);
-        bool twoWay = groups.ContainsKey(pr[1] + "|" + pr[0]);
-        // A TWO-WAY PAIR GETS ONE STRAIGHT LINE AND ONE WIDE ARC, not two curves side by side.
-        // Bowing both directions by the same small amount put them a few pixels apart — two nearly
-        // parallel lines that read as one thick smudge, while the space just outside the ring sat
-        // empty. So one direction takes the direct route and the other swings out into that space.
-        // Which one bows is decided by name order, so it never changes between renders.
-        bool bowSide = twoWay && string.CompareOrdinal(pr[0], pr[1]) > 0;
-        bool exterior = (blocked && ring.Count >= 5 && rd >= 2) || bowSide;
-        bool curved = blocked || bowSide;
-        Point ctrl;
-        if (!curved) {
-          ctrl = new Point((a.X + b2.X) / 2, (a.Y + b2.Y) / 2);   // degenerate control = a straight line
-        } else {
-          double mdx = b2.X - a.X, mdy = b2.Y - a.Y, mlen = Math.Sqrt(mdx * mdx + mdy * mdy);
-          double bend = mlen > 0.001 ? Math.Min(26, mlen * 0.18) : 0;
-          if (exterior) {
-            // bow AWAY from the ring centre, by an amount that grows with how far apart the two
-            // sessions sit on the ring
-            double ccx = 0, ccy = 0; foreach (var kk in ring) { ccx += pos[kk].X; ccy += pos[kk].Y; }
-            ccx /= Math.Max(1, ring.Count); ccy /= Math.Max(1, ring.Count);
-            double mx0 = (a.X + b2.X) / 2, my0 = (a.Y + b2.Y) / 2;
-          double llenLocal = Math.Sqrt((b2.X-a.X)*(b2.X-a.X) + (b2.Y-a.Y)*(b2.Y-a.Y));
-            double ox0 = mx0 - ccx, oy0 = my0 - ccy, olen = Math.Sqrt(ox0 * ox0 + oy0 * oy0);
-            if (olen < 0.001) { ox0 = 0; oy0 = -1; olen = 1; }
-            // a two-way arc must clear its straight twin by a lot; a long-edge detour needs less
-            double push = bowSide ? Math.Max(52, llenLocal * 0.55) : 26 + rd * 16;
-            ctrl = new Point(mx0 + (ox0 / olen) * push, my0 + (oy0 / olen) * push);
-          } else {
-            ctrl = new Point((a.X + b2.X) / 2 - (mdy / Math.Max(mlen, 0.001)) * bend,
-                             (a.Y + b2.Y) / 2 + (mdx / Math.Max(mlen, 0.001)) * bend);
-          }
-        }
-        // IF THE BOW HITS A PILL, MIRROR IT. Reflecting the control point through the chord bends the
-        // curve the other way by the same amount, so it stays the same shape and simply goes round
-        // the other side. Only adopted when the mirror is genuinely clear — otherwise the original
-        // stands, because a swap that trades one collision for another is churn, not a fix.
-        if (curved && CurveHitsNode(a, ctrl, b2, pr[0], pr[1], pos, halfW, halfH)) {
-          var mirrored = new Point(a.X + b2.X - ctrl.X, a.Y + b2.Y - ctrl.Y);
-          if (!CurveHitsNode(a, mirrored, b2, pr[0], pr[1], pos, halfW, halfH)) ctrl = mirrored;
-        }
+        // BEZIER, BOWED PER DIRECTION. With the two directions already on separate slots (above), the
+        // curve only has to read as its own line and pair cleanly with its twin. Bow perpendicular to
+        // the chord: the reverse edge's chord is flipped, so its perpendicular flips too — the pair
+        // bows to OPPOSITE sides and forms a clean lens, no name-order special-case, no exterior/mirror
+        // machinery. The old ring-chord routing (blocked/exterior/mirror) is gone with the shared
+        // anchors that made it necessary.
+        double mdx = b2.X - a.X, mdy = b2.Y - a.Y, mlen = Math.Sqrt(mdx * mdx + mdy * mdy); if (mlen < 0.001) mlen = 1;
+        double bow = Math.Min(EDGE_BOW, mlen * 0.22);
+        Point ctrl = new Point((a.X + b2.X) / 2 + (-mdy / mlen) * bow, (a.Y + b2.Y) / 2 + (mdx / mlen) * bow);
         var fig = new PathFigure(); fig.StartPoint = a;
         fig.Segments.Add(new QuadraticBezierSegment(ctrl, b2, true));
         var geo = new PathGeometry(); geo.Figures.Add(fig);
