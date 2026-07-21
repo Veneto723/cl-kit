@@ -67,6 +67,22 @@ Parked work: worth doing, not urgent. Picked up when there is slack, not schedul
 
 ---
 
+## 3. Listener re-arm fires a false-positive "task complete" · **SMALL** · diagnosed, not built · owner: `code`
+
+**The gap (operator-observed, 2026-07-21):** a re-armed `arc join <role>` that DECLINES (a genuine listener is already alive — `arc-await.js:164-171`) exits 0, and the harness reports that as `Background command … completed (exit code 0)` — indistinguishable from a real note-wake. `arc join` returns 0 on FIVE outcomes (note landed, already-armed decline, superseded, orphaned, board-moved) and only the first delivered anything, so a bare "completed exit 0" over-signals "the listening task is done" when nothing was delivered.
+
+**Root cause:** a redundant re-arm gets LAUNCHED at all. The Stop-hook nudge (`arc-stop-hook.js:117` / `:309`, `isWaitingAs …{genuine}`) and `arc join`'s own decline (`arc-await.js:164`, `waitingFor …{genuine}`) each run a FRESH procStart liveness probe in a different process at a different instant, and they can momentarily disagree — so the hook says "no listener, arm one" while a listener is in fact live, the model complies, and the second `arc join` immediately declines. Observed live this session (hook nagged; `arc join` found pid 3512/19492 already alive).
+
+**Two levers:**
+1. **Fix at the source** — make the hook's re-arm nudge and `arc join`'s decline share ONE consistent liveness verdict, so the redundant arm is never launched. Touches the listener / stop-hook layer (a data-integrity path → needs an `audit` pass).
+2. **Behavioral** — the model simply stops re-arming when a listener is already live (arm-once; the nag is the signal, not a command). Already the documented discipline; under-followed.
+
+**Undecided / for discussion when `audit` returns:** whether lever 1 is worth the risk on the listener layer, or lever 2 (discipline) is enough. Recommendation on record: do NOT touch `arc-await.js` / `arc-stop-hook.js` while the #274 full-tree audit is in flight on a frozen tree — that is the exact "tree moved mid-audit" failure audit already flagged (#271/#273). Fold lever 1 into the batch AFTER #274 clears.
+
+**Owner of the next move:** `code`, once #274 is verdicted and the human weighs lever 1 vs lever 2.
+
+---
+
 ## Parked elsewhere — pointers, not entries
 
 These are live threads owned by other chairs or blocked on a call. They are **not** roadmap items; recorded here only so this file is not mistaken for the whole picture.
