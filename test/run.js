@@ -126,6 +126,45 @@ try {
   ok('accountEnv strips gateway vars for oauth', oenv.ANTHROPIC_API_KEY === undefined);
   ok('claudeBin resolves to a string', typeof C.claudeBin(cfg) === 'string' && C.claudeBin(cfg).length > 0);
 
+  // SECRET-DIR HARDENING (Orca gold-6): fs mode is inert on Windows, so the NTFS ACL is the only
+  // real boundary for the per-profile oauth credential. The ARGS are the security boundary — a
+  // missing /inheritance:r leaves the broad grant, and Administrators MUST be a SID (localized name
+  // fails on non-English Windows). These assert the exact icacls the hardener runs.
+  {
+    const calls = C.secureDirArgs('C:/x/arc-profiles', 'DOM\\user');
+    const args = calls.flat();
+    ok('secureDirArgs REMOVES inherited ACEs (/inheritance:r) — without it the broad grant survives',
+      args.includes('/inheritance:r'));
+    ok('...RESETS unrelated explicit ACEs and SETS ownership before granting access',
+      calls.some((a) => a[1] === '/reset') && calls.some((a) => a[1] === '/setowner' && a[2] === 'DOM\\user'));
+    ok('...names Administrators by SID *S-1-5-32-544 (language-independent), not the localized name',
+      args.includes('*S-1-5-32-544:(OI)(CI)F'));
+    ok('...grants exactly owner + SYSTEM + Administrators in one replacement operation',
+      args.includes('DOM\\user:(OI)(CI)F') && args.includes('SYSTEM:(OI)(CI)F')
+      && args.filter((a) => a === '/grant:r').length === 1);
+    ok('...targets the given directory in every icacls call', calls.every((a) => a[0] === 'C:/x/arc-profiles'));
+
+    // secureFileArgs closes the EXISTING-credential-file exposure (audit #289 blocker 2): a broadly
+    // readable .credentials.json keeps its own explicit ACL unless the FILE itself is reset. Same
+    // exact-boundary sequence as the dir, but plain F (a file has no OI/CI container-inherit flags).
+    const fcalls = C.secureFileArgs('C:/x/prof/.credentials.json', 'DOM\\user');
+    const fargs = fcalls.flat();
+    ok('secureFileArgs RESETS the file\'s own DACL + sets owner before granting (existing broad ACE cannot survive)',
+      fcalls.some((a) => a[1] === '/setowner' && a[2] === 'DOM\\user') && fcalls.some((a) => a[1] === '/reset')
+      && fargs.includes('/inheritance:r'));
+    ok('...grants exactly owner + SYSTEM + Administrators-by-SID with plain F (no OI/CI on a file)',
+      fargs.includes('DOM\\user:F') && fargs.includes('SYSTEM:F') && fargs.includes('*S-1-5-32-544:F')
+      && fargs.filter((a) => a === '/grant:r').length === 1
+      && !fargs.some((a) => /\(OI\)\(CI\)/.test(a)));
+    ok('...targets the given file in every icacls call', fcalls.every((a) => a[0] === 'C:/x/prof/.credentials.json'));
+
+    // idempotent + best-effort: a second call on the same path is a no-op, and it never throws
+    let threw = false;
+    try { C.secureDir('C:/x/definitely-not-a-real-dir-xyz'); C.secureDir('C:/x/definitely-not-a-real-dir-xyz'); }
+    catch { threw = true; }
+    ok('secureDir is best-effort (never throws) and path-cached', threw === false);
+  }
+
   // ---- per-account env: a gateway serving a FOREIGN model needs harness accommodations,
   // and those must not survive a switch back to a normal account.
   const gwx = { id: 'gwx', type: 'api', baseUrl: 'https://x.example.com', apiKeyEnv: 'ARC_TEST_KEY',
@@ -2374,6 +2413,31 @@ try {
     try { fs.unlinkSync(path.join(cache, `arc-role-${RS}.json`)); } catch {}
   }
 
+  // Every in-runner SAME-CONVERSATION relaunch must schedule re-arm centrally (audit #271 H1). This
+  // is a behavioral table over the exported predicate, not a source scan: each of the six same-chat
+  // reasons re-arms; restart (child re-exec reads the marker), delete (fresh chat), and a normal exit
+  // do not. reArmPromptOnRespawn itself (role/marker/user-managed guards) is exercised above.
+  // delete IS a re-arm reason (audit #289 blocker 1): it starts a fresh conversation but the SAME
+  // session reasserts its role, so it would otherwise relaunch DEAF. Only restart is excluded (its
+  // re-exec'd child computes re-arm from the surviving marker).
+  for (const reason of ['addaccount', 'pick', 'mode', 'rename', 'switch', 'effort', 'delete']) {
+    ok(`re-arm: a ${reason} relaunch leaves this session a reachable role-holder and re-arms the listener`,
+      RUN.reArmsAfterReason(reason) === true);
+  }
+  for (const reason of ['restart', 'exit', undefined, 'nonsense']) {
+    ok(`re-arm: a ${reason} relaunch does NOT re-arm (re-exec child handles it / no relaunch)`,
+      RUN.reArmsAfterReason(reason) === false);
+  }
+  {
+    // The birth prompt is kept ONLY on a newborn's genuine first launch, so an in-runner switch
+    // strips it and the re-arm is the SOLE `/arc-role` positional (audit #265, claim 2 — closes the
+    // untested two-positional edge at its source). A future edit that reverts the strip condition to
+    // bare `respawning ?` re-manufactures the duplicate; assert the convStarted OR stays.
+    const rs = fs.readFileSync(path.join(SRC, 'arc-runner.js'), 'utf8');
+    ok('re-arm: the birth prompt is stripped on any non-first launch (respawning OR convStarted OR pendingReArm)',
+      /const a = \(respawning \|\| convStarted \|\| pendingReArm\) \? stripConvArgs\(passArgs\) : stripConvArgs\(passArgs, \{ keepPrompt: true \}\)/.test(rs));
+  }
+
   fs.rmSync(frepo, { recursive: true, force: true });
   for (const f of [`arc-state-${FS_}.json`, `arc-active-${FS_}.json`, `arc-role-${FS_}.json`]) {
     try { fs.unlinkSync(path.join(cache, f)); } catch {}
@@ -3237,6 +3301,54 @@ try {
   const grp = st2.hooks.PreToolUse.filter((g) => g.matcher === 'Bash|PowerShell');
   ok('...and it merges into its own matcher group, idempotently',
     grp.length === 1 && grp[0].hooks.length === 1);
+
+  // MARK-AND-RE-ADD, not add-if-absent: arc must be able to UPDATE its own hook command on an
+  // already-installed machine. The old model matched the existing command substring and SKIPPED,
+  // so a changed invocation (a new flag) never reached a deployed box — the statusLine "adopt our
+  // own" bug, one layer over (research #250 GOLD 2). Marker = the script filename, stable across
+  // command changes.
+  {
+    const s = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node arc-stop-hook.js' }] }] } };
+    W2.mergeHooks(s, [{ event: 'Stop', script: 'arc-stop-hook.js', command: 'node arc-stop-hook.js --new' }]);
+    const cmds = s.hooks.Stop.flatMap((g) => g.hooks.map((h) => h.command));
+    ok('mergeHooks UPDATES its own hook when the command changed (not add-if-absent)',
+      cmds.length === 1 && cmds[0] === 'node arc-stop-hook.js --new');
+
+    // a USER's own hook in the same event is NEVER stripped — it carries no arc marker
+    const s2 = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'my-own.sh' }, { type: 'command', command: 'node arc-stop-hook.js' }] }] } };
+    W2.mergeHooks(s2, [{ event: 'Stop', script: 'arc-stop-hook.js', command: 'node arc-stop-hook.js --v2' }]);
+    const survivors = s2.hooks.Stop.flatMap((g) => g.hooks.map((h) => h.command));
+    ok('...while a USER hook in the same event survives untouched',
+      survivors.includes('my-own.sh') && survivors.includes('node arc-stop-hook.js --v2')
+      && !survivors.includes('node arc-stop-hook.js'));
+
+    // OWNERSHIP IS THE SCRIPT ARGV PATH, NOT A SUBSTRING (audit #271 M3). A user hook whose script is
+    // a DIFFERENT file that merely CONTAINS arc's name, or whose LATER arg mentions arc's script, must
+    // survive an install — the old `command.includes(marker)` deleted both.
+    const s3 = { hooks: { Stop: [{ hooks: [
+      { type: 'command', command: 'node C:/my-tools/not-arc-stop-hook.js' },
+      { type: 'command', command: 'node C:/mine/wrap.js --after arc-stop-hook.js' },
+      { type: 'command', command: 'node "C:/.claude/scripts/arc-stop-hook.js"' },   // OURS (real deployed shape)
+    ] }] } };
+    W2.mergeHooks(s3, [{ event: 'Stop', script: 'arc-stop-hook.js', command: 'node "C:/.claude/scripts/arc-stop-hook.js"' }]);
+    const surv3 = s3.hooks.Stop.flatMap((g) => g.hooks.map((h) => h.command));
+    ok('...and a foreign script whose NAME contains arc\'s, or an arg that MENTIONS it, is NOT deleted',
+      surv3.includes('node C:/my-tools/not-arc-stop-hook.js')
+      && surv3.includes('node C:/mine/wrap.js --after arc-stop-hook.js')
+      && surv3.filter((c) => c === 'node "C:/.claude/scripts/arc-stop-hook.js"').length === 1);
+    ok('ownsHookCommand matches arc\'s own script argv path, not an arbitrary substring',
+      W2.ownsHookCommand('node "C:/x/arc-stop-hook.js"', 'arc-stop-hook.js') === true
+      && W2.ownsHookCommand('node C:/my-tools/not-arc-stop-hook.js', 'arc-stop-hook.js') === false
+      && W2.ownsHookCommand('node wrap.js --after arc-stop-hook.js', 'arc-stop-hook.js') === false);
+    // audit #289 blocker 6 — the parser must handle node flags/wrappers and reject foreign execs:
+    ok('...OWNS a stale arc hook invoked with node flags (--no-warnings / --require=…) — false negative closed',
+      W2.ownsHookCommand('node --no-warnings C:/old/arc-stop-hook.js', 'arc-stop-hook.js') === true
+      && W2.ownsHookCommand('node --require=C:/x/preload.js C:/old/arc-stop-hook.js', 'arc-stop-hook.js') === true);
+    ok('...does NOT own a FOREIGN executable that merely ends in "node" (badnode.exe) — false positive closed',
+      W2.ownsHookCommand('C:/mine/badnode.exe C:/old/arc-stop-hook.js', 'arc-stop-hook.js') === false);
+    ok('...does NOT claim a cmd-wrapped user hook (arc never installs that shape; keep it)',
+      W2.ownsHookCommand('cmd /c node C:/old/arc-stop-hook.js', 'arc-stop-hook.js') === false);
+  }
 
   // The stance TEXT must teach the same rule the gate enforces, or the agent learns one thing
   // and the machine does another.
@@ -4592,6 +4704,88 @@ try {
   ok('a LIVE holder is never adopted away (only a vacant claim is)',
     R2.vacantClaimForConv(board2, CONV) === null && R2.roleClaim(board2, 'android').sessionId === 'new');
 
+  // AMBIGUITY = CORRUPTION, DO NOT GUESS. A conversation owns exactly one role; two VACANT claims
+  // sharing a convId is the whalephone bug (a uiux session found both claim-quiz and claim-uiux
+  // under its conversation and was silently adopted into quiz, the readdir-first). vacantClaimForConv
+  // must refuse rather than hand over a chair that might not be the session's.
+  {
+    const arepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ambi-'));
+    spawnSync('git', ['init', '-q'], { cwd: arepo });
+    const ab = R2.resolveBoard(arepo); R2.ensureBoard(ab);
+    const shared = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    // both vacant (dead pid), both carrying the SAME conversation — the corrupt state
+    R2.claimRole(ab, 'quiz', DEAD_PID, 'q-sess', shared);
+    R2.claimRole(ab, 'uiux', DEAD_PID, 'u-sess', shared);
+    ok('two VACANT claims sharing a convId → vacantClaimForConv REFUSES (no silent mis-adoption)',
+      R2.vacantClaimForConv(ab, shared) === null);
+    // and a session resuming that conversation is NOT dropped into either chair
+    writeJSON(path.join(cache, 'arc-state-resumer.json'), { pid: process.pid, cwd: arepo, convId: shared });
+    const r = F.refreshRole('resumer', process.pid, arepo, shared);
+    ok('...so a resuming session adopts NEITHER — it claims fresh via its charter instead',
+      r === null || (r.role !== 'quiz' && r.role !== 'uiux') || r.adopted !== true);
+    // the single-match case still works — this must not over-refuse
+    R2.claimRole(ab, 'quiz', process.pid, 'q-live', shared);   // quiz now LIVE, so only uiux is vacant
+    ok('...but exactly ONE vacant match still adopts cleanly (uiux, quiz now live)',
+      (R2.vacantClaimForConv(ab, shared) || {}).role === 'uiux');
+    try { fs.unlinkSync(path.join(cache, 'arc-state-resumer.json')); } catch {}
+  }
+
+  // M4 (audit #271): the FILENAME is the authority for which chair a claim file is. A corrupt payload
+  // whose role disagrees with its filename must NOT rename the chair during adoption — else a
+  // hand-tampered/torn claim-quiz.json carrying role:"uiux" adopts uiux, the cross-role boundary the
+  // exactly-one-match guard exists to hold.
+  {
+    const mrepo = fs.mkdtempSync(path.join(os.tmpdir(), 'mrole-'));
+    spawnSync('git', ['init', '-q'], { cwd: mrepo });
+    const mb = R2.resolveBoard(mrepo); R2.ensureBoard(mb);
+    const cv = 'ffffffff-1111-2222-3333-444444444444';
+    // ONE physical file (claim-quiz.json) whose PAYLOAD lies about its role
+    fs.writeFileSync(path.join(mb.planDir, 'claim-quiz.json'),
+      JSON.stringify({ role: 'uiux', pid: DEAD_PID, sessionId: 'x', convId: cv, at: 7000 }));
+    const got = R2.vacantClaimForConv(mb, cv);
+    ok('vacantClaimForConv trusts the FILENAME role, never a mismatched payload.role (no cross-role adoption)',
+      got === null || got.role === 'quiz');
+    ok('...and it never hands back the impostor payload role', !got || got.role !== 'uiux');
+  }
+
+  // M5 (audit #271): current + legacy files for ONE logical role are migration aliases, not ambiguity.
+  // A crash mid-migration leaves claim-uiux + lease-uiux with the same role/convId; that is ONE chair
+  // and must still adopt, not be refused as if two different roles collided.
+  {
+    const lrepo = fs.mkdtempSync(path.join(os.tmpdir(), 'lrole-'));
+    spawnSync('git', ['init', '-q'], { cwd: lrepo });
+    const lb = R2.resolveBoard(lrepo); R2.ensureBoard(lb);
+    const cv = 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb';
+    const rec = JSON.stringify({ role: 'uiux', pid: DEAD_PID, sessionId: 'u', convId: cv, at: 7000 });
+    fs.writeFileSync(path.join(lb.planDir, 'claim-uiux.json'), rec);
+    fs.writeFileSync(path.join(lb.planDir, 'lease-uiux.json'), rec);   // the migration crash window
+    const got = R2.vacantClaimForConv(lb, cv);
+    ok('current + legacy files for ONE logical role adopt cleanly (not a false ambiguity refusal)',
+      !!got && got.role === 'uiux');
+  }
+
+  // M5 DIVERGENT (audit #289 blocker 4): current claim-uiux belongs to conversation A; a stale vacant
+  // lease-uiux names a DIFFERENT conversation B. Resuming B must NOT adopt uiux — the authoritative
+  // record for uiux is the CURRENT claim (A), which does not match B. The old order filtered the
+  // current claim out first, then "preferred claim" within a set that no longer held it, adopting the
+  // stale legacy chair and overwriting the live one.
+  {
+    const drepo = fs.mkdtempSync(path.join(os.tmpdir(), 'drole-'));
+    spawnSync('git', ['init', '-q'], { cwd: drepo });
+    const dbd = R2.resolveBoard(drepo); R2.ensureBoard(dbd);
+    const convA = 'aaaaaaaa-0000-0000-0000-000000000000';
+    const convB = 'bbbbbbbb-0000-0000-0000-000000000000';
+    fs.writeFileSync(path.join(dbd.planDir, 'claim-uiux.json'),
+      JSON.stringify({ role: 'uiux', pid: DEAD_PID, sessionId: 'a', convId: convA, at: 9000 }));   // CURRENT, conv A
+    fs.writeFileSync(path.join(dbd.planDir, 'lease-uiux.json'),
+      JSON.stringify({ role: 'uiux', pid: DEAD_PID, sessionId: 'b', convId: convB, at: 7000 }));    // STALE legacy, conv B
+    ok('a stale legacy alias naming a DIFFERENT conversation cannot steal the role from the current claim',
+      R2.vacantClaimForConv(dbd, convB) === null);
+    // and resuming the CURRENT conversation A still adopts uiux cleanly
+    ok('...while the current claim\'s own conversation still adopts it',
+      (R2.vacantClaimForConv(dbd, convA) || {}).role === 'uiux');
+  }
+
   // ---- the claim RACE: check-then-write let two sessions both "win" ------------------
   // claimRole now does check+write under an atomic lock, so a second live session is refused.
   mkSession('racer', process.pid);
@@ -5214,19 +5408,29 @@ try {
     ok('...so the userManagesConv gate (which tests EXACT tokens) actually sees it',
       a2.includes('--resume') && RUNNER.explicitConvId(a2) === CONV);
 
-    // audit #235 D: the role name is interpolated into `claim-${role}.json` — an unvalidated
-    // traversal escapes the board dir and reads an arbitrary local .json.
-    for (const evil of ['../../../evil', '../../../../Users/yanyu/.claude/arc-config', 'Bad', 'x'.repeat(40)]) {
-      const av = ['--resume', evil];
+    // audit #235 D still holds: a value outside the role grammar must NEVER touch a claim path.
+    // But `--resume` belongs to Claude Code too — uppercase, spaces, and other names may be native
+    // `/rename` titles, so arc leaves them for Claude rather than falsely rejecting them as roles.
+    for (const nativeName of ['../../../evil', '../../../../Users/yanyu/.claude/arc-config', 'My Session', 'x'.repeat(40)]) {
+      const av = ['--resume', nativeName];
       const rv = RUNNER.resolveResumeRole(av, rrepo);
-      ok('...a role name that could not be CLAIMED is refused before it reaches a path: ' + evil.slice(0, 22),
-        !!rv && rv.ok === false && /invalid role/.test(rv.message) && av[1] === evil);
+      ok('...a non-role value stays Claude Code\'s native session name without touching a claim path: ' + nativeName.slice(0, 22),
+        !!rv && rv.ok === true && rv.native === true && av[1] === nativeName);
     }
 
-    // the three things it must NOT touch
+    // a SEPARATE-token UUID is already on the working path (explicitConvId + the user-managed gate
+    // both read `--resume`), so it is left exactly alone.
     const a3 = ['--resume', CONV];
-    ok('...a UUID is left exactly alone (no lookup, no rewrite)',
+    ok('...a separate-token UUID is left exactly alone (no lookup, no rewrite)',
       RUNNER.resolveResumeRole(a3, rrepo) === null && a3[1] === CONV);
+    // ...but an INLINE `--resume=<uuid>` MUST normalize to two tokens, or the user-managed gate and
+    // the duplicate guard never see it and arc mints a random id alongside claude's real resume
+    // (audit #289 blocker 3).
+    const au = ['--resume=' + CONV];
+    const ru = RUNNER.resolveResumeRole(au, rrepo);
+    ok('...an inline --resume=<uuid> NORMALISES to the two-token form (gate + duplicate guard see it)',
+      !!ru && ru.ok === true && au.length === 2 && au[0] === '--resume' && au[1] === CONV
+      && RUNNER.explicitConvId(au) === CONV);
     const a4 = ['--resume'];
     ok('...bare `--resume` stays the interactive picker',
       RUNNER.resolveResumeRole(a4, rrepo) === null && a4.length === 1);
@@ -5234,10 +5438,16 @@ try {
     ok('...--session-id is NOT translated (it assigns a new id, it does not reopen one)',
       RUNNER.resolveResumeRole(a5, rrepo) === null && a5[1] === 'code');
 
-    // refusals — each names the real reason instead of guessing
-    const r6 = RUNNER.resolveResumeRole(['--resume', 'nosuch'], rrepo);
-    ok('...an unknown role REFUSES and lists the chairs that do exist',
-      !!r6 && r6.ok === false && /no role "nosuch"/.test(r6.message) && /code/.test(r6.message));
+    // A valid-looking name with no exact chair is still Claude Code's namespace. This is the solo
+    // project case: `arc --resume scout` must reach Claude even when this board has no `scout` role.
+    const nr = ['--resume', 'scout'];
+    const r6 = RUNNER.resolveResumeRole(nr, rrepo);
+    ok('...a name with no exact board chair falls through to Claude Code (solo-session projects work)',
+      !!r6 && r6.ok === true && r6.native === true && nr[1] === 'scout');
+    const ni = ['--resume=scout'];
+    const ri = RUNNER.resolveResumeRole(ni, rrepo);
+    ok('...a native --resume=<name> normalises to two tokens so arc sees the user-managed resume',
+      !!ri && ri.native === true && ni.length === 2 && ni[0] === '--resume' && ni[1] === 'scout');
 
     fs.writeFileSync(path.join(rboard.planDir, 'claim-live.json'),
       JSON.stringify({ role: 'live', pid: process.pid, sessionId: 'l-sess', convId: CONV, at: Date.now() }));
@@ -5598,6 +5808,86 @@ try {
   const cr = spawnSync(process.execPath, [scriptFile], { encoding: 'utf8', timeout: 15000 });
   ok('checkForUpdate: available / cache-freshness / stale-refetch / offline / throw-swallow / decline (async child)',
     cr.status === 0, (cr.stdout || '') + (cr.stderr || ''));
+
+  // downloadAndInstall must FAIL SAFE — return {ok:false}, never throw, never half-install — when the
+  // download cannot happen. A bogus loopback url refuses immediately, so this stays fast and offline.
+  // (The re-nag bug was a FAILED update leaving no memory; the contract that makes the fix safe is
+  // that a failed update reports ok:false loudly rather than throwing or claiming success.)
+  {
+    const r = U.downloadAndInstall('v9.9.9', 'http://127.0.0.1:9/nope.tgz', { quiet: true, log: () => {} });
+    ok('downloadAndInstall fails safe on an unreachable tarball (ok:false, no throw, no install)',
+      r && r.ok === false && typeof r.message === 'string');
+  }
+  ok('a null tarball is refused before any work', U.downloadAndInstall('v9.9.9', null).ok === false);
+
+  // liveOthers feeds a FORCE-KILL, so a wrong pid is unrecoverable. It must prove GENUINE identity
+  // (started before its marker), never target this process (by session id AND by pid, even through an
+  // alias file), and reject a recycled pid whose start post-dates the marker (audit #271 H2).
+  {
+    const cp = require('child_process');
+    const cache = path.join(CLAUDE, 'cache'); fs.mkdirSync(cache, { recursive: true });
+    const meSess = 'upd-self-' + process.pid, aliasSess = 'upd-alias-' + process.pid;
+    const peerSess = 'upd-peer-' + process.pid, deadSess = 'upd-dead-' + process.pid, recycSess = 'upd-recyc-' + process.pid;
+    const w = (s, pid, cwd) => fs.writeFileSync(path.join(cache, `arc-state-${s}.json`), JSON.stringify({ pid, cwd }));
+    // a REAL live process distinct from this one, so "genuine peer" is a true live pid, not our own
+    const kid = cp.spawn(process.execPath, ['-e', 'setTimeout(function(){}, 60000)'], { stdio: 'ignore', detached: true });
+    try { kid.unref(); } catch {}
+    w(meSess, process.pid, 'E:/arc');            // MY session id — excluded by name
+    w(aliasSess, process.pid, 'E:/arc');         // a stray file carrying MY pid — excluded by pid
+    w(peerSess, kid.pid, 'E:/whalephone');       // a genuine live peer (marker written just after it started)
+    w(deadSess, DEAD_PID, 'E:/x');               // dead
+    w(recycSess, kid.pid, 'E:/y');               // same live pid, but marker predates its start → looks recycled
+    const old = new Date(Date.now() - 3600_000);
+    try { fs.utimesSync(path.join(cache, `arc-state-${recycSess}.json`), old, old); } catch {}
+
+    // TWO feed pidfiles on different ports: both genuine feeds must be reported, not collapsed to one
+    // scalar (audit #289 finding 7). Seed them keyed by the live kid pid (genuine), distinct ports.
+    fs.writeFileSync(path.join(cache, 'arc-feed-8790.json'), JSON.stringify({ pid: kid.pid, port: 8790, started: Date.now() }));
+    fs.writeFileSync(path.join(cache, 'arc-feed-8791.json'), JSON.stringify({ pid: kid.pid, port: 8791, started: Date.now() }));
+
+    const o = U.liveOthers(meSess);
+    const sessions = o.sessions.map((s) => s.session);
+    ok('liveOthers EXCLUDES this session by id (never kills the upgrader itself)', !sessions.includes(meSess));
+    ok('...and EXCLUDES any file carrying MY pid, even under another session id (alias self-kill closed)',
+      !sessions.includes(aliasSess));
+    ok('...and DROPS a dead-pid session', !sessions.includes(deadSess));
+    ok('...and models feeds as an ARRAY (no scalar collapse), not a single .feed', Array.isArray(o.feeds) && o.feed === undefined);
+    if (process.platform === 'win32') {
+      // the procStart oracle needs the OS start time (PowerShell on Windows; arc is Windows-only)
+      ok('...INCLUDES a GENUINE live peer (started before its marker)', sessions.includes(peerSess));
+      ok('...but REJECTS a recycled-looking pid whose start post-dates the marker', !sessions.includes(recycSess));
+      ok('...reports BOTH genuine feeds on distinct ports (multi-feed does not collapse)',
+        o.feeds.length === 2 && o.feeds.map((f) => String(f.port)).sort().join() === '8790,8791');
+    } else {
+      ok('...off-Windows the start oracle is unavailable, so it fails CLOSED (nothing targeted)',
+        sessions.length === 0 && o.feeds.length === 0);
+    }
+    try { process.kill(kid.pid); } catch {}
+    for (const s of [meSess, aliasSess, peerSess, deadSess, recycSess]) { try { fs.unlinkSync(path.join(cache, `arc-state-${s}.json`)); } catch {} }
+    for (const p of ['8790', '8791']) { try { fs.unlinkSync(path.join(cache, `arc-feed-${p}.json`)); } catch {} }
+  }
+
+  // Scope identity: arc kills a scope process only when its path matches arc's OWN build layout
+  // (`…/scope/arc-scope.exe`); a foreign same-named exe is never targeted (audit #289 blocker 5).
+  ok('isArcScopePath trusts arc\'s scope/ build layout and rejects a foreign same-named exe',
+    U.isArcScopePath('E:/arc/scope/arc-scope.exe') === true
+    && U.isArcScopePath('E:\\arc\\scope\\arc-scope.exe') === true
+    && U.isArcScopePath('C:/tmp/arc-scope.exe') === false
+    && U.isArcScopePath('C:/scope-tools/arc-scope.exe') === false
+    && U.isArcScopePath(null) === false);
+
+  // killOthers reports honestly AND dedupes targets (audit #289 findings 8/9): a pid in two classes is
+  // killed once, never once-then-raced-as-a-failure. A dead pid cannot be killed → it lands in failed.
+  {
+    const res = U.killOthers({ sessions: [{ pid: DEAD_PID }], feeds: [], scope: [] });
+    ok('killOthers returns {killed, failed} and counts an un-closable pid as FAILED, not closed',
+      res && res.killed === 0 && res.failed === 1);
+    const dup = U.killOthers({ sessions: [{ pid: DEAD_PID }], feeds: [{ pid: DEAD_PID }], scope: [{ pid: DEAD_PID }] });
+    ok('...and a pid repeated across classes is deduped to ONE target (no false extra failure)',
+      dup.killed + dup.failed === 1);
+    const empty = U.killOthers({ sessions: [], feeds: [], scope: [] });
+    ok('...and nothing to close is {killed:0, failed:0}', empty.killed === 0 && empty.failed === 0);
+  }
 
   // doRelease preconditions — a release must be a clean, correct, pushed point. Dry-run: never pushes.
   const mkrepo = (remote, ver) => {

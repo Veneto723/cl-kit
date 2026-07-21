@@ -257,8 +257,87 @@ function accountEnv(acc, base) {
   return env;
 }
 
+// ---- Windows secret-dir hardening (research/Orca gold-6) --------------------------------------
+// A file's MODE BITS ARE INERT ON WINDOWS — `writeFileSync({ mode: 0o600 })` does nothing there, so
+// the NTFS directory ACL is the ONLY real boundary for an on-disk secret. Verified the exposure on
+// the operator's box: ~/.claude/arc-profiles was readable by CodexSandboxUsers + a second user
+// account (a Codex-sandbox broadening of the default profile ACL), and arc did nothing to restrict
+// it — it inherited whatever the parent granted. The gateway keys are safe regardless (DPAPI,
+// CurrentUser scope), but the per-profile oauth .credentials.json is only as protected as this dir.
+const _securedDirs = new Set();
+
+// The icacls argv sequence to establish an EXACT boundary. `/inheritance:r` alone removes inherited
+// ACEs but leaves unrelated EXPLICIT grants behind; `/grant:r` only replaces the named trustee. Reset
+// first (discard every explicit ACE), set ownership to the current user, then remove inheritance and
+// grant exactly user + SYSTEM + builtin Administrators (SID is language-independent).
+function secureDirArgs(dir, user) {
+  return [
+    [dir, '/setowner', user],
+    [dir, '/reset'],
+    [dir, '/inheritance:r'],
+    [dir, '/grant:r', `${user}:(OI)(CI)F`, 'SYSTEM:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'],
+  ];
+}
+// The same exact-boundary sequence for a FILE (no OI/CI — those are container-inherit flags). Locking
+// the DIRECTORY does not fix an EXISTING credential file that already carries a broad EXPLICIT ACE:
+// the directory's inheritable grants govern NEW descendants, not a file whose DACL was set before the
+// dir was locked, so `.credentials.json` could stay world-readable (audit #289 blocker 2). Reset the
+// file's own DACL and re-grant exactly the three principals.
+function secureFileArgs(file, user) {
+  return [
+    [file, '/setowner', user],
+    [file, '/reset'],
+    [file, '/inheritance:r'],
+    [file, '/grant:r', `${user}:F`, 'SYSTEM:F', '*S-1-5-32-544:F'],
+  ];
+}
+function currentUser() {
+  const d = process.env.USERDOMAIN, u = process.env.USERNAME;
+  return d && u ? `${d}\\${u}` : (u || null);
+}
+
+// Restrict a secret-holding directory to an exact user/SYSTEM/Administrators boundary. PATH-CACHED
+// only AFTER success: a failed attempt must remain retryable in this process. Callers about to write
+// a plaintext credential MUST treat false as a hard stop; DPAPI-only callers may choose otherwise.
+// SYNCHRONOUS on purpose — establish the boundary before any credential inherits it.
+function secureDir(dir) {
+  if (!dir) return false;
+  if (_securedDirs.has(dir)) return true;
+  try {
+    if (process.platform === 'win32') {
+      const user = currentUser(); if (!user) return false;
+      for (const args of secureDirArgs(dir, user)) {
+        execFileSync('icacls', args, { stdio: 'ignore', timeout: 15000 });
+      }
+    } else {
+      fs.chmodSync(dir, 0o700);
+    }
+    _securedDirs.add(dir);
+    return true;
+  } catch { return false; }
+}
+
+// Lock an existing secret FILE to the exact three-principal boundary. NOT path-cached: a credential
+// file can be rewritten (a fresh /login) after being secured, and re-securing a rewritten file is
+// cheap and correct. Callers about to trust a plaintext credential MUST treat false as a hard stop.
+function secureFile(file) {
+  if (!file) return false;
+  try {
+    if (process.platform === 'win32') {
+      const user = currentUser(); if (!user) return false;
+      for (const args of secureFileArgs(file, user)) {
+        execFileSync('icacls', args, { stdio: 'ignore', timeout: 15000 });
+      }
+    } else {
+      fs.chmodSync(file, 0o600);
+    }
+    return true;
+  } catch { return false; }
+}
+
 module.exports = {
   CLAUDE_DIR, CONFIG_PATH, CACHE_DIR, CRED_PATH, SCRIPTS_DIR,
   loadConfig, findAccount, nextAccount, resolveApiKey, claudeBin, accountEnv, expandHome,
   dpapiEncrypt, dpapiDecrypt, storeApiKey, envKeyAllowed,
+  secureDir, secureDirArgs, secureFile, secureFileArgs,
 };

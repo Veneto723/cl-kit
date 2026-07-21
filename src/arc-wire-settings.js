@@ -39,27 +39,77 @@ function writeSettings(settingsPath, settings, raw) {
 // substring used to detect an already-present entry — pass a stable script path so a
 // re-install with a moved scripts dir still dedups. New entries append into the FIRST
 // matcher group of the event (co-locating with the user's matchers). Returns #added.
+// STRIP OUR OWN PRIOR VERSION, THEN RE-ADD — not add-if-absent.
+// The old model skipped an entry whenever a hook already matched its command substring, so it could
+// ADD a missing hook but never UPDATE one whose command changed: the moment arc altered a hook's
+// invocation (a new flag, a changed arg), every already-installed machine kept the STALE command
+// forever and the installer still said "Done". That is the exact statusLine "adopt our own" bug, one
+// layer over (research #250 GOLD 2, confirmed against a live test). The fix, Orca's pattern: each
+// entry carries a stable MARKER — its script filename, which survives a command change — so we remove
+// any existing hook bearing that marker (OUR prior version; a user's hook has no such marker and is
+// untouched) and re-add the current command. Idempotent (re-run strips the just-added and re-adds the
+// same) and updating (a changed command replaces the old). Returns the count merged.
+// Split a shell-ish command line into tokens, honouring single/double quotes. Not a full POSIX
+// parser — enough to identify the executable and the script argument arc itself installs.
+function tokenizeCommand(command) {
+  const toks = [];
+  const rx = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = rx.exec(command)) !== null) toks.push(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]);
+  return toks;
+}
+const baseName = (p) => path.basename(String(p).replace(/\\/g, '/')).toLowerCase();
+
+// Is this command one of arc's OWN installed Node hook commands? arc installs exactly
+// `node "<scriptsdir>/<script>"` — so ownership requires a real argv parse, not a substring:
+//   • the EXECUTABLE (token 0) basename must be exactly `node` / `node.exe` — a foreign
+//     `C:/mine/badnode.exe <script>` is NOT ours (was a false-positive deletion, audit #289 blocker 6);
+//   • the SCRIPT is the first non-flag token after node (so `node --require=x <script>` and
+//     `node --no-warnings <script>` ARE ours — was a false negative);
+//   • that script's basename must equal our script — `not-arc-stop-hook.js`, or a wrapper whose LATER
+//     arg merely mentions the name, is a user hook and survives.
+// A `cmd /c node <script>` wrapper (exec basename `cmd`) is deliberately NOT claimed: arc never
+// installs that shape, so it is a user hook — the safe error is to keep it, not delete it.
+function ownsHookCommand(command, script) {
+  if (typeof command !== 'string' || !script) return false;
+  const toks = tokenizeCommand(command);
+  if (!toks.length) return false;
+  if (baseName(toks[0]) !== 'node' && baseName(toks[0]) !== 'node.exe') return false;
+  const scriptTok = toks.slice(1).find((t) => !t.startsWith('-'));   // skip node flags (--require=…, --no-warnings, …)
+  return !!scriptTok && baseName(scriptTok) === String(script).toLowerCase();
+}
+
 function mergeHooks(settings, entries) {
   settings.hooks = settings.hooks || {};
   let added = 0;
   for (const e of entries) {
+    // Prefer the SCRIPT NAME as the marker (arc-stop-hook.js) — it identifies this hook across any
+    // change to the flags/args of its command. Fall back to an explicit match, then the whole
+    // command (a bundle that gives neither can still de-dup an identical command).
+    const marker = e.match || e.command;
     const groups = Array.isArray(settings.hooks[e.event]) ? settings.hooks[e.event] : (settings.hooks[e.event] = []);
-    const match = e.match || e.command;
-    const present = groups.some((g) => Array.isArray(g.hooks) && g.hooks.some((x) => typeof x.command === 'string' && x.command.includes(match)));
-    if (present) continue;
+    // Remove OUR prior version from every group. Script-backed entries use the exact Node script
+    // argv path; non-script bundle entries retain their explicit match/identical-command fallback.
+    for (const g of groups) {
+      if (Array.isArray(g.hooks)) g.hooks = g.hooks.filter((x) => !(x && typeof x.command === 'string'
+        && (e.script ? ownsHookCommand(x.command, e.script) : x.command.includes(marker))));
+    }
+    // Drop any group we just emptied — a zero-hook group is dead weight and does nothing.
+    settings.hooks[e.event] = groups.filter((g) => !Array.isArray(g.hooks) || g.hooks.length > 0);
+    const grps = settings.hooks[e.event];
     // A MATCHER is not decoration on PreToolUse — it is what stops the hook from spawning node
     // on EVERY tool call (Read, Grep, Edit, …), which would tax every action in the session to
     // police one command. So a matched entry lives in its OWN group and never gets folded into
     // an unmatched one.
     if (e.matcher) {
-      const g = groups.find((x) => x.matcher === e.matcher && Array.isArray(x.hooks));
+      const g = grps.find((x) => x.matcher === e.matcher && Array.isArray(x.hooks));
       if (g) g.hooks.push({ type: 'command', command: e.command });
-      else groups.push({ matcher: e.matcher, hooks: [{ type: 'command', command: e.command }] });
-      added++;
-      continue;
+      else grps.push({ matcher: e.matcher, hooks: [{ type: 'command', command: e.command }] });
+    } else {
+      const g0 = grps.find((x) => Array.isArray(x.hooks) && !x.matcher);
+      if (g0) g0.hooks.push({ type: 'command', command: e.command });
+      else grps.push({ hooks: [{ type: 'command', command: e.command }] });
     }
-    if (groups.length && Array.isArray(groups[0].hooks) && !groups[0].matcher) groups[0].hooks.push({ type: 'command', command: e.command });
-    else groups.push({ hooks: [{ type: 'command', command: e.command }] });
     added++;
   }
   return added;
@@ -202,7 +252,7 @@ function wireArcSettings(scriptsDir = path.join(CLAUDE_DIR, 'scripts'), settings
   return { settingsPath, backedUp: raw != null };
 }
 
-module.exports = { readSettings, writeSettings, mergeHooks, mergePermissions, mergeSkillOverrides, overlayMaps, BOARD_PERMISSIONS, setStatusline, STATUSLINE_REFRESH_SECONDS, coreHookEntries, wireArcSettings };
+module.exports = { readSettings, writeSettings, mergeHooks, ownsHookCommand, mergePermissions, mergeSkillOverrides, overlayMaps, BOARD_PERMISSIONS, setStatusline, STATUSLINE_REFRESH_SECONDS, coreHookEntries, wireArcSettings };
 
 if (require.main === module) {
   try {

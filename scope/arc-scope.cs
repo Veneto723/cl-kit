@@ -307,6 +307,13 @@ namespace ArcScope {
         sizedOnce = true;
         win.Dispatcher.BeginInvoke(new Action(delegate {
           win.SizeToContent = SizeToContent.Manual;
+          // The default opened HUGGING the content, so a quiet board — a couple of notes — came up a
+          // thin sliver. Floor it: taller content still fits (capped by MaxHeight), but a short board
+          // opens at a usable size instead. The floor is the WORK-AREA height (or MaxHeight, whichever
+          // is smaller), so "default" is roughly double what content-hug gave and the graph + flow
+          // are visible at a glance. The user can still shrink it from here.
+          double floor = Math.Min(win.MaxHeight, SystemParameters.WorkArea.Height * 0.72);
+          if (win.ActualHeight < floor) win.Height = floor;
           if (!showingDetail) dtShift.X = ContentW();
         }), DispatcherPriority.Background);
       }

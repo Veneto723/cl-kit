@@ -199,6 +199,7 @@ function readSeen(board, role) {
 // every READ accepts both names, and a fresh claim migrates the old file away.
 const legacyClaimPath = (board, role) => path.join(board.planDir, `lease-${role}.json`);
 const CLAIM_FILE_RX = /^(?:claim|lease)-(.+)\.json$/;
+const VALID_ROLE = /^[a-z][a-z0-9_-]{0,23}$/;
 function readClaimFile(board, role) {
   for (const p of [claimPath(board, role), legacyClaimPath(board, role)]) {
     try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* try the next name */ }
@@ -750,18 +751,47 @@ function vacantClaimForRole(board, role) {
   return (l && l.convId && !isHolder(l)) ? l : null;
 }
 
+// Adopt the vacant chair a CONVERSATION last held — but a conversation owns exactly ONE role, so
+// more than one vacant claim carrying the same convId is CORRUPTION, and adopting the readdir-first
+// one is how it spread. Real case (whalephone): a uiux session relaunched, its conversation matched
+// BOTH claim-quiz and claim-uiux (both stamped with its convId), and `return l` on the first match
+// handed it QUIZ because 'quiz' < 'uiux' — so uiux was silently adopted into the quiz chair, and
+// every relaunch re-stamped it. Guessing on ambiguity is the bug. Collect ALL matches: exactly one
+// is a clean adoption; more than one, refuse — a session that cannot be placed unambiguously claims
+// fresh via its own charter rather than taking a chair that might not be its.
 function vacantClaimForConv(board, convId) {
   if (!convId) return null;
   let files = [];
   try { files = fs.readdirSync(board.planDir); } catch { return null; }
+  // STEP 1 — resolve the AUTHORITATIVE file per logical role BEFORE any convId/vacancy test. A role
+  // may carry both a current claim-<role> and a stale legacy lease-<role>; claim-* is authoritative
+  // (it is what every other reader normalizes to). Testing convId FIRST and preferring claim-* second
+  // (the old order) lets a divergent stale lease win when the current claim names a DIFFERENT
+  // conversation — it filtered the current claim out, then "preferred claim" within a set that no
+  // longer held it, adopting the legacy chair and overwriting the current one (audit #289 blocker 4).
+  const authoritative = new Map();                  // fileRole -> { file, isClaim }
   for (const f of files) {
-    if (!CLAIM_FILE_RX.test(f)) continue;   // a legacy lease-*.json is still OUR claim
+    const fm = f.match(CLAIM_FILE_RX);
+    if (!fm) continue;                              // a legacy lease-*.json is still OUR claim
+    const fileRole = fm[1];
+    if (!VALID_ROLE.test(fileRole)) continue;
+    const isClaim = f.startsWith('claim-');
+    const cur = authoritative.get(fileRole);
+    if (!cur || (isClaim && !cur.isClaim)) authoritative.set(fileRole, { file: f, isClaim });
+  }
+  // STEP 2 — adopt the roles whose AUTHORITATIVE record matches this conversation and is vacant. The
+  // filename is the authority for WHICH chair a file is; a payload role that disagrees is corruption
+  // and must never rename the chair, so require both to agree (audit #271 M4). Current + legacy files
+  // for one logical role are migration aliases, deduped in step 1, so a match here is one real chair.
+  const matches = [];
+  for (const [fileRole, { file }] of authoritative) {
     try {
-      const l = JSON.parse(fs.readFileSync(path.join(board.planDir, f), 'utf8'));
-      if (l.convId && l.convId === convId && !isHolder(l)) return l;      // ours, and vacant
+      const l = JSON.parse(fs.readFileSync(path.join(board.planDir, file), 'utf8'));
+      if (l.role !== fileRole || !l.convId || l.convId !== convId || isHolder(l)) continue;
+      matches.push({ ...l, role: fileRole });
     } catch { /* torn claim = no claim */ }
   }
-  return null;
+  return matches.length === 1 ? matches[0] : null;   // 0 = nothing; >1 distinct role = corrupt, do not guess
 }
 
 // Who else is live in this flat right now (dead claims are ignored, not deleted —

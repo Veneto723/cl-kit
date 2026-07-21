@@ -171,6 +171,21 @@ function seedClaudeJson(dir) {
 function ensureProfile(accId) {
   const dir = profileDir(accId);
   fs.mkdirSync(dir, { recursive: true });
+  // LOCK THE SECRET DIRS BEFORE seeding a credential into them. The profile holds plaintext oauth
+  // .credentials.json, and Windows ignores fs mode — so the NTFS ACL is the only real boundary.
+  // Reused directories may carry hostile explicit ACEs/ownership; secureDir resets both. Failure is
+  // a HARD stop here: continuing to write plaintext after failing the only security boundary is not
+  // "best effort", it is credential exposure (audit #271 H3).
+  if (!C.secureDir(PROFILES_DIR) || !C.secureDir(dir)) {
+    throw new Error(`could not secure the credential profile directory: ${dir}`);
+  }
+  // Locking the DIR only governs NEW descendants — an EXISTING `.credentials.json` keeps whatever
+  // explicit ACL it already had (a broad grant from before arc, or a copied-in file). Harden the
+  // plaintext oauth file itself when present, and fail closed the same way (audit #289 blocker 2).
+  const creds = credsPath(accId);
+  if (fs.existsSync(creds) && !C.secureFile(creds)) {
+    throw new Error(`could not secure the existing credential file: ${creds}`);
+  }
   for (const d of SHARED_DIRS) {
     const target = path.join(C.CLAUDE_DIR, d);
     const link = path.join(dir, d);

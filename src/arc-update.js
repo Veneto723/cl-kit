@@ -138,9 +138,16 @@ function downloadAndInstall(tag, tarball, opts = {}) {
   const ex = path.join(work, 'x');
   try {
     log(`[arc] downloading ${tag}…`);
-    const dl = spawnSync(CURL, ['-sSL', '--fail', '--max-time', '120', '-o', tgz, tarball], { encoding: 'utf8', timeout: 130_000 });
+    // `-#` is curl's PROGRESS BAR; the old `-sSL` had `-s` (silent), which suppressed it entirely,
+    // so a slow download looked frozen. The bar goes to stderr, so stderr must be INHERITED (a
+    // captured pipe shows nothing until the process ends) — which also means a curl error prints
+    // straight to the user, so we key the failure off the exit status rather than a captured string.
+    const showBar = !opts.quiet && process.stderr.isTTY;
+    const dl = showBar
+      ? spawnSync(CURL, ['-#', '-fL', '--max-time', '120', '-o', tgz, tarball], { stdio: ['ignore', 'ignore', 'inherit'], timeout: 130_000 })
+      : spawnSync(CURL, ['-sSL', '--fail', '--max-time', '120', '-o', tgz, tarball], { encoding: 'utf8', timeout: 130_000 });
     if (dl.status !== 0 || !fs.existsSync(tgz) || fs.statSync(tgz).size < 1000) {
-      return { ok: false, message: `download failed${dl.stderr ? ': ' + dl.stderr.trim() : ''}` };
+      return { ok: false, message: `download failed${dl.stderr ? ': ' + String(dl.stderr).trim() : ''}` };
     }
     fs.mkdirSync(ex, { recursive: true });
     const un = spawnSync(TAR, ['-xzf', tgz, '-C', ex], { encoding: 'utf8', timeout: 60_000 });
@@ -150,14 +157,136 @@ function downloadAndInstall(tag, tarball, opts = {}) {
     const root = roots.find((d) => fs.existsSync(path.join(d, 'install.ps1')) && fs.existsSync(path.join(d, 'package.json')));
     if (!root) return { ok: false, message: 'release tarball has no install.ps1/package.json at its root' };
     log('[arc] installing…');
+    const before = installedVersion();
     const inst = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'install.ps1')], { stdio: opts.quiet ? 'ignore' : 'inherit', timeout: 300_000 });
-    if (inst.status !== 0) return { ok: false, message: 'install.ps1 exited non-zero — your previous install is intact' };
+    if (inst.status !== 0) {
+      // The most common cause on Windows is a locked file: install.ps1 cannot overwrite a script the
+      // RUNNING session still holds. Say so, and point at the retry that works — a standalone shell.
+      return { ok: false, locked: true,
+        message: 'install.ps1 exited non-zero — your previous install is intact.\n'
+          + '        This usually means a running arc session was holding the files. Close other arc\n'
+          + '        sessions and run `arc update` again in a plain terminal.' };
+    }
+    // VERIFY THE STAMP ADVANCED. install.ps1 writes arc-version.json; if it returned 0 but the marker
+    // did not move (a partial run, a stamp that silently no-op'd), treat it as a failure rather than
+    // report a success that the next launch will contradict by re-offering the same version.
+    const after = installedVersion();
+    if (cmpVer(after, before) <= 0 && cmpVer(after, tag) < 0) {
+      return { ok: false, message: `install ran but the version marker is still ${after} — the upgrade did not take. Run \`arc update\` in a standalone terminal.` };
+    }
     return { ok: true, message: `upgraded to ${tag}`, version: tag };
   } catch (e) {
     return { ok: false, message: String(e && e.message) };
   } finally {
     try { fs.rmSync(work, { recursive: true, force: true }); } catch {}
   }
+}
+
+// ---- clearing file locks before an in-place upgrade --------------------------------
+// The upgrade replaces ~/.claude/scripts, and Windows will not let install.ps1 overwrite a file a
+// RUNNING process holds — the confirmed cause of "I upgraded and it asks again": install.ps1 exits
+// non-zero, the old install stays, the marker never advances. The reliable fix is to release the
+// locks, which means closing the other arc processes. This ENUMERATES them (pure, testable); the
+// caller shows the list and asks before anything is killed.
+//   sessions  peer node+claude that hold a role/board — the COSTLY ones (a turn's work is lost,
+//             though the transcript survives so the session is revivable)
+//   feed      the detached status feed — cheap, restarts on next launch
+// THE SKEW window for the start-before-marker oracle (a marker is written moments AFTER launch).
+const SELF_KILL_SKEW_MS = 5000;
+
+// PROVE GENUINE IDENTITY before ever targeting a pid for a force-kill. A bare `process.kill(pid,0)`
+// only says the NUMBER is in use — and Windows recycles pids, so a stale arc-state/feed file can name
+// a pid the OS has since handed to an editor or the updater itself. Force-killing that tree
+// (`taskkill /F /T`) is unrecoverable, so identity must be the same procStart oracle the board uses:
+// a genuine arc process started BEFORE it wrote its marker; a recycled squatter started after.
+// FAILS CLOSED — if the OS start cannot be read, the pid is NOT proven arc and is left alone (the
+// install may then fail on a real lock, which is recoverable; killing a stranger is not).
+// THIS session is excluded by ARC_SESSION and, defensively, by process.pid — the upgrader can never
+// target itself even through an alias state file that happens to carry its number.
+function liveOthers(selfSession) {
+  const cache = path.join(os.homedir(), '.claude', 'cache');
+  const out = { sessions: [], feeds: [], scope: [] };
+  let files = []; try { files = fs.readdirSync(cache); } catch { return out; }
+
+  const cands = [];   // { kind, session?, pid, cwd?, marker }
+  for (const f of files) {
+    const ms = f.match(/^arc-state-(.+)\.json$/);
+    if (ms) {
+      if (selfSession && ms[1] === selfSession) continue;          // never myself (by session id)
+      const fp = path.join(cache, f);
+      let st, mt; try { st = JSON.parse(fs.readFileSync(fp, 'utf8')); mt = fs.statSync(fp).mtimeMs; } catch { continue; }
+      if (st.pid) cands.push({ kind: 'session', session: ms[1], pid: st.pid, cwd: st.cwd || null, marker: mt });
+      continue;
+    }
+    const mf = f.match(/^arc-feed-(\d+)\.json$/);
+    if (mf) {
+      const fp = path.join(cache, f);
+      let pf, mt; try { pf = JSON.parse(fs.readFileSync(fp, 'utf8')); mt = fs.statSync(fp).mtimeMs; } catch { continue; }
+      if (pf.pid) cands.push({ kind: 'feed', port: mf[1], pid: pf.pid, marker: pf.started || mt });
+    }
+  }
+
+  let starts = null;
+  try { starts = require('./arc-board').procStarts(cands.map((c) => c.pid), { fresh: true }); } catch { starts = null; }
+  const genuine = (c) => {
+    if (c.pid === process.pid) return false;                       // never myself (by pid, even via an alias file)
+    if (!starts) return false;                                     // cannot prove identity → fail CLOSED
+    const s = starts[c.pid];
+    if (s == null) return false;                                   // dead, or a live pid with an unreadable start
+    return s <= c.marker + SELF_KILL_SKEW_MS;                      // started before it wrote its marker → genuinely arc
+  };
+  for (const c of cands) {
+    if (!genuine(c)) continue;
+    if (c.kind === 'session') out.sessions.push({ session: c.session, pid: c.pid, cwd: c.cwd });
+    else out.feeds.push({ port: c.port, pid: c.pid });             // ARC_FEED_PORT is configurable — there can be MORE THAN ONE feed
+  }
+  out.scope = liveScope();
+  return out;
+}
+
+// arc builds its scope viewer to `<repo>/scope/arc-scope.exe` (scope/build.ps1) — it is never
+// deployed to a fixed install path, so the only identity arc can trust is that build LAYOUT: the
+// executable sits in a `scope/` directory. A foreign `C:\tmp\arc-scope.exe` does NOT, so it is not
+// ours and must never be force-killed (audit #289 blocker 5). A process whose path we cannot read is
+// unverifiable → excluded (fail closed).
+function isArcScopePath(p) {
+  if (!p) return false;
+  return /(?:^|[\\/])scope[\\/]arc-scope\.exe$/i.test(String(p).replace(/\\/g, '/'));
+}
+
+// Enumerate the running arc-scope viewers, but ONLY those whose executable path matches arc's own
+// build layout — so the caller can COUNT them (a scope-only lock still prompts) and kill them BY PID
+// (never the over-broad `/IM arc-scope.exe`). Best-effort: returns [] if the process query can't run.
+function liveScope() {
+  try {
+    const r = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-Command',
+      "Get-Process -Name arc-scope -ErrorAction SilentlyContinue | %{ \"$($_.Id)|$($_.Path)\" }"],
+      { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    if (!r || r.status !== 0) return [];
+    return String(r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+      const i = l.indexOf('|');
+      return { pid: Number(i >= 0 ? l.slice(0, i) : l), path: i >= 0 ? l.slice(i + 1) : null };
+    }).filter((s) => s.pid && isArcScopePath(s.path));            // trusted path only
+  } catch { return []; }
+}
+
+// Force-close what liveOthers PROVED genuine. /T takes the whole tree, so a session's claude child —
+// the more likely lock holder — dies with its node parent. Targets are DEDUPED by pid first: a pid
+// that appears in two classes (or twice) would otherwise be killed once (ok) then race a dead pid and
+// be counted as a FAILURE, making the runner falsely warn a process would not close (audit #289
+// findings 8/9). taskkill's EXIT STATUS is honoured per unique target: a pid that could not be closed
+// (access denied, race) is reported as a failure, never a silent success. Returns { killed, failed }.
+function killOthers(others) {
+  const cp = require('child_process');
+  const tk = (pid) => { try { const r = cp.spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', timeout: 15000 }); return !!r && r.status === 0; } catch { return false; } };
+  const targets = [...new Set([
+    ...(others.sessions || []).map((s) => s.pid),
+    ...(others.feeds || []).map((f) => f.pid),
+    ...(others.scope || []).map((s) => s.pid),
+  ].filter(Boolean))];
+  let killed = 0, failed = 0;
+  for (const pid of targets) { if (tk(pid)) killed++; else failed++; }
+  return { killed, failed };
 }
 
 // ---- the dev-side publish (gated on the human) --------------------------------
@@ -207,4 +336,4 @@ function doRelease(bump, opts = {}) {
   return { ok: true, version: tag, message: `released ${tag}` };
 }
 
-module.exports = { installedVersion, cmpVer, latestRelease, checkForUpdate, recordDecline, downloadAndInstall, doRelease, REPO, checkCachePath, versionMarkerPath };
+module.exports = { installedVersion, cmpVer, latestRelease, checkForUpdate, recordDecline, downloadAndInstall, doRelease, REPO, checkCachePath, versionMarkerPath, liveOthers, liveScope, killOthers, isArcScopePath };

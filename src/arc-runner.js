@@ -483,23 +483,20 @@ function explicitConvId(args) {
   return null;
 }
 
-// `arc --resume code` — resolve a ROLE NAME to the conversation that holds it, in place.
+// `arc --resume code` — a real arc ROLE NAME resolves to the conversation that holds it.
 //
-// Nobody remembers a UUID. A human resuming a chair types its NAME, and before this that name went
-// straight through to claude (arc reads this slot only for a UUID), which knew no conversation by
-// that name — so the session came up with no role and nothing said why. arc already stores the
-// mapping: a claim file is role -> convId, and it is the same lookup `arc delegate` uses to revive
-// a peer as itself.
+// `--resume` belongs to Claude Code, and Claude also accepts its own human session names. arc must
+// not seize every non-UUID value and insist it be a board role: a solo project may have a renamed
+// `scout` conversation and no board chairs at all. Resolution is therefore deliberately additive:
+// if an exact current-board claim exists, rewrite it to that chair's UUID; otherwise leave the name
+// for Claude Code to resolve natively. An actual role wins when a Claude session has the same name.
 //
-// Rewrites args IN PLACE so every downstream reader — explicitConvId, the duplicate-conversation
-// guard, and claude itself — sees one real id and none of them need to know a role was ever named.
+// Successful role lookups rewrite args IN PLACE so every downstream reader — explicitConvId, the
+// duplicate-conversation guard, and claude itself — sees one real id. The inline form is normalized
+// even for a native Claude name because arc's user-managed gate recognizes only the two-token form.
 //
 // Deliberately NOT applied to --session-id: that flag ASSIGNS an id to a new session rather than
-// reopening one, so a role name there is meaningless, not shorthand.
-// Bare `--resume` (no value) is the picker and is left alone. A UUID is left alone.
-// Returns null when there was nothing to do, or {ok:false, message} to abort with a real reason —
-// refusing beats guessing here, since the fallbacks are "resume the wrong conversation" or "start
-// fresh and silently drop the chair", which is the very bug this fixes.
+// reopening one. Bare `--resume` (no value) is the picker; a UUID is already canonical.
 function resolveResumeRole(args, cwd) {
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   let idx = -1, role = null, inline = false;
@@ -512,37 +509,34 @@ function resolveResumeRole(args, cwd) {
     }
     if (x.startsWith('--resume=')) {
       const v = x.slice('--resume='.length);
-      if (!v || UUID.test(v)) return null;
+      if (!v) return null;
+      // An INLINE uuid still needs the two-token normalization — the user-managed gate and the
+      // duplicate-conversation guard read only a SEPARATE `--resume`/`-r` token, so `--resume=<uuid>`
+      // is invisible to both: arc mints a random managed id + appends `--session-id` while claude
+      // resumes the real uuid, and that real conversation never hits the duplicate guard (audit #289
+      // blocker 3). Normalize it here to the working two-token form; a uuid needs no role lookup.
+      if (UUID.test(v)) { args.splice(i, 1, '--resume', v); return { ok: true, normalized: true, convId: v }; }
       idx = i; role = v; inline = true; break;
     }
   }
   if (!role) return null;
 
-  // VALIDATE BEFORE THE NAME TOUCHES A PATH. `role` is interpolated into `claim-${role}.json`
-  // (arc-board.js:176), so an unchecked '../../../evil' escapes the board directory — and the repo —
-  // to read and JSON.parse an arbitrary local file, then hand its .convId to claude. It crosses no
-  // privilege boundary today (every other --resume caller passes a convId, never a role name), so
-  // this is a wrong shape on a launch path rather than an exploit. Fixed anyway: it stops being
-  // local the day something else starts calling this. Same regex arc-notes already enforces on this
-  // exact namespace, so a name that cannot be CLAIMED cannot be RESUMED either.
+  // A role name is interpolated into `claim-${role}.json`, so validate BEFORE it touches a path.
+  // A value outside the role grammar is not an error here: it may be a native Claude session name
+  // (including spaces or uppercase), so leave it untouched. Likewise, a valid-looking name with no
+  // exact current-board claim belongs to Claude, not arc. Normalize inline syntax because arc's
+  // downstream user-managed gate recognizes only a separate `--resume` token.
   const N = require('./arc-notes');
-  if (!N.VALID_ROLE.test(role)) {
-    return { ok: false, message: `invalid role "${role}" — letters/digits/dash/underscore, starting with a letter.` };
-  }
+  const native = () => {
+    if (inline) args.splice(idx, 1, '--resume', role);
+    return { ok: true, native: true, name: role };
+  };
+  if (!N.VALID_ROLE.test(role)) return native();
 
   const R = require('./arc-board');
-  let board; try { board = R.resolveBoard(cwd); } catch { return null; }
+  let board; try { board = R.resolveBoard(cwd); } catch { return native(); }
   let claim = null; try { claim = R.readClaimFile(board, role); } catch {}
-  if (!claim) {
-    let known = [];
-    try {
-      known = fs.readdirSync(board.planDir)
-        .map((f) => (f.match(/^(?:claim|lease)-(.+)\.json$/) || [])[1])
-        .filter((r, i, a) => r && a.indexOf(r) === i);
-    } catch {}
-    return { ok: false, message: `no role "${role}" on the "${board.name}" board`
-      + (known.length ? ` (chairs here: ${known.join(', ')})` : ' (no chairs here yet)') };
-  }
+  if (!claim) return native();
   // A LIVE holder must never be shoved out of its own chair: two arc processes on one conversation
   // write the same transcript and can die together (the duplicate-session guard below exists for
   // exactly that). Point the human at the running session instead of racing it.
@@ -621,6 +615,18 @@ function reArmPromptOnRespawn(session, opts) {
     return `/arc-role ${role}`;
   } catch { return null; }
 }
+
+// The in-runner relaunch reasons after which THIS session is still a reachable role-holder and so
+// must re-arm the listener the killed Claude took with it. The unit of re-arm is the ROLE + the
+// stable ARC_SESSION, NOT the conversation — so `delete` belongs here too: it starts a FRESH
+// conversation, but the same session reasserts its role (refreshRole, below) and would otherwise
+// relaunch DEAF (audit #289 blocker 1 corrected the earlier "fresh conversation must not inherit the
+// old listener" — right about history, wrong about reachability). Only 'restart' is excluded: it
+// re-execs the runner with ARC_RESPAWNED=1, and the CHILD computes the re-arm from the surviving
+// marker itself, so pre-clearing it in the parent would break that. reArmPromptOnRespawn's own
+// guards (role present, prior await marker) keep this safe when a reason happens not to hold a role.
+const REARM_RELAUNCH_REASONS = new Set(['addaccount', 'pick', 'mode', 'rename', 'switch', 'effort', 'delete']);
+function reArmsAfterReason(reason) { return REARM_RELAUNCH_REASONS.has(reason); }
 
 // Map a full model id to a cross-account alias (opus/sonnet/haiku/fable) so the
 // flag works on every account (gateways map aliases via modelMap env vars).
@@ -1474,6 +1480,29 @@ function promptYesNo(question, timeoutMs = 30000) {
 // pins its tab; a prompt would hang the spawn), never a respawn (caller gates on !respawning), never
 // a pipe (isTTY). Fully fail-safe: ANY error and we just launch. On accept, install then re-exec the
 // updated runner so THIS session runs the new code.
+// Before an in-place upgrade, offer to close the OTHER arc processes that would lock the install.
+// Shows the exact list, defaults to N, kills only on an explicit yes. On no it returns anyway — the
+// install may still work — so this never blocks the upgrade, it just removes the usual reason it
+// fails. Shared by `arc update` and the launch-time offer.
+async function clearLocksForUpgrade(U) {
+  let others; try { others = U.liveOthers(process.env.ARC_SESSION); } catch { return; }
+  const sessions = others.sessions || [], feeds = others.feeds || [], scope = others.scope || [];
+  // COUNT UNIQUE PIDS — a pid can appear in two classes; counting rows would over-report the prompt
+  // and mismatch killOthers' deduped total (audit #289 finding 8).
+  const uniq = new Set([...sessions.map((s) => s.pid), ...feeds.map((f) => f.pid), ...scope.map((s) => s.pid)].filter(Boolean));
+  const n = uniq.size;
+  if (!n) return;   // counts scope + every feed too, so a scope-only or multi-feed lock still prompts
+  process.stdout.write(`\x1b[36m[arc]\x1b[0m ${n} other arc process(es) are running and can LOCK the install:\n`);
+  for (const s of sessions) process.stdout.write(`        session  ${s.cwd || '?'}   (pid ${s.pid})\n`);
+  for (const f of feeds) process.stdout.write(`        feed     (port ${f.port})   (pid ${f.pid})\n`);
+  for (const s of scope) process.stdout.write(`        scope    ${s.path || 'arc-scope.exe'}   (pid ${s.pid})\n`);
+  const yes = await promptYesNo('[arc] close them all for a clean upgrade? their in-flight work is lost (but revivable) [y/N] ');
+  if (!yes) { process.stdout.write('[arc] leaving them running — the install may fail on a locked file; if so, close them and retry.\n'); return; }
+  const { killed, failed } = U.killOthers(others);
+  if (failed) process.stdout.write(`\x1b[33m[arc] closed ${killed}, but ${failed} would NOT close (access denied or a race) — the install may still fail on that lock. Close it by hand and retry \`arc update\`.\x1b[0m\n`);
+  else process.stdout.write(`[arc] closed ${killed} process(es). proceeding…\n`);
+}
+
 async function maybeOfferUpdate(originalArgs) {
   try {
     if (!process.stdin.isTTY || process.env.ARC_RUNTIME_ACCOUNT) return;
@@ -1482,13 +1511,19 @@ async function maybeOfferUpdate(originalArgs) {
     if (!info.available || info.declined || !info.tarball) return;   // tarball comes from the check now (no re-fetch)
     const yes = await promptYesNo(`\x1b[36m[arc]\x1b[0m a newer arc is available: ${info.installed} → ${info.latest}. Upgrade now? [y/N] `);
     if (!yes) { U.recordDecline(info.latest); return; }
+    await clearLocksForUpgrade(U);
     process.stdout.write(`[arc] upgrading to ${info.latest}…\n`);
     const r = U.downloadAndInstall(info.latest, info.tarball);
-    process.stdout.write(`[arc] ${r.message}\n`);
+    process.stdout.write(`[arc] ${r.ok ? '' : 'update failed — '}${r.message}\n`);
     if (r.ok) {
       const re = spawnSync(process.execPath, [process.argv[1], ...(originalArgs || [])], { stdio: 'inherit', env: process.env });
       process.exit(re.status ?? 0);
     }
+    // A FAILED auto-update must not re-offer on EVERY launch. Record this version as handled — the
+    // same memory a decline uses — so the launch prompt goes quiet, while the LOUD message above
+    // told the user exactly what to do. `arc update` (explicit, force) always ignores this and
+    // retries, so recording it costs the user nothing and stops the nag-loop the bug was about.
+    U.recordDecline(info.latest);
   } catch { /* NEVER block a launch on the updater */ }
 }
 
@@ -1498,6 +1533,7 @@ async function cmdUpdate() {
   const info = await U.checkForUpdate({ force: true, timeoutMs: 4000 });
   if (!info.available) { process.stdout.write(`[arc] up to date (installed ${info.installed}${info.latest ? `, latest ${info.latest}` : ''}).\n`); return; }
   if (!info.tarball) { process.stderr.write('[arc] could not resolve the release tarball.\n'); process.exit(1); }
+  await clearLocksForUpgrade(U);
   process.stdout.write(`[arc] upgrading ${info.installed} → ${info.latest}…\n`);
   const r = U.downloadAndInstall(info.latest, info.tarball);
   process.stdout.write(`[arc] ${r.ok ? '✓ ' : 'FAILED — '}${r.message}\n`);
@@ -1815,14 +1851,13 @@ async function main() {
     passArgs.push(x);
   }
 
-  // `arc --resume <role>` → `--resume <that role's conversation>`. Done HERE, before anything reads
-  // the args: userManagesConv, explicitConvId and the duplicate-conversation guard all then see a
-  // real id, and the role is adopted by the ordinary "role follows the conversation" path with no
-  // second mechanism to keep in step. A respawn re-execs with args we already rewrote, so it is a
-  // no-op the second time through (the value is a UUID by then).
+  // `arc --resume <name>` resolves an exact board role when one exists; otherwise the name remains
+  // Claude Code's native session-name argument. Done HERE, before anything reads the args: a role
+  // rewrite feeds userManagesConv, explicitConvId and the duplicate guard; a native name stays on
+  // Claude's own resume path. A role rewrite is a UUID on a respawn, so this is a no-op then.
   const rr0 = resolveResumeRole(passArgs, process.cwd());
   if (rr0 && !rr0.ok) { process.stderr.write(`[arc] ${rr0.message}\n`); process.exit(1); }
-  if (rr0 && rr0.ok) process.stdout.write(`\x1b[2m[arc] resuming "${rr0.role}" — its conversation on the "${rr0.board}" board\x1b[0m\n`);
+  if (rr0 && rr0.ok && rr0.role) process.stdout.write(`\x1b[2m[arc] resuming "${rr0.role}" — its conversation on the "${rr0.board}" board\x1b[0m\n`);
 
   const state = readState();
   let account = state.account;
@@ -1983,7 +2018,18 @@ async function main() {
       // claimed nothing, and sat idle forever: an unattended peer that boots and does nothing.
       // (Found live: a born research tab at `no role` with its prompt box empty. Verified against
       // the real CLI first that arg ORDER was NOT the cause — both orders submit fine.)
-      const a = respawning ? stripConvArgs(passArgs) : stripConvArgs(passArgs, { keepPrompt: true });
+      // KEEP the birth prompt ONLY on a newborn's genuine FIRST launch (convStarted false AND not a
+      // respawn). Every LATER in-runner relaunch strips it — a switch/mode/effort `continue` re-runs
+      // this path with the birth prompt already consumed, so keeping it re-sends a stale `/arc-role`.
+      // That stale positional is also what made the switch re-arm ambiguous: a born peer's switch
+      // kept the birth `/arc-role <role>` AND appended the re-arm `/arc-role <role>` (two trailing
+      // positionals, claude's collapse of which is untested). Treating a switch as a respawn for the
+      // STRIP decision — the same way :2231 treats it as a respawn for the RE-ARM — makes the re-arm
+      // the SOLE positional and removes the edge entirely (audit #265, claim 2). `pendingReArm` is
+      // in the condition for /arc-delete: delete resets convStarted=false (fresh conversation) yet
+      // still re-arms, so without this its birth prompt would ride alongside the injected /arc-role
+      // (audit #289 blocker 1).
+      const a = (respawning || convStarted || pendingReArm) ? stripConvArgs(passArgs) : stripConvArgs(passArgs, { keepPrompt: true });
       // On respawn (switch/restart), also re-apply the session's model + mode.
       // Only --resume if the conversation was actually persisted; a fresh session
       // that just ran a blocked /arc- command has no transcript, so --resume would
@@ -2096,6 +2142,16 @@ async function main() {
         env: { ...process.env, ARC_SESSION: SESSION_ID, ARC_RESPAWNED: '1' },
       });
       process.exit(r.status == null ? 0 : r.status);
+    }
+
+    // Every in-runner SAME-CONVERSATION relaunch kills Claude and its child `arc join` listener.
+    // Schedule one revive prompt centrally, AFTER the statusline reconciliation above has converted a
+    // native picker/name resume into an arc-managed convId (so a role-holder is re-armed and a
+    // still-user-managed native resume is correctly left alone by reArmPromptOnRespawn's own guard).
+    if (reArmsAfterReason(reason)) {
+      pendingReArm = reArmPromptOnRespawn(SESSION_ID, {
+        respawning: true, convId, userManagesConv, cwd: process.cwd(),
+      });
     }
 
     if (reason === 'delete') {
@@ -2226,7 +2282,7 @@ async function main() {
 // it silently ate an invited peer's conversation (a surviving --fork-session re-forked the
 // session on every relaunch) and nothing could unit-test it, because requiring this file used to
 // LAUNCH CLAUDE. A function that decides how a conversation is re-opened has to be testable.
-module.exports = { stripConvArgs, explicitConvId, resolveResumeRole, preservedFlags, SWEEP_RX, sweepStaleStates, reArmPromptOnRespawn };
+module.exports = { stripConvArgs, explicitConvId, resolveResumeRole, preservedFlags, SWEEP_RX, sweepStaleStates, reArmPromptOnRespawn, reArmsAfterReason };
 
 if (require.main === module) {
   main().catch((e) => {
