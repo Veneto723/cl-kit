@@ -2007,6 +2007,56 @@ try {
       bare2.ok === true && /nothing to revive/.test(bare2.message) && !/back AS ITSELF/.test(bare2.message));
   }
 
+  // ---- fresh-claim broadcast floor: a newborn skips the OLD BROADCAST backlog, keeps its directed notes
+  // A brand-new role would otherwise inherit every `to: all` note ever posted — the dump on first claim.
+  // The floor pre-reads that backlog for BROADCASTS ONLY; a note ADDRESSED to the role (a delegate
+  // packet, one left for an empty chair) carries no floor and still delivers in full (arc-notes:501).
+  {
+    const frepo = fs.mkdtempSync(path.join(os.tmpdir(), 'bfloor-'));
+    fs.mkdirSync(path.join(frepo, '.git'), { recursive: true });
+    const FB = RM7.resolveBoard(frepo); RM7.ensureBoard(FB);
+    // a backlog exists BEFORE the newborn ever claims: 3 broadcasts + 1 note left for its future chair
+    RM7.appendNote(FB, { from: 'code', to: null, kind: 'info', body: 'old broadcast 1' });
+    RM7.appendNote(FB, { from: 'code', to: null, kind: 'info', body: 'old broadcast 2' });
+    RM7.appendNote(FB, { from: 'audit', to: null, kind: 'info', body: 'old broadcast 3' });
+    RM7.appendNote(FB, { from: 'code', to: 'poster', kind: 'request', body: 'PACKET left for whoever staffs poster' });
+    ok('without a floor a role would inherit the WHOLE backlog (the pre-fix flood: 4 notes)',
+      RM7.unreadFor(FB, 'poster').count === 4);
+    // the fresh claim seeds the floor at the current tip
+    RM7.claimRole(FB, 'poster', process.pid, 'poster-sess', 'poster-conv');
+    const u = RM7.unreadFor(FB, 'poster');
+    ok('a fresh claim SKIPS the 3 old broadcasts — only the DIRECTED packet is delivered',
+      u.count === 1 && u.notes[0].body === 'PACKET left for whoever staffs poster');
+    // new traffic is NOT floored — a broadcast posted AFTER the claim flows normally
+    RM7.appendNote(FB, { from: 'code', to: null, kind: 'info', body: 'NEW broadcast after claim' });
+    const u2 = RM7.unreadFor(FB, 'poster');
+    ok('...but a broadcast posted AFTER the claim still delivers (floor is the pre-claim tip only)',
+      u2.count === 2 && u2.notes.some((n) => n.body === 'NEW broadcast after claim'));
+    // markRead must PRESERVE the floor — else the first catch-up erases it and re-exposes the backlog
+    RM7.markRead(FB, 'poster');
+    ok('markRead preserves the floor (bfloor survives a cursor advance)',
+      Object.keys(RM7.readFloor(FB, 'poster')).length > 0);
+    ok('...and once caught up the newborn is at 0 — the old broadcasts never resurface',
+      RM7.unreadFor(FB, 'poster').count === 0);
+    // a RETURNING role is NOT a newborn: release (peer closed), post traffic, revive with a fresh pid.
+    // The cursor persists (releaseRole leaves it), so re-claim does NOT re-seed — it sees ALL it missed.
+    RM7.releaseRole(FB, 'poster', process.pid);
+    RM7.appendNote(FB, { from: 'code', to: 'poster', kind: 'info', body: 'directed while away' });
+    RM7.appendNote(FB, { from: 'code', to: null, kind: 'info', body: 'broadcast while away' });
+    RM7.claimRole(FB, 'poster', 777777, 'poster-sess-2', 'poster-conv');   // revive: tombstone -> new claim
+    const ur = RM7.unreadFor(FB, 'poster');
+    ok('a revived role keeps its cursor — re-claim does NOT re-seed the floor; it sees BOTH missed notes',
+      ur.count === 2 && ur.notes.some((n) => n.body === 'directed while away')
+      && ur.notes.some((n) => n.body === 'broadcast while away'));
+    // the delegate-ordering case: floor at tip, THEN a directed packet posted -> still delivered
+    RM7.claimRole(FB, 'fresh2', process.pid, 'fresh2-sess', 'fresh2-conv');   // seeds floor at current tip
+    RM7.appendNote(FB, { from: 'code', to: 'fresh2', kind: 'request', body: 'delegate packet' });
+    const uf = RM7.unreadFor(FB, 'fresh2');
+    ok('a delegate packet posted just after a fresh claim is delivered (directed, unfloored)',
+      uf.count === 1 && uf.notes[0].body === 'delegate packet');
+    fs.rmSync(frepo, { recursive: true, force: true });
+  }
+
   // ---- quiet spawn: the only launch that cannot take the foreground -----------------------
   // A stolen foreground is not a papercut during a MEASUREMENT: the human's Ctrl+C lands in a
   // worker, which voids a trial, and voids whose cause tracks human activity are not random —
@@ -2147,6 +2197,30 @@ try {
   const fresh = F8.requestRole(AS, 'android', drepo);
   ok('claiming an UNdeclared role asks you to write it (you are the first in this chair)',
     /NOT DECLARED/.test(fresh.message) && /\.arc\/roles\/android\.md/.test(fresh.message));
+
+  // ---- #2 point-of-action guardrails: steer a role-less/board-less session away from the destructive
+  // "claim a chair, post, then rm claim-*/cursor-*" plan, at the two moments arc code actually runs.
+  {
+    const NR = 'norole-' + process.pid;
+    fs.writeFileSync(path.join(CLAUDE, 'cache', `arc-state-${NR}.json`),
+      JSON.stringify({ pid: process.pid, cwd: drepo, convId: 'nr-conv' }));
+    // (a) a role-less `arc note` is refused with the HONEST paths, not a bare "claim one first".
+    const noRole = F8.requestNote(NR, 'code "heads up"', drepo);
+    ok('a role-less post is refused AND names the honest paths (claim if yours, else the --board tunnel)',
+      noRole.ok === false && /\/arc-role/.test(noRole.message) && /--board <that-repo>/.test(noRole.message));
+    ok('...and forbids the anti-pattern outright: no throwaway chair, no hand-deleting shared state',
+      /throwaway chair/.test(noRole.message) && /never delete claim-\*\/cursor-\*/.test(noRole.message));
+    ok('...and hands a peer-of-nothing back to its human rather than inventing a chair',
+      /not yours to leave — hand it to your human/i.test(noRole.message));
+    // (b) a --board TUNNEL attempt from a role-less session gets the tunnel-specific reason, not "/arc-role".
+    const noRoleTunnel = F8.requestNote(NR, `code --board ${drepo} "heads up"`, drepo);
+    ok('a role-less --board tunnel attempt is refused, explaining the tunnel still posts AS a role you hold',
+      noRoleTunnel.ok === false && /posts AS a role you hold on YOUR OWN board/.test(noRoleTunnel.message));
+    // (c) the CLAIM context carries chair hygiene (the claim-first half of the anti-pattern).
+    ok('a fresh claim names chair hygiene — shared state, leave by stopping, never delete the files',
+      /chair files \(claim-\*\/cursor-\*\) are SHARED/.test(fresh.message) && /never delete them by hand/.test(fresh.message));
+    try { fs.unlinkSync(path.join(CLAUDE, 'cache', `arc-state-${NR}.json`)); } catch {}
+  }
 
   // The roster is what `arc role` shows — one line per role, full charter one Read away.
   const q = F8.requestRole(AS, '', drepo);
@@ -2580,15 +2654,16 @@ try {
   fs.rmSync(dproj, { recursive: true, force: true });
   A6.clearWaiting(DS); A6.clearOffered(DS); RM6.markRead(dboard2, 'code');
 
-  // The statusline must actually SHOW it — a fact nobody surfaces is a fact nobody has.
+  // THE DEAF BADGE IS GONE FROM THE STATUSLINE (operator's call, 2026-07-22). It flashed on ordinary
+  // arming windows, and the reachability signal that matters is the Stop-hook nag to the AGENT — the
+  // only actor that can re-arm (a listener started outside the session cannot wake it). badge() still
+  // COMPUTES deaf (asserted above), so the squat is still detectable; the bar simply no longer paints
+  // it, and a formerly-deaf role-holder reads as ordinary quiet presence rather than a warning.
   const um = fs.readFileSync(path.join(SRC, 'usage-monitor.js'), 'utf8');
-  ok('the statusline renders DEAF loudly',
-    /f\.deaf \?/.test(um) && /DEAF/.test(um));
-  // And it must NOT tell the USER to run `arc join` — a listener started outside the session
-  // cannot wake it (only a background command the SESSION launched re-invokes the agent), so it
-  // would look fixed while staying deaf. Only the agent can arm.
-  ok('...without telling the user to run a listener that could never wake the session',
-    !/DEAF[^`]*run: arc join/.test(um));
+  ok('the statusline no longer renders a DEAF badge (the Stop-hook nag re-arms the agent, not the bar)',
+    !/DEAF \(tell me to re-arm\)/.test(um) && !/f\.deaf \?/.test(um));
+  ok('...and a role-holder with no unread notes still shows dim quiet presence (the bar never blanks)',
+    /if \(!f\.count\) \{/.test(um) && /\$\{f\.role\}\$\{peers\}/.test(um));
 
   // THE DIAL MUST NOT LIE ABOUT WHICH WAY IT POINTS. The statusline's fallback hardcoded
   // 'passive' — correct back when passive WAS the default, and quietly wrong ever since it moved

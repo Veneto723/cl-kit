@@ -502,7 +502,11 @@ function readCursorMap(board, role, all) {
 function writeCursor(board, role, seq) {
   ensureBoard(board);
   const covered = allNotes(board).filter((n) => n.seq <= seq);
-  atomicWriteJson(cursorPath(board, role), { o: highWater(covered), seq, at: Date.now() });
+  const rec = { o: highWater(covered), seq, at: Date.now() };
+  // preserve a fresh-claim broadcast floor across markRead: it is set ONCE (at claim) and must survive
+  // every later cursor advance, or the first markRead would erase it and re-expose the old broadcasts.
+  try { const f = JSON.parse(fs.readFileSync(cursorPath(board, role), 'utf8')).bfloor; if (f && typeof f === 'object') rec.bfloor = f; } catch {}
+  atomicWriteJson(cursorPath(board, role), rec);
   return seq;
 }
 
@@ -542,14 +546,30 @@ function withLock(board, name, fn) {
   try { return fn(); } finally { try { fs.rmdirSync(lock); } catch {} }
 }
 
+// The BROADCAST FLOOR of a fresh claim ({origin: ord}, or {}). A brand-new role would otherwise inherit
+// every `to: all` broadcast ever posted — the note-dump on first claim. The floor marks that backlog
+// pre-read for BROADCASTS ONLY. Directed notes carry no floor, so a note ADDRESSED to the role (an
+// `arc delegate` packet, or one left for an empty chair) still delivers in full — the documented "a
+// fresh claim inherits its chair's directed notes" feature (arc-notes:501) is untouched. Fail-open to
+// {} (no floor) so a torn/absent cursor never SUPPRESSES a note — a duplicate is noise, a miss is the bug.
+function readFloor(board, role) {
+  try { const f = JSON.parse(fs.readFileSync(cursorPath(board, role), 'utf8')).bfloor; return (f && typeof f === 'object') ? f : {}; }
+  catch { return {}; }
+}
+
 // What `role` hasn't seen: addressed to it, or broadcast; never its own notes.
 function unreadFor(board, role) {
   const all = allNotes(board);
   const latest = latestSeq(board);
-  const cur = readCursorMap(board, role, all);      // per-origin high-water (fail-open handled inside)
+  const cur = readCursorMap(board, role, all);      // per-origin read high-water (fail-open handled inside)
   const cursor = readCursor(board, role);           // reported for debugging, never used to filter
-  const notes = all.filter(
-    (n) => n.ord > (cur[noteOrigin(n)] || 0) && n.from !== role && (n.to == null || toHas(n.to, role)));
+  const floor = readFloor(board, role);             // fresh-claim broadcast floor — broadcasts only
+  const notes = all.filter((n) => {
+    if (n.from === role || n.ord <= (cur[noteOrigin(n)] || 0)) return false;   // own note, or already read
+    return n.to == null
+      ? n.ord > (floor[noteOrigin(n)] || 0)          // broadcast: also skip the pre-claim `to: all` backlog
+      : toHas(n.to, role);                            // directed: unfloored — delivered in full until read
+  });
   const senders = [...new Set(notes.map((n) => n.from))];
   return { cursor, count: notes.length, notes, senders, latest, total: all.length };
 }
@@ -729,6 +749,15 @@ function claimRole(board, role, pid, sessionId, convId) {
       const conv = convId || (held && held.convId) || null;
       atomicWriteJson(claimPath(board, role), { role, pid, sessionId: sessionId || null, convId: conv, at: Date.now() });
       try { fs.unlinkSync(legacyClaimPath(board, role)); } catch {}   // migrate off the old name
+      // FRESH-CLAIM BROADCAST FLOOR — only when there is genuinely no cursor yet. A brand-new role would
+      // otherwise inherit every `to: all` broadcast ever posted (the note-dump on first claim). Seed a
+      // floor at the current tip so that backlog reads as already-seen, with an EMPTY read-map (o:{}) so
+      // NOTHING else is marked read: directed notes (an arc delegate packet, notes left for an empty
+      // chair) carry no floor and still deliver in full. A revived/returning role has a cursor already
+      // and is left untouched — it keeps its real read position. See readFloor/unreadFor.
+      if (!fs.existsSync(cursorPath(board, role))) {
+        atomicWriteJson(cursorPath(board, role), { o: {}, seq: 0, bfloor: highWater(allNotes(board)), at: Date.now() });
+      }
       return { ok: true };
     });
   } catch (e) {
@@ -967,7 +996,7 @@ module.exports = {
   canonical, repoRoot, resolveBoard, ensureBoard,
   notesPath, appendNote, allNotes, noteCount, latestSeq,
   KINDS, KIND_RANK, DEFAULT_KIND, normalizeKind, supersededMap, openRequests, repliesTo, seenBy, requestStatus,
-  readCursor, readCursorMap, writeCursor, unreadFor, markRead, stampSeen, readSeen,
+  readCursor, readCursorMap, readFloor, writeCursor, unreadFor, markRead, stampSeen, readSeen,
   boardOrigin, noteOrigin, noteKey, refKey, resolveRef, refSeq, legacyId,
   isAlive, isHolder, procStarts, roleClaim, readClaimFile, claimRole, releaseRole, liveRoles, vacantClaimForRole,
   atomicWriteJson, withLock, vacantClaimForConv,

@@ -583,33 +583,23 @@ function boardSeg(f) {
   if (!f) return '';
   // Holding NO role means you receive nothing — so say it loudly rather than showing an
   // empty statusline while notes quietly pile up in the board.
-  if (f.noRole) return `\x1b[1;91m⚠ ${f.count} notes · no role — /arc-role <name>\x1b[0m`;
-  // DEAF: you hold a role but never armed a listener, so every peer addressing you is talking to
-  // an empty chair. The usual cause is an arming turn that could not run — a rate-limited account
-  // still CLAIMS for free (the claim is handled in-hook, zero tokens) and then cannot take the
-  // turn that arms, so the session SQUATS the role in silence. Loud, because nothing else would
-  // ever tell you. (Raised by the scout peer: "the statusline already knows both facts".)
-  // NB the hint is aimed at the USER, and it must not tell them to run `arc join` themselves: a
-  // listener started outside the session cannot wake it (only a background command the SESSION
-  // launched re-invokes the agent), so it would look fixed while staying deaf. Only the agent can
-  // arm — so ask the agent.
-  const deaf = f.deaf ? `\x1b[1;91m⚠ ${f.role} · DEAF (tell me to re-arm)\x1b[0m` : '';
-  // QUIET PRESENCE. Nothing is wrong, so this is DIM and never coloured — but the bar used to go
-  // completely blank here, which meant a healthy role-holder could not see which chair it held or
-  // whether anyone else was up. It is a readout, not an alert; anything louder would train the eye
-  // to ignore the segment that also carries DEAF.
-  if (!f.count && !f.deaf && f.quiet) {
-    const peers = f.peers ? ` · ${f.peers} peer${f.peers === 1 ? '' : 's'}` : '';
+  if (f.noRole) return `\x1b[1;91m! ${f.count} notes, no role - /arc-role <name>\x1b[0m`;
+  // NO DEAF BADGE on the statusline (operator's call, 2026-07-22): it cried wolf on ordinary arming
+  // windows and the reachability signal that matters is aimed at the AGENT, not the user — the Stop
+  // hook already nags the agent to re-arm at turn end, which is the only actor that CAN re-arm (a
+  // listener started outside the session cannot wake it). f.deaf is still computed in arc-notes.badge
+  // but no longer rendered here, so a formerly-DEAF role-holder now reads as ordinary quiet presence.
+  // QUIET PRESENCE. A healthy role-holder with no unread notes still sees which chair it holds and how
+  // many peers are up — dim, never coloured, a readout not an alert; the bar must not go blank here.
+  if (!f.count) {
+    const peers = f.peers ? `, ${f.peers} peer${f.peers === 1 ? '' : 's'}` : '';
     return `\x1b[2m${f.role}${peers}\x1b[0m`;
   }
-  if (!f.count) return deaf;
-  // NOTES ARE INFORMATION, AN ALARM IS AN ALARM — and they must not read alike. They were both warm
-  // (yellow text vs a red block), so at a glance the bar showed "two warning-ish things" and you had
-  // to stop and parse which was which. An unread note is the board working: someone wrote to you.
-  // Blue says that; red is reserved for the alarm, which keeps the inverse-video block on its own.
-  // Same convention as arc-scope, deliberately — the two surfaces should not disagree about colour.
-  const notes = hexColor(`✉ ${f.count} from ${f.senders.join(', ')}`, '#5AA3FF');
-  return deaf ? `${deaf} ${notes}` : notes;
+  // NOTES ARE INFORMATION, AN ALARM IS AN ALARM - and they must not read alike. An unread note is the
+  // board working: someone wrote to you. Blue says that; red stays reserved for a real alarm. Same
+  // convention as arc-scope, deliberately - the two surfaces should not disagree about colour. No
+  // glyph prefix: the blue already reads as "note", and a dingbat renders inconsistently per terminal.
+  return hexColor(`${f.count} from ${f.senders.join(', ')}`, '#5AA3FF');
 }
 
 // The initiative dial (/arc-mode). The circle FILLS as the agent gets more proactive:
@@ -626,9 +616,11 @@ function boardSeg(f) {
 // set by /arc-mode lands with no re-render (a blocked prompt is not a turn), so the bar can lag
 // until the next real turn.
 function stanceSeg(stance) {
-  if (stance === 'active') return '\x1b[1;92m● active\x1b[0m';
-  if (stance === 'balanced') return '\x1b[1;96m◐ balanced\x1b[0m';
-  return '\x1b[2m○ passive\x1b[0m';
+  // ASCII-only, no dial glyph (operator's call, 2026-07-22): the colour IS the dial — green active,
+  // cyan balanced, dim passive — and ●/◐/○ render inconsistently across terminals/fonts.
+  if (stance === 'active') return '\x1b[1;92mactive\x1b[0m';
+  if (stance === 'balanced') return '\x1b[1;96mbalanced\x1b[0m';
+  return '\x1b[2mpassive\x1b[0m';
 }
 
 function renderCompact(data, sessionEta, acc, model, effort, board, stance, alarm) {
@@ -636,7 +628,7 @@ function renderCompact(data, sessionEta, acc, model, effort, board, stance, alar
   // session's stats (model/effort · stance · unread notes). Loading/alert states stay single line.
   // An ACTIVE board alarm is a stop-the-line STATE, so it rides at the FRONT of line 2, alerting —
   // the raise line scrolls away, but the status bar persists until someone clears it.
-  const alarmSeg = alarm ? blinkAlert(`⚠ ${alarm} · arc alarm --clear`) : '';
+  const alarmSeg = alarm ? blinkAlert(`! ${alarm}, arc alarm --clear`) : '';
   const line2 = [alarmSeg, formatModel(model, effort), stanceSeg(stance), boardSeg(board)].filter(Boolean).join(' | ');
   const withL2 = (line1) => (line2 ? `${line1}\n${line2}` : line1);
 
@@ -657,7 +649,7 @@ function renderCompact(data, sessionEta, acc, model, effort, board, stance, alar
       const sd = Math.round(data.seven_day.utilization);
       const reset = formatResetTime(data.five_hour.resets_at) || formatResetTime(data.seven_day.resets_at);
       const resetPart = reset ? ` (resets ${reset})` : '';
-      subPart = ` | ${hexColor(`${sub.label} 5h ${fh}% · 7d ${sd}%${resetPart}`, sub.color)}`;
+      subPart = ` | ${hexColor(`${sub.label} 5h ${fh}%, 7d ${sd}%${resetPart}`, sub.color)}`;
     }
     // Gateway account's own usage (e.g. MATE /v1/usage), from cache. Guarded so a
     // weird payload can never break the statusline (falls back to the plain label).
@@ -682,7 +674,7 @@ function renderCompact(data, sessionEta, acc, model, effort, board, stance, alar
     // (5h window) or be stuck for days (weekly cap). See bindingResetLabel.
     const bindReset = bindingResetLabel(s, w, SWITCH_WEEK);
     const resetPart = bindReset ? ` (resets ${bindReset})` : '';
-    return withL2(blinkAlert(`⚠ ${acc.label} 5h ${sv}% · 7d ${wv}% ${lbl}${resetPart} — /arc-switch to ${target}`));
+    return withL2(blinkAlert(`! ${acc.label} 5h ${sv}%, 7d ${wv}% ${lbl}${resetPart} - /arc-switch to ${target}`));
   }
 
   const sEta = formatEta(sessionEta);
@@ -692,9 +684,9 @@ function renderCompact(data, sessionEta, acc, model, effort, board, stance, alar
   // the parenthetical entirely if neither exists, rather than print a 1970 time.
   const oReset = formatResetTime(s.resets_at) || formatResetTime(w.resets_at);
   const oResetPart = oReset ? ` (resets ${oReset}${sEtaPart})` : '';
-  // "5h X% · 7d Y%", not "X%/Y%": the bare pair made the reader remember which window was which,
-  // and `arc peek` already labels them this way — the statusline was the inconsistent surface.
-  return withL2(`${label(acc)} 5h ${sv}% · 7d ${weekStr}${oResetPart}`);
+  // "5h X%, 7d Y%", not "X%/Y%": the bare pair made the reader remember which window was which, so
+  // each window stays labelled; the separator is a plain comma (ASCII), not a dot that varies by font.
+  return withL2(`${label(acc)} 5h ${sv}%, 7d ${weekStr}${oResetPart}`);
 }
 
 async function main() {

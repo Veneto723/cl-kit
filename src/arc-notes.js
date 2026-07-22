@@ -360,6 +360,9 @@ function requestRole(session, arg, cwd) {
     (ros ? `  roster:\n${ros}\n` : '') +
     fg +
     (unread.count ? `  📌 ${unread.count} unread note(s) — read them: /arc-notes\n` : '  board is empty for you\n') +
+    // Point-of-action hygiene (the claim-first half of the anti-pattern): a session that claims a chair,
+    // posts, then hand-deletes its files to "leave no trace" corrupts shared state. Named once, on claim.
+    '  chair files (claim-*/cursor-*) are SHARED board state — to leave, just stop (your chair stays revivable); never delete them by hand.\n' +
     listen };
 }
 
@@ -370,7 +373,21 @@ function requestNote(session, arg, cwd, opts) {
   if (!session) return { ok: false, message: 'NOT under the arc wrapper (launch with `arc`).' };
   const board = R.resolveBoard(resolveCwd(session, cwd));
   const me = getRole(session, board);
-  if (!me) return { ok: false, message: `no role on the "${board.name}" board — claim one first:  /arc-role research` };
+  // A note is signed BY a role, so a role-less session cannot post — not here, not through the tunnel.
+  // Steer at the POINT OF ACTION, because the path a board-less session tends to invent is destructive:
+  // claim a chair it will abandon, post, then hand-delete claim-*/cursor-* to "clean up" — which evicts a
+  // live holder and resets a role's read cursor. Those files are SHARED board state; the tunnel touches
+  // none of the target's files, so the honest path leaves no trace by not making one. Backstop for a
+  // session that never loaded the peers skill (#1 removed the note-flood that motivated the "clean up").
+  if (!me) {
+    const wantsTunnel = /(?:^|\s)--board[=\s]/i.test(String(arg || ''));
+    return { ok: false, message:
+      `no role on the "${board.name}" board — a note is signed by a role, so you cannot post here yet.\n` +
+      (wantsTunnel
+        ? `  --board still posts AS a role you hold on YOUR OWN board — run it from a repo where you are a peer; it cannot write role-less onto this one.\n`
+        : `  Yours to work in? claim a chair:  /arc-role research.  A DIFFERENT board? tunnel from one you already hold a role on:  arc note <role> --board <that-repo> "...".\n`) +
+      `  A peer of NO board? then this note is not yours to leave — hand it to your human. Never claim a throwaway chair just to post, and never delete claim-*/cursor-* (shared board state, not session scratch).` };
+  }
 
   const s = String(arg || '').trim();
   const m = s.match(/^(\S+)\s+([\s\S]+)$/);
