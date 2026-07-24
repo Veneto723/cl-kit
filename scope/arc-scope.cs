@@ -105,6 +105,11 @@ namespace ArcScope {
   static class Program {
     static Window win;
     static StackPanel cards, detail;
+    // NOW strip live-refresh registries: role -> the row's live TextBlocks / dot, refreshed every tick from
+    // fresh `doing`/`lastTurn` WITHOUT rebuilding the detail (a rebuild would collapse an expanded note).
+    static Dictionary<string, TextBlock> nowDoing = new Dictionary<string, TextBlock>();
+    static Dictionary<string, TextBlock> nowAgo = new Dictionary<string, TextBlock>();
+    static Dictionary<string, Ellipse> nowDot = new Dictionary<string, Ellipse>();
     static TextBlock meta, dName, dPath;
     static Ellipse dot;
     static Border rootBorder;
@@ -329,7 +334,7 @@ namespace ArcScope {
       if (showingDetail) {   // refresh the open detail ONLY when its data changed — otherwise a poll
         object cur = FindRepo(Convert.ToString(dName.Tag));   // would rebuild it and collapse an expanded note / lose scroll
         if (cur == null) Back();
-        else { string sig = RepoSig(cur); if (sig != lastDetailSig) { lastDetailSig = sig; RenderDetail(cur); } }
+        else { string sig = RepoSig(cur); if (sig != lastDetailSig) { lastDetailSig = sig; RenderDetail(cur); } UpdateNow(cur); }
       }
     }
     static void Offline() {
@@ -543,6 +548,18 @@ namespace ArcScope {
       var graph = BuildGraph(repo, Math.Max(250, ContentW() - 30));
       if (graph != null) detail.Children.Add(graph);
 
+      // NOW — what each LIVE session is doing THIS INSTANT, read from its transcript's current tool call
+      // (arc-feed's describeTool). The graph shows WHO; this answers "what is each agent doing right now",
+      // always visible instead of buried in a hover. Its fields refresh every tick via UpdateNow, so it
+      // stays live WITHOUT rebuilding the detail (which would collapse an expanded note / lose scroll).
+      nowDoing.Clear(); nowAgo.Clear(); nowDot.Clear();
+      var liveR = new List<object>();
+      foreach (var r in A(Get(repo, "roles"))) if (I(r, "pid") > 0) liveR.Add(r);
+      if (liveR.Count > 0) {
+        detail.Children.Add(Section("NOW", liveR.Count + " live"));
+        foreach (var r in liveR) detail.Children.Add(NowRow(r));
+      }
+
       // NO "SESSIONS" list. The graph above already draws every session — live or closed — with its
       // state colour, so a list beneath it repeated the same rows in worse form. The one thing the
       // list held that the graph does not is the self-reported `activity` line; that moved onto the
@@ -554,7 +571,14 @@ namespace ArcScope {
       var flow = A(Get(repo, "flow"));
       int uc = 0; foreach (var w in flow) if (Bo(w, "open")) uc++;
       var ordered = Newest(flow);
-      detail.Children.Add(Section("NOTE FLOW", flow.Count + (uc > 0 ? "  ·  " + uc + " open" : "")));
+      // flow is the last FLOW_MAX (60) ledger notes, not the whole board. When the ledger holds more, the
+      // The flow is only the last FLOW_MAX (60) ledger notes, so on a big board the count reads "60 of 359"
+      // — a plain "60" would look like a false total. The caption below spells the cap out and points at
+      // `arc notes all` for the older notes, which the feed does not load.
+      var boardObj = Get(repo, "board");
+      int total = boardObj != null ? I(boardObj, "notes") : flow.Count;
+      string cnt = total > flow.Count ? flow.Count + " of " + total : flow.Count.ToString();
+      detail.Children.Add(Section("NOTE FLOW", cnt + (uc > 0 ? "  ·  " + uc + " open" : "")));
       if (ordered.Count == 0) detail.Children.Add(Empty("no notes yet"));
       firstFlowToggle = null;
       int shown = Math.Min(FLOW_INLINE, ordered.Count);
@@ -563,27 +587,12 @@ namespace ArcScope {
         if (i == 0) firstFlowToggle = lastToggle;
       }
       if (ordered.Count > shown) detail.Children.Add(ShowAllButton(repo, ordered, ordered.Count - shown));
+      // Tell the operator the flow is a WINDOW, not the whole ledger — older notes are not loaded here.
+      if (total > flow.Count) detail.Children.Add(Empty("only the latest " + flow.Count + " notes are loaded · " + (total - flow.Count) + " older are in the ledger (arc notes all)"));
 
-      // ROADMAP
-      var road = A(Get(repo, "roadmap"));
-      bool hasFile = Bo(repo, "roadmapFile");
-      detail.Children.Add(Section("ROADMAP", road.Count + " open"));
-      // "nothing parked" is a CLAIM about the repo. Only make it when there is genuinely no roadmap
-      // file. When one EXISTS but holds no numbered items, say exactly that — arc reads one shape
-      // and will not invent items out of whatever else the file contains.
-      if (road.Count == 0) detail.Children.Add(Empty(hasFile ? "docs/ROADMAP.md has no numbered items arc reads" : "nothing parked"));
-      foreach (var m in road) {
-        var row = new DockPanel(); row.Margin = new Thickness(2, 6, 2, 6);
-        bool prog = S(m, "state") == "prog";
-        var g = new Grid(); g.Width = 14; g.Height = 14; g.VerticalAlignment = VerticalAlignment.Center; g.Margin = new Thickness(0, 0, 11, 0);
-        var ring = new Ellipse(); ring.Stroke = Br(prog ? LIVE : "#46566A"); ring.StrokeThickness = 1.6; g.Children.Add(ring);
-        if (prog) { var fillE = new Ellipse(); fillE.Margin = new Thickness(3); fillE.Fill = Br(LIVE); g.Children.Add(fillE); }
-        DockPanel.SetDock(g, Dock.Left); row.Children.Add(g);
-        string own = S(m, "owner");
-        if (own.Length > 0) { var o = new TextBlock(); o.FontFamily = new FontFamily(MONO); o.FontSize = 10.5; o.Foreground = Br(DIM); o.Text = "[" + own + "]"; o.VerticalAlignment = VerticalAlignment.Center; o.Margin = new Thickness(10, 0, 0, 0); DockPanel.SetDock(o, Dock.Right); row.Children.Add(o); }
-        var t = new TextBlock(); t.FontSize = 13; t.Foreground = Br("#DCE4EC"); t.Text = S(m, "title"); t.VerticalAlignment = VerticalAlignment.Center; t.TextTrimming = TextTrimming.CharacterEllipsis;
-        row.Children.Add(t); detail.Children.Add(row);
-      }
+      // NO ROADMAP section (operator's call). The detail is the LIVE picture — graph, NOW, note flow;
+      // the roadmap is static planning that belongs in docs/ROADMAP.md, not on the live monitor.
+
       // dev-only: ARC_SCOPE_AUTOEXPAND=1 opens the first note's content once (for screenshots).
       if (!autoExpanded && firstFlowToggle != null && Environment.GetEnvironmentVariable("ARC_SCOPE_AUTOEXPAND") == "1") {
         autoExpanded = true; var tg = firstFlowToggle;
@@ -602,6 +611,40 @@ namespace ArcScope {
     }
     static UIElement Empty(string text) { var t = new TextBlock(); t.FontFamily = new FontFamily("Segoe UI"); t.FontSize = 12; t.FontStyle = FontStyles.Italic; t.Foreground = Br(DIM); t.Text = text; t.Margin = new Thickness(4, 1, 0, 2); return t; }
     static Ellipse Dot(double sz, string hex) { var e = new Ellipse(); e.Width = sz; e.Height = sz; e.Fill = Br(hex); return e; }
+
+    // One NOW row: state dot · role · what it is doing right now · how long since its last transcript write.
+    // Stashes its live TextBlocks / dot in the now* registries so UpdateNow can move them each tick.
+    static UIElement NowRow(object r) {
+      string role = S(r, "role"), state = S(r, "state"), doing = S(r, "doing"), lastTurn = S(r, "lastTurn");
+      var stack = new StackPanel(); stack.Margin = new Thickness(2, 6, 2, 6);
+      // line 1 — state dot · role (left) · how long since its last transcript write (right)
+      var top = new DockPanel();
+      var d = Dot(8, state == "idle" ? WAIT : LIVE); d.VerticalAlignment = VerticalAlignment.Center; d.Margin = new Thickness(0, 0, 9, 0);
+      DockPanel.SetDock(d, Dock.Left); top.Children.Add(d); nowDot[role] = d;
+      var ag = new TextBlock(); ag.FontFamily = new FontFamily(MONO); ag.FontSize = 10; ag.Foreground = Br(DIM);
+      ag.Text = lastTurn.Length > 0 ? Ago(lastTurn) : ""; ag.VerticalAlignment = VerticalAlignment.Center; ag.Margin = new Thickness(10, 0, 0, 0);
+      DockPanel.SetDock(ag, Dock.Right); top.Children.Add(ag); nowAgo[role] = ag;
+      var rl = new TextBlock(); rl.FontFamily = new FontFamily(MONO); rl.FontSize = 12; rl.FontWeight = FontWeights.SemiBold; rl.Foreground = Br("#CBD6E2");
+      rl.Text = role; rl.VerticalAlignment = VerticalAlignment.Center;
+      top.Children.Add(rl);
+      stack.Children.Add(top);
+      // line 2 — the DOING on its own full-width line, WRAPPING so it is never cut off
+      var dw = new TextBlock(); dw.FontFamily = new FontFamily(SANS); dw.FontSize = 12.5; dw.TextWrapping = TextWrapping.Wrap; dw.LineHeight = 16; dw.Margin = new Thickness(17, 3, 4, 0);
+      dw.Text = doing.Length > 0 ? doing : (state == "idle" ? "idle" : "…"); dw.Foreground = Br(doing.Length > 0 ? "#DCE4EC" : DIM);
+      stack.Children.Add(dw); nowDoing[role] = dw;
+      return stack;
+    }
+    // Refresh the NOW rows' live fields from fresh data every tick — no detail rebuild, so a note the
+    // operator is reading is never disturbed. A role that appears/vanishes changes state|pid, which IS in
+    // RepoSig, so RenderDetail rebuilds the rows then; here we only move the text that RepoSig ignores.
+    static void UpdateNow(object repo) {
+      foreach (var r in A(Get(repo, "roles"))) {
+        string role = S(r, "role"), state = S(r, "state"), doing = S(r, "doing"), lastTurn = S(r, "lastTurn");
+        if (nowDoing.ContainsKey(role)) { nowDoing[role].Text = doing.Length > 0 ? doing : (state == "idle" ? "idle" : "…"); nowDoing[role].Foreground = Br(doing.Length > 0 ? "#DCE4EC" : DIM); }
+        if (nowAgo.ContainsKey(role)) nowAgo[role].Text = lastTurn.Length > 0 ? Ago(lastTurn) : "";
+        if (nowDot.ContainsKey(role)) nowDot[role].Fill = Br(state == "idle" ? WAIT : LIVE);
+      }
+    }
 
     // a clickable note: header row (from -> to ... meta) + a collapsible body with the exact content
     static UIElement Note(bool unseen, string from, string arrow, string to, string fromColor, string toColor, string meta, string body) {
@@ -1167,25 +1210,14 @@ namespace ArcScope {
       if (when.Length > 0) head.Inlines.Add(RunC(when, DIM, MONO));
       sp.Children.Add(head);
 
-      // THE TASK is the headline — the job, not the keystroke. "running Bash" is a true answer to the
-      // wrong question; what the operator wants is "auditing the diff", "mining the OCR failures".
-      // That is the last substantive thing the session's human ASKED, and it is already on disk.
-      if (task.Length > 0) {
-        var t = new TextBlock();
-        t.TextWrapping = TextWrapping.Wrap; t.FontFamily = new FontFamily(SANS); t.FontSize = 14;
-        t.Foreground = Br(TXT); t.LineHeight = 19; t.Text = task;
-        sp.Children.Add(t);
-      }
-      // DOING is the live detail underneath — the tool running this second. Useful as corroboration
-      // ("still moving"), useless as the headline, so it stays dimmer and smaller than the task.
-      // NO MaxHeight. It had 46px, which is under three lines, so a real sentence — and `doing` runs
-      // to 420 chars — was sliced through the middle of a word with nothing to say it had been cut.
-      // A card that silently truncates is worse than a tall card.
+      // DOING is the headline — what the session is doing THIS INSTANT, from its transcript's current tool
+      // call (arc-feed's describeTool) or, on a text turn, the first clause of its reply. It REPLACED the
+      // old TASK headline, which echoed the human's last PROMPT: the operator wants what the AGENT is
+      // doing, not what they typed. No MaxHeight — a real sentence is never sliced mid-word.
       if (doing.Length > 0) {
-        var d = new TextBlock(); d.Margin = new Thickness(0, task.Length > 0 ? 8 : 0, 0, 0);
-        d.TextWrapping = TextWrapping.Wrap; d.FontFamily = new FontFamily(MONO); d.FontSize = 12;
-        d.Foreground = Br(TXT2); d.LineHeight = 17;
-        d.Text = doing.StartsWith("running ") ? doing : "→ " + doing;
+        var d = new TextBlock();
+        d.TextWrapping = TextWrapping.Wrap; d.FontFamily = new FontFamily(SANS); d.FontSize = 14;
+        d.Foreground = Br(TXT); d.LineHeight = 19; d.Text = doing;
         sp.Children.Add(d);
       }
       // The session's own `arc status` line, if it ever set one — a deliberate self-report outranks
@@ -1196,7 +1228,7 @@ namespace ArcScope {
         a.Foreground = Br(DIM); a.Text = "self-reported: " + activity;
         sp.Children.Add(a);
       }
-      if (task.Length == 0 && doing.Length == 0 && activity.Length == 0) {
+      if (doing.Length == 0 && activity.Length == 0) {
         var q = new TextBlock();
         q.FontFamily = new FontFamily(SANS); q.FontSize = 13; q.FontStyle = FontStyles.Italic;
         q.Foreground = Br(DIM);

@@ -66,7 +66,7 @@ const FEED_PORT = parseInt(process.env.ARC_FEED_PORT || '8791', 10);   // next t
 // old shape for hours while `snapshot()` returned the new one correctly when called directly —
 // stop/start does not settle it, because a healthy same-version feed is left alone on purpose.
 // Change the snapshot's SHAPE, bump this in the same edit.
-const VERSION = 13;
+const VERSION = 18;   // 18: describeTool clips loosened (desc 160 / cmd 120 / delegate 120) — full content, NOW row wraps
 const COOP_MAX = 20;               // recent reply edges kept per board
 const FLOW_MAX = 60;               // recent ledger notes kept per board (the transcript, all kinds)
 const pidFile = (port) => path.join(CACHE_DIR, `arc-feed-${port}.json`);
@@ -273,6 +273,38 @@ function transcriptTask(convId) {
     return task;
   } catch { return null; }
 }
+// A live one-liner for what a session is doing NOW, read from the CURRENT tool call's INPUT rather than
+// its bare name — "running Bash" says nothing; the tool's own description/target says everything. Falls
+// back to "running <name>" for anything unmapped, so a new tool is never worse than before.
+function describeTool(name, input) {
+  const inp = input || {};
+  const base = (p) => String(p || '').split(/[\\/]/).pop() || '';
+  const clip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+  switch (name) {
+    case 'Bash':
+    case 'PowerShell': {
+      const d = clip(inp.description, 160); if (d) return d;
+      const c = clip(inp.command, 120); return c ? 'shell: ' + c : 'a shell command';
+    }
+    case 'Edit':
+    case 'MultiEdit': return 'editing ' + base(inp.file_path);
+    case 'Write': return 'writing ' + base(inp.file_path);
+    case 'Read': return 'reading ' + base(inp.file_path);
+    case 'NotebookEdit': return 'editing ' + base(inp.notebook_path);
+    case 'Grep': return 'searching ' + clip(inp.pattern, 44);
+    case 'Glob': return 'finding ' + clip(inp.pattern, 44);
+    case 'Task':
+    case 'Agent': return 'delegating: ' + clip(inp.description || inp.subagent_type, 120);
+    case 'Skill': return 'running /' + clip(inp.skill || inp.command, 40);
+    case 'WebFetch': return 'fetching ' + clip(String(inp.url || '').replace(/^https?:\/\//, ''), 44);
+    case 'WebSearch': return 'web search: ' + clip(inp.query, 44);
+    case 'Workflow': return 'orchestrating a workflow';
+    case 'ExitPlanMode': return 'presenting a plan';
+    default:
+      if (name && name.startsWith('mcp__')) return 'calling ' + name.split('__').slice(-1)[0];
+      return 'running ' + name;
+  }
+}
 function transcriptDoing(convId) {
   try {
     const tp = require('./arc-invite').transcriptPath(convId);
@@ -284,19 +316,30 @@ function transcriptDoing(convId) {
     fs.readSync(fd, buf, 0, span, size - span);
     fs.closeSync(fd);
     const lines = buf.toString('utf8').split('\n');
+    // "Doing" = the most recent tool ACTION in the tail — a clean, COMPLETE answer ("editing X", "Rebuild
+    // Y") — preferred over reply PROSE, which is a wall or a clause cut mid-thought. Only a pure-
+    // conversation turn (no tool_use anywhere in the tail) falls back to the reply's first clause.
+    let firstText = null;
     for (let i = lines.length - 1; i >= 0; i--) {
       const ln = lines[i].trim();
       if (!ln.startsWith('{')) continue;
       let j; try { j = JSON.parse(ln); } catch { continue; }
       if (j.type !== 'assistant' || !j.message || !Array.isArray(j.message.content)) continue;
       const tool = j.message.content.find((c) => c && c.type === 'tool_use');
-      if (tool && tool.name) return 'running ' + tool.name;
-      const text = j.message.content.find((c) => c && c.type === 'text' && c.text);
-      if (text) {
-        const t = String(text.text).replace(/\s+/g, ' ').trim();
-        // an explicit ellipsis when cut — a truncated line must never read as a complete one
-        return t.length > DOING_MAX ? t.slice(0, DOING_MAX - 1) + '…' : t;
+      if (tool && tool.name) { const d = describeTool(tool.name, tool.input); return d.length > DOING_MAX ? d.slice(0, DOING_MAX - 1) + '…' : d; }
+      if (firstText === null) {
+        const text = j.message.content.find((c) => c && c.type === 'text' && c.text);
+        if (text) firstText = String(text.text);
       }
+    }
+    if (firstText !== null) {
+      let t = firstText
+        .replace(/```[\s\S]*?```/g, ' ')     // drop fenced code blocks
+        .replace(/[*_`#>|]+/g, ' ')          // strip emphasis / headings / table pipes
+        .replace(/\s+/g, ' ').trim();
+      const m = t.match(/^.{20,}?[.!?:;—]/);        // clip to the first CLAUSE boundary (sentence / colon / dash)
+      if (m) t = m[0].trim();
+      return t.length > 84 ? t.slice(0, 83) + '…' : t;
     }
   } catch {}
   return null;
