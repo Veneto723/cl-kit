@@ -360,6 +360,20 @@ namespace ArcScope {
       sb.Append(";R"); foreach (var m in A(Get(r, "roadmap"))) sb.Append(S(m, "title")).Append(S(m, "state")).Append(S(m, "owner")).Append('|');
       sb.Append(';').Append(I(r, "sessionCount")).Append(';').Append(I(Get(r, "board"), "notes"))
         .Append(';').Append(Bo(r, "roadmapFile") ? '1' : '0');
+      // LINGER: count edges still fading on THIS repo's graph (consumed, within the window, not currently
+      // pending). The count DROPS as each ages out, changing the sig, so the change-gate re-renders exactly
+      // when a fading arrow should clear — and NOT on the quiet ticks between (no click-swallowing churn).
+      {
+        string lroot = S(r, "root"); DateTime lnow = DateTime.Now;
+        var pend = new HashSet<string>();
+        foreach (var p in A(Get(r, "pending"))) pend.Add(S(p, "from") + "|" + S(p, "to"));
+        int settleN = 0;
+        foreach (var kv in _edgeSeen) {
+          if (!kv.Key.StartsWith(lroot + "")) continue;
+          if ((lnow - kv.Value).TotalMilliseconds < EDGE_LINGER_MS && !pend.Contains(kv.Key.Substring(lroot.Length + 1))) settleN++;
+        }
+        if (settleN > 0) sb.Append(";L").Append(settleN);
+      }
       return sb.ToString();
     }
 
@@ -1041,6 +1055,14 @@ namespace ArcScope {
     // the old centre-to-centre boundary anchoring (Inset), which put every edge on the same point.
     const double EDGE_SLOT = 6;    // half the gap between a pair's two directions, at the card
     const double EDGE_BOW  = 16;   // how far the bezier bows; the two directions bow to opposite sides
+    const double EDGE_GAP  = 1;    // tiny float OUTSIDE the card edge — the head nearly touches, doesn't hover high
+    const double HEAD_LIFT = 6;    // arrowhead TIP floats this far back OUTSIDE the card (bigger = retreated
+    // LINGER: `pending` is the live truth, but a note read the INSTANT it lands leaves pending before the
+    // eye catches the arrow. Keep a just-consumed edge on the graph for EDGE_LINGER_MS, drawn faint, then
+    // drop it — display-only; it only DELAYS an edge's removal, never invents one. Keyed "root\x01from|to".
+    const double EDGE_LINGER_MS = 10000;   // keep a just-consumed edge on the graph this long, drawn faint
+    static readonly Dictionary<string, DateTime> _edgeSeen = new Dictionary<string, DateTime>();  // -> last time PENDING
+    static readonly Dictionary<string, object>   _edgeNote = new Dictionary<string, object>();     // -> its newest note (faint label)
     static readonly double[] SIDE_ANGLE = { 0, 90, 180, 270 };   // R, B, L, T (screen y-down)
     // Cards are WIDE pills, so their top/bottom edges are long and their left/right edges short. A
     // neighbour sitting DIAGONALLY (near a 45° corner) reads better entering the long edge than being
@@ -1050,13 +1072,17 @@ namespace ArcScope {
     static double AngGap(double a, double b) { double d = Math.Abs(a - b) % 360; return d > 180 ? 360 - d : d; }
     static double BestGap(double a) { double b = 1e9; foreach (var pa in SIDE_ANGLE) b = Math.Min(b, AngGap(a, pa)); return b; }
     static Point PortPoint(Point c, double hw, double hh, int side) {
-      switch (side) {
-        case 0: return new Point(c.X + hw, c.Y);   // right-middle
-        case 1: return new Point(c.X, c.Y + hh);   // bottom-centre
-        case 2: return new Point(c.X - hw, c.Y);   // left-middle
-        default: return new Point(c.X, c.Y - hh);  // top-centre
+      switch (side) {                                       // + EDGE_GAP outward, so the wire/head floats off the card
+        case 0: return new Point(c.X + hw + EDGE_GAP, c.Y);   // right-middle
+        case 1: return new Point(c.X, c.Y + hh + EDGE_GAP);   // bottom-centre
+        case 2: return new Point(c.X - hw - EDGE_GAP, c.Y);   // left-middle
+        default: return new Point(c.X, c.Y - hh - EDGE_GAP);  // top-centre
       }
     }
+    // OUTWARD normal of a card side (screen y-down): R:+x, B:+y, L:-x, T:-y. A wire leaves/arrives ALONG
+    // this so it meets the card square; the arrowhead points the OPPOSITE way (into the card).
+    static double SideNX(int side) { return side == 0 ? 1 : side == 2 ? -1 : 0; }
+    static double SideNY(int side) { return side == 1 ? 1 : side == 3 ? -1 : 0; }
     // node -> (neighbour -> distinct side index). The most "decided" neighbour (closest to a cardinal
     // direction) claims its side first, so a clear direction is never bumped; a node with >4 neighbours
     // (rare) lets the extras share the nearest side rather than crash.
@@ -1072,12 +1098,13 @@ namespace ArcScope {
           ideal.Add(new KeyValuePair<string, double>(m, ang));
         }
         ideal.Sort((x, y) => BestGap(x.Value).CompareTo(BestGap(y.Value)));
-        // The vertical bias is only a FREE improvement when the node has a spare side to choose. A
-        // high-degree node (4+ neighbours) already uses every side, so biasing toward top/bottom just
-        // crowds two edges onto the long edges and pushes a diagonal neighbour off the left/right side
-        // it should own — the exact "android put uiux on the bottom, not the left" case. So bias only
-        // low-degree nodes (≤3 neighbours, ≥1 side to spare); high-degree ones use pure nearest-cardinal.
-        bool biasVert = ideal.Count <= 3;
+        // The vertical bias favours top/bottom on a near-45 call. It HELPS a sparse leaf reach the long
+        // pill edge (uiux's 1 neighbour, a 315 edge, correctly tips to TOP), but on a busier node it shoves
+        // a down-diagonal edge onto the BOTTOM when nearest-cardinal would (correctly) give it the LEFT —
+        // MEASURED from the live layout: android at 3 neighbours put its 135 uiux edge on the bottom, not
+        // the left. So bias only LEAF-ish nodes (<=2 neighbours); a node with 3+ uses pure nearest-cardinal,
+        // which distributes its edges across all four sides cleanly (android -> research=B, frontend=R, uiux=L).
+        bool biasVert = ideal.Count <= 2;
         var used = new HashSet<int>(); var map = new Dictionary<string, int>();
         foreach (var kv in ideal) {
           int best = -1; double bd = 1e9;
@@ -1283,6 +1310,25 @@ namespace ArcScope {
         if (!groups.ContainsKey(k)) { groups[k] = new List<object>(); order.Add(k); }
         groups[k].Add(w);
       }
+      // LINGER pass: stamp each LIVE edge's time+note, then re-add recently-consumed edges (drawn faint,
+      // no longer in `pending`) so a note read the instant it lands still shows an arrow that ages out.
+      var settling = new HashSet<string>();
+      {
+        string groot = S(repo, "root"); DateTime gnow = DateTime.Now;
+        foreach (var lk in new List<string>(groups.Keys)) {
+          var nl = Newest(groups[lk]); _edgeSeen[groot + "" + lk] = gnow; _edgeNote[groot + "" + lk] = nl.Count > 0 ? nl[0] : null;
+        }
+        foreach (var sk in new List<string>(_edgeSeen.Keys)) {
+          if (!sk.StartsWith(groot + "")) continue;
+          string ek = sk.Substring(groot.Length + 1);
+          if ((gnow - _edgeSeen[sk]).TotalMilliseconds >= EDGE_LINGER_MS) { _edgeSeen.Remove(sk); _edgeNote.Remove(sk); continue; }
+          if (groups.ContainsKey(ek)) continue;                          // still live — not settling
+          string[] ep = ek.Split('|');
+          if (ep.Length != 2 || !nodes.Contains(ep[0]) || !nodes.Contains(ep[1])) continue;  // an endpoint is gone
+          groups[ek] = new List<object>(); if (_edgeNote.ContainsKey(sk) && _edgeNote[sk] != null) groups[ek].Add(_edgeNote[sk]);
+          order.Add(ek); settling.Add(ek);
+        }
+      }
       var pills = new Dictionary<string, Border>(); var halfW = new Dictionary<string, double>(); var halfH = new Dictionary<string, double>();
       foreach (var n in nodes) {
         var pill = NodePill(n, stateOf.ContainsKey(n) ? stateOf[n] : "closed",
@@ -1370,7 +1416,7 @@ namespace ArcScope {
         // research and code side by side at the bottom with barely a gap. Grow the radius until the
         // adjacent chord (2·rr·sin(π/N)) clears both widest half-widths plus a real gap — still capped
         // by the width so it never overflows. Only bites small N; for large N r0 already exceeds this.
-        double chordNeed = (2 * maxHalf + 30) / (2 * Math.Sin(Math.PI / ringN));
+        double chordNeed = (2 * maxHalf + 55) / (2 * Math.Sin(Math.PI / ringN));
         rr = Math.Min(Math.Max(rr, chordNeed), rCap);
         double cx0 = width / 2, cy0 = rr + 22;
         // start at the top and go clockwise, so the first name alphabetically is always at 12 o'clock
@@ -1432,26 +1478,13 @@ namespace ArcScope {
         double k = Math.Sqrt(Math.Max(0, Math.Min(1, str)));
         Point ta = Inset(pos[bb], pos[ba], halfW[ba], halfH[ba]);
         Point tb = Inset(pos[ba], pos[bb], halfW[bb], halfH[bb]);
-        // A BOND MUST DODGE A PILL TOO. Ties were drawn as straight lines with no collision test, so
-        // on a ring the strongest bond — a wide band — ran clean through whichever session happened
-        // to sit between its two ends. It read as a line touching three sessions when it describes
-        // two. Same test the arrows use; when it would hit, the tie bows around instead.
-        bool tBlocked = ChordHitsNode(ta, tb, ba, bb, pos, halfW, halfH);
-        var tfig = new PathFigure(); tfig.StartPoint = ta;
-        if (tBlocked) {
-          double tdx = tb.X - ta.X, tdy = tb.Y - ta.Y, tlen = Math.Sqrt(tdx * tdx + tdy * tdy);
-          // bow AWAY from the ring's centre, so the detour goes into open space rather than across it
-          double ccx = 0, ccy = 0; foreach (var kk in pos.Keys) { ccx += pos[kk].X; ccy += pos[kk].Y; }
-          ccx /= Math.Max(1, pos.Count); ccy /= Math.Max(1, pos.Count);
-          double tmx = (ta.X + tb.X) / 2, tmy = (ta.Y + tb.Y) / 2;
-          double tox = tmx - ccx, toy = tmy - ccy, tol = Math.Sqrt(tox * tox + toy * toy);
-          if (tol < 0.001) { tox = -tdy; toy = tdx; tol = Math.Max(tlen, 0.001); }
-          double tpush = Math.Max(46, tlen * 0.34);
-          tfig.Segments.Add(new QuadraticBezierSegment(
-            new Point(tmx + (tox / tol) * tpush, tmy + (toy / tol) * tpush), tb, true));
-        } else {
-          tfig.Segments.Add(new LineSegment(tb, true));
-        }
+        // Every tie is a STRAIGHT line (the operator's call — no curves), tucked a few px INTO each card so
+        // it connects FIRMLY at the pill edge instead of floating just outside it (bonds draw UNDER pills).
+        double dax = pos[ba].X - ta.X, day = pos[ba].Y - ta.Y, dal = Math.Sqrt(dax * dax + day * day); if (dal < 0.001) dal = 1;
+        double dbx = pos[bb].X - tb.X, dby = pos[bb].Y - tb.Y, dbl = Math.Sqrt(dbx * dbx + dby * dby); if (dbl < 0.001) dbl = 1;
+        var tfig = new PathFigure();
+        tfig.StartPoint = new Point(ta.X + dax / dal * 6, ta.Y + day / dal * 6);
+        tfig.Segments.Add(new LineSegment(new Point(tb.X + dbx / dbl * 6, tb.Y + dby / dbl * 6), true));
         var tgeo = new PathGeometry(); tgeo.Figures.Add(tfig);
         var tie = new System.Windows.Shapes.Path();
         tie.Data = tgeo;
@@ -1499,25 +1532,33 @@ namespace ArcScope {
         string[] pr = key.Split('|');
         if (pr.Length != 2 || !pos.ContainsKey(pr[0]) || !pos.ContainsKey(pr[1])) continue;
         var list = groups[key];
+        // ONE-WAY vs TWO-WAY: a lone direction (no reverse edge) is drawn as a clean STRAIGHT line —
+        // no slot, no bow. The slot + bow exist only to split a pair that has BOTH directions.
+        bool twoWay = groups.ContainsKey(pr[1] + "|" + pr[0]);
         bool unseen = false; foreach (var n in list) if (!Bo(n, "seen")) unseen = true;
         // THE EDGE RUNS THROUGH ITS LABEL. The label is a node in the layout, so the wire is a
         // POLYLINE — from -> label -> to — and the label sits on the path by construction rather
         // than being squeezed in beside it afterwards.
-        // pill to pill — anchored at distinct CARD PORTS, two parallel slots per pair (see AssignSides).
+        // TIER A — BOUNDARY ANCHORING (likec4 / Graphviz style, replaces cardinal ports). Each end is
+        // where the centre-to-centre line crosses the OTHER card's rounded boundary (Inset). A straight
+        // line between those two points, with a TANGENT head, meets each card exactly where the line
+        // points — so the head reads centred and square with NO lean, NO kink, NO curve. Graphviz never
+        // uses fixed side-ports for this reason: it clips the routed edge at the boundary and aims the
+        // head along it. A two-way pair is split onto opposite PARALLEL slots (the reverse edge, pr
+        // swapped, flips the perpendicular so the two directions never share a point).
         Point a, b2;
-        if (sideOf.ContainsKey(pr[0]) && sideOf[pr[0]].ContainsKey(pr[1])
-         && sideOf.ContainsKey(pr[1]) && sideOf[pr[1]].ContainsKey(pr[0])) {
-          Point pcI = PortPoint(pos[pr[0]], halfW[pr[0]], halfH[pr[0]], sideOf[pr[0]][pr[1]]);
-          Point pcJ = PortPoint(pos[pr[1]], halfW[pr[1]], halfH[pr[1]], sideOf[pr[1]][pr[0]]);
-          double cdx = pcJ.X - pcI.X, cdy = pcJ.Y - pcI.Y, clen = Math.Sqrt(cdx * cdx + cdy * cdy); if (clen < 0.001) clen = 1;
-          // slot: offset each end perpendicular to the chord. The reverse edge (pr swapped) flips the
-          // perpendicular, so the two directions land on OPPOSITE slots — nothing shared.
-          double sx = -cdy / clen * EDGE_SLOT, sy = cdx / clen * EDGE_SLOT;
-          a = new Point(pcI.X + sx, pcI.Y + sy);
-          b2 = new Point(pcJ.X + sx, pcJ.Y + sy);
-        } else {
-          a = Inset(pos[pr[1]], pos[pr[0]], halfW[pr[0]], halfH[pr[0]]);   // outside pill — no port assignment
-          b2 = Inset(pos[pr[0]], pos[pr[1]], halfW[pr[1]], halfH[pr[1]]);
+        {
+          Point ia = Inset(pos[pr[1]], pos[pr[0]], halfW[pr[0]], halfH[pr[0]]);   // source boundary, toward dest
+          Point ib = Inset(pos[pr[0]], pos[pr[1]], halfW[pr[1]], halfH[pr[1]]);   // dest boundary, toward source
+          double cdx = ib.X - ia.X, cdy = ib.Y - ia.Y, clen = Math.Sqrt(cdx * cdx + cdy * cdy); if (clen < 0.001) clen = 1;
+          double ux = cdx / clen, uy = cdy / clen;
+          double slot = twoWay ? EDGE_SLOT : 0;   // a lone direction sits dead-centre; a pair splits ±perp
+          double sx = -cdy / clen * slot, sy = cdx / clen * slot;
+          // Inset floats each end +3 OUTSIDE the boundary. Put the SOURCE end ON its boundary, and push the
+          // DEST end past the boundary so the arrowhead TIP sinks HEAD_SINK px INTO the card — the (on-top)
+          // head then seats on the edge instead of hovering above it (the operator's "lower" ask).
+          a  = new Point(ia.X + sx - ux * 3, ia.Y + sy - uy * 3);
+          b2 = new Point(ib.X + sx + ux * (3 - HEAD_LIFT), ib.Y + sy + uy * (3 - HEAD_LIFT));
         }
         // Two-way pairs no longer need a hand-tuned perpendicular nudge: each direction owns its own
         // label node, and the ordering phase has already given them different positions.
@@ -1533,35 +1574,47 @@ namespace ArcScope {
         string col = alert ? ALERT : unseen ? ACCENT : WAIT;
         double thick = Math.Min(1.2 + list.Count * 0.35, 4.0);
         double opa = unseen ? 0.95 : 0.55;
-        // BEZIER, BOWED PER DIRECTION. With the two directions already on separate slots (above), the
-        // curve only has to read as its own line and pair cleanly with its twin. Bow perpendicular to
-        // the chord: the reverse edge's chord is flipped, so its perpendicular flips too — the pair
-        // bows to OPPOSITE sides and forms a clean lens, no name-order special-case, no exterior/mirror
-        // machinery. The old ring-chord routing (blocked/exterior/mirror) is gone with the shared
-        // anchors that made it necessary.
+        if (settling.Contains(key)) { col = WAIT; opa = 0.35; }   // a just-consumed edge lingers faint before it fades
+        // STRAIGHT to the boundary, head SEATED on the card. A port edge is a plain straight line (a curve
+        // reads wrong for a single arrow); only an outside-pill endpoint bows. Two things make the head sit
+        // cleanly rather than hover: (1) the WIRE stops at the arrowhead's BASE, never the tip, so the
+        // stroke's round end-cap can't poke through the solid head; (2) the head is drawn on TOP of the
+        // pills with its tip sunk HEAD_SINK px into the destination card (see the Tier A block above).
         double mdx = b2.X - a.X, mdy = b2.Y - a.Y, mlen = Math.Sqrt(mdx * mdx + mdy * mdy); if (mlen < 0.001) mlen = 1;
-        double bow = Math.Min(EDGE_BOW, mlen * 0.22);
-        Point ctrl = new Point((a.X + b2.X) / 2 + (-mdy / mlen) * bow, (a.Y + b2.Y) / 2 + (mdx / mlen) * bow);
+        bool ported = sideOf.ContainsKey(pr[0]) && sideOf[pr[0]].ContainsKey(pr[1]) && sideOf.ContainsKey(pr[1]) && sideOf[pr[1]].ContainsKey(pr[0]);
+        Point qctrl = new Point((a.X + b2.X) / 2, (a.Y + b2.Y) / 2);
+        if (!ported) {                                     // outside-pill fallback: a gentle outward bow
+          double bow = twoWay ? Math.Min(EDGE_BOW, mlen * 0.22) : 0;
+          double perpx = -mdy / mlen, perpy = mdx / mlen;
+          double cgx = 0, cgy = 0; foreach (var pp in pos.Values) { cgx += pp.X; cgy += pp.Y; }
+          cgx /= Math.Max(1, pos.Count); cgy /= Math.Max(1, pos.Count);
+          if (perpx * (qctrl.X - cgx) + perpy * (qctrl.Y - cgy) < 0) { perpx = -perpx; perpy = -perpy; }
+          qctrl = new Point(qctrl.X + perpx * bow, qctrl.Y + perpy * bow);
+        }
+        // arrival tangent = head direction: a straight edge points a->b2; a bowed one points qctrl->b2
+        double hl = 10, hw = 4.5;
+        double hdx = b2.X - (ported ? a.X : qctrl.X), hdy = b2.Y - (ported ? a.Y : qctrl.Y);
+        double hal = Math.Sqrt(hdx * hdx + hdy * hdy); if (hal < 0.001) hal = 1;
+        double hux = hdx / hal, huy = hdy / hal;
+        Point baseC = new Point(b2.X - hux * hl, b2.Y - huy * hl);   // arrowhead BASE — the wire ends HERE
         var fig = new PathFigure(); fig.StartPoint = a;
-        fig.Segments.Add(new QuadraticBezierSegment(ctrl, b2, true));
+        if (ported) fig.Segments.Add(new LineSegment(baseC, true));
+        else        fig.Segments.Add(new QuadraticBezierSegment(qctrl, baseC, true));
         var geo = new PathGeometry(); geo.Figures.Add(fig);
         var wire = new System.Windows.Shapes.Path();   // qualified: System.IO.Path is also in scope
         wire.Data = geo; wire.Stroke = Br(col); wire.StrokeThickness = thick; wire.Opacity = opa;
         wire.StrokeStartLineCap = PenLineCap.Round; wire.StrokeEndLineCap = PenLineCap.Round;
         canvas.Children.Add(wire);
 
-        // the head follows the curve's TANGENT at the end (the control point -> endpoint direction),
-        // so it points the way the wire actually arrives rather than along the straight chord
-        Point tailFrom = ctrl;
-        double adx = b2.X - tailFrom.X, ady = b2.Y - tailFrom.Y, alen = Math.Sqrt(adx * adx + ady * ady);
-        double opaHead = opa;
-        if (alen > 0.001) {
-          double ux = adx / alen, uy = ady / alen, hw = 4.5, hl = 10;
+        // Solid head, BASE -> TIP, drawn ON TOP of the pills so its sunk-in point shows instead of hiding.
+        double opaHead = 1.0;   // the HEAD is always solid — never see-through — even when the wire is faint
+        {
           var head = new Polygon(); head.Fill = Br(col); head.Opacity = opaHead;
           head.Points = new PointCollection();
-          head.Points.Add(new Point(b2.X, b2.Y));
-          head.Points.Add(new Point(b2.X - ux * hl - uy * hw, b2.Y - uy * hl + ux * hw));
-          head.Points.Add(new Point(b2.X - ux * hl + uy * hw, b2.Y - uy * hl - ux * hw));
+          head.Points.Add(new Point(b2.X, b2.Y));                                // tip (sunk into the card)
+          head.Points.Add(new Point(baseC.X - huy * hw, baseC.Y + hux * hw));    // base corner
+          head.Points.Add(new Point(baseC.X + huy * hw, baseC.Y - hux * hw));    // base corner
+          System.Windows.Controls.Canvas.SetZIndex(head, 5);                     // above the pills
           canvas.Children.Add(head);
         }
         // NO LABEL CHIPS ON THE GRAPH. This was tried five ways — 1D walk along the edge, 2D
@@ -1589,18 +1642,9 @@ namespace ArcScope {
         hit.Data = geo; hit.Stroke = Brushes.Transparent; hit.StrokeThickness = 8;
         hit.Cursor = System.Windows.Input.Cursors.Hand; hit.ToolTip = tipTxt;
         hit.MouseLeftButtonUp += delegate { ShowAllNotes(rp, edgeNotes); };
-        // HOVER HAS TO SHOW. The hit area was invisible and silent, so there was no way to tell which
-        // edge you were about to click — on a canvas of crossing curves that is the one moment the
-        // feedback matters. The wire lights up and thickens under the pointer.
-        double baseThick = thick, baseOpa = opa;
-        var wireRef = wire;
-        hit.MouseEnter += delegate {
-          wireRef.StrokeThickness = baseThick + 2.2; wireRef.Opacity = 1.0;
-          wireRef.Stroke = Br(alert ? ALERT : "#8FC2FF");
-        };
-        hit.MouseLeave += delegate {
-          wireRef.StrokeThickness = baseThick; wireRef.Opacity = baseOpa; wireRef.Stroke = Br(col);
-        };
+        // NO wire light-up on hover (operator's call): the note-badge hover already signals which edge
+        // you are on, so the wire brightening/thickening under the pointer was redundant. The hit target
+        // still makes the wire clickable (Hand cursor) and its tooltip still names the notes.
         canvas.Children.Add(hit);
 
         // THE NOTE CHIP, ON THE LINE ITSELF. This failed repeatedly on the old layouts and is worth
@@ -1632,8 +1676,14 @@ namespace ArcScope {
           Rect pick = Rect.Empty; double pickCost = double.MaxValue;
           for (int q = 0; q < tt.Length; q++) {
             double t = tt[q], u = 1 - t;
-            double px = u * u * a.X + 2 * u * t * ctrl.X + t * t * b2.X;
-            double py = u * u * a.Y + 2 * u * t * ctrl.Y + t * t * b2.Y;
+            double px, py;
+            if (ported) {   // straight line point
+              px = a.X + t * (b2.X - a.X);
+              py = a.Y + t * (b2.Y - a.Y);
+            } else {        // quadratic bezier point
+              px = u * u * a.X + 2 * u * t * qctrl.X + t * t * b2.X;
+              py = u * u * a.Y + 2 * u * t * qctrl.Y + t * t * b2.Y;
+            }
             px = Math.Max(3 + cw / 2, Math.Min(px, width - 3 - cw / 2));
             var cand = new Rect(px - cw / 2, py - ch / 2, cw, ch);
             double cost = Math.Abs(t - 0.5) * 30;
