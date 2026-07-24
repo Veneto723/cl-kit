@@ -277,10 +277,52 @@ function resolveRef(board, ref, all) {
 // new origin. That degrades cleanly (a cursor re-shows that origin's notes once) and never
 // corrupts: an id already written into the ledger is immutable.
 const originPath = (board) => path.join(board.planDir, 'origin.json');
+// Per-machine fingerprint for the foreign-clone guard below. Node built-ins only (os.hostname +
+// os.networkInterfaces), zero deps. ARC_MACHINE_ID overrides it — an operator escape hatch (and the
+// test seam). Cached: os.networkInterfaces is a syscall and boardOrigin is on the append path.
+let _machineFp;
+function machineId() {
+  const override = process.env.ARC_MACHINE_ID;
+  if (override) return override;                          // explicit override — never cached
+  if (_machineFp != null) return _machineFp;
+  let host = ''; try { host = os.hostname() || ''; } catch {}
+  const macs = [];
+  try {
+    const ifs = os.networkInterfaces();
+    for (const name of Object.keys(ifs)) for (const ni of ifs[name] || []) {
+      if (ni && !ni.internal && ni.mac && ni.mac !== '00:00:00:00:00:00') macs.push(ni.mac);
+    }
+  } catch {}
+  _machineFp = `${host}|${[...new Set(macs)].sort().join(',')}`;
+  return _machineFp;
+}
+
+// The origin id names THIS board's writer, and `ord` + the per-origin cursor assume ONE writer per
+// origin. origin.json travels with an OUT-OF-BAND copy (VM/image clone, backup restore, raw folder
+// copy — anything that bypasses arc export/import, which strips it), so two live machines then write
+// under one origin; a per-origin cursor carried across the clone silently DROPS a genuinely-unread note
+// (ord ambiguity across the merge — reproduced, F1). GUARD: stamp the writing machine into origin.json,
+// and RE-MINT a fresh origin whenever the recorded fingerprint is not THIS machine — INCLUDING an
+// un-fingerprinted (pre-fix) origin.json, since a clone taken before the source stamped `m` carries no
+// fingerprint and is otherwise indistinguishable from a clone. Re-mint reuses the existing "lost origin
+// degrades cleanly" path (audit #166): the clone becomes its own writer and per-origin ord/cursor stay
+// honest. It touches ONLY future writes — every already-written note keeps its own id, so nothing is
+// renumbered or lost — and it is invisible to export/import (origin.json is never staged). ACCEPTED
+// COST (B, the operator's call): an `m`-less origin.json cannot be told apart from a legit pre-fix
+// board, so EVERY board re-mints ONCE on its first post-deploy write — harmless (its past notes and
+// their delivery are untouched; only future notes take the new origin). RESIDUAL kept honest: a
+// golden-image/snapshot clone of an ALREADY-fingerprinted board preserves hostname+MAC, so its `m`
+// matches and it still shares the origin (the same-fingerprint boundary — tested). ARC_MACHINE_ID pins
+// a stable id if a flapping NIC/VPN fingerprint causes unwanted re-mint churn.
 function boardOrigin(board) {
-  try { const o = JSON.parse(fs.readFileSync(originPath(board), 'utf8')).id; if (o) return o; } catch {}
+  const me = machineId();
+  try {
+    const rec = JSON.parse(fs.readFileSync(originPath(board), 'utf8'));
+    if (rec.id && rec.m === me) return rec.id;           // ours — the recorded fingerprint is THIS machine
+    // else: a DIFFERENT machine's fingerprint, OR none at all (pre-fix, possibly a clone) -> re-mint below
+  } catch {}
   const id = crypto.randomBytes(4).toString('hex');
-  try { ensureBoard(board); atomicWriteJson(originPath(board), { id, at: Date.now() }); } catch {}
+  try { ensureBoard(board); atomicWriteJson(originPath(board), { id, at: Date.now(), m: me }); } catch {}
   return id;
 }
 // LATENT EDGE — double-mint, NOT a bug (audit #166). Before origin.json exists, two concurrent
@@ -997,7 +1039,7 @@ module.exports = {
   notesPath, appendNote, allNotes, noteCount, latestSeq,
   KINDS, KIND_RANK, DEFAULT_KIND, normalizeKind, supersededMap, openRequests, repliesTo, seenBy, requestStatus,
   readCursor, readCursorMap, readFloor, writeCursor, unreadFor, markRead, stampSeen, readSeen,
-  boardOrigin, noteOrigin, noteKey, refKey, resolveRef, refSeq, legacyId,
+  boardOrigin, machineId, noteOrigin, noteKey, refKey, resolveRef, refSeq, legacyId,
   isAlive, isHolder, procStarts, roleClaim, readClaimFile, claimRole, releaseRole, liveRoles, vacantClaimForRole,
   atomicWriteJson, withLock, vacantClaimForConv,
   recordBirth, readBirth, clearBirth, spawnsOf, closePeer, treeOf,

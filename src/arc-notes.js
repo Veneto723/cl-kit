@@ -598,6 +598,27 @@ function requestNote(session, arg, cwd, opts) {
   // this repo spent the day finding in a test whose fixture could not fail — a green light nobody
   // wired to anything. So every post now carries its own receipt.
   const stored = note.body.length;
+  // DIGESTION HINT — is the recipient letting earlier notes from you pile up UNREAD? A busy peer reads
+  // oldest-first, so a fresh note stacks BEHIND a stale one it hasn't gotten to, and the sender never
+  // knew (the board already tracks per-role read cursors — this just surfaces them at write time). Say
+  // so, so you can consolidate or --supersedes the stale one instead of adding to the pile. Same-board
+  // directed notes only; fires ONLY when there is a genuine undigested prior, so it stays silent on a
+  // caught-up peer (no note-count noise). Read-only; a hint must never break a post.
+  let digest = '';
+  if (!crossFrom && to) {
+    try {
+      const all = R.allNotes(board);
+      const lines = [];
+      for (const r of (Array.isArray(to) ? to : [to])) {
+        const cur = R.readCursorMap(board, r, all);
+        const priors = all.filter((n) => n.id !== note.id && n.from === me
+          && (Array.isArray(n.to) ? n.to.indexOf(r) >= 0 : n.to === r)
+          && n.ord > (cur[R.noteOrigin(n)] || 0));
+        if (priors.length) lines.push(`${r} still has ${priors.length} unread from you (${priors.map((n) => '#' + n.seq).join(', ')})`);
+      }
+      if (lines.length) digest = `\n  heads-up: ${lines.join('; ')} — a busy peer reads oldest-first, so this stacks behind them. Consolidate, or retract a stale one with --supersedes <seq>.`;
+    } catch { /* a hint must never break a post */ }
+  }
   return { ok: true, message:
     `✓ note #${seq} posted for ${Array.isArray(to) ? to.join(' + ') : (to || 'everyone')} (from "${crossFrom || me}", on the "${target.name}" board)` +
     `  — ${stored} chars stored${chairLead}\n` +
@@ -605,7 +626,7 @@ function requestNote(session, arg, cwd, opts) {
                + `    cannot reply to you here. Anything you need BACK goes through your human.\n` : '') +
     (extra ? `  ${extra}\n` : '') +
     `  "${body.slice(0, 80)}${body.length > 80 ? '…' : ''}"\n` +
-    (chair ? chair : `  they'll see it when they next take a turn.`) };
+    (chair ? chair : `  they'll see it when they next take a turn.`) + digest };
 }
 
 const NOTE_USAGE =

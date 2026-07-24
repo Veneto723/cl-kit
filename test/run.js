@@ -591,6 +591,72 @@ try {
   ok('merge: a fresh destination takes the whole archive',
     (() => { const m = sync.mergeLedgers('', led(noid1, idA)); return m.ok && m.added === 2 && m.text === led(noid1, idA); })());
 
+  // -- F1: the out-of-band-clone silent note-drop, and the machine-fingerprint guard --------------
+  // A copy that BYPASSES arc export/import (VM/image clone, backup restore, raw folder copy) carries
+  // origin.json, so two live machines write under ONE origin; `ord` then differs by merge direction and
+  // a per-origin cursor carried across the clone silently DROPS a genuinely-unread note. boardOrigin
+  // stamps the writing machine and RE-MINTS on mismatch (ARC_MACHINE_ID overrides the fingerprint).
+  {
+    const mkb = (tag) => { const r = fs.mkdtempSync(path.join(os.tmpdir(), tag)); fs.mkdirSync(path.join(r, '.git'), { recursive: true }); const b = RM.resolveBoard(r); RM.ensureBoard(b); return b; };
+    const oPath = (b) => path.join(b.planDir, 'origin.json');
+    const savedMid = process.env.ARC_MACHINE_ID;
+
+    // (a) UNIT — the guard: keep ONLY on a matching fingerprint, RE-MINT everything else. Under B an
+    // un-fingerprinted (pre-fix) origin.json is treated as a possible clone and RE-MINTED, not adopted.
+    process.env.ARC_MACHINE_ID = 'machine-A';
+    const bU = mkb('f1u-');
+    fs.writeFileSync(oPath(bU), JSON.stringify({ id: 'origX', m: 'machine-A' }));
+    ok('boardOrigin keeps its id when the machine fingerprint MATCHES', RM.boardOrigin(bU) === 'origX');
+    fs.writeFileSync(oPath(bU), JSON.stringify({ id: 'origX' }));                       // pre-fix, no `m`
+    ok('boardOrigin RE-MINTS a pre-fix (m-less) origin.json (B: an unfingerprinted origin may be a clone)',
+      RM.boardOrigin(bU) !== 'origX' && JSON.parse(fs.readFileSync(oPath(bU), 'utf8')).m === 'machine-A');
+    fs.writeFileSync(oPath(bU), JSON.stringify({ id: 'origX', m: 'SOME-OTHER-machine' }));
+    ok('boardOrigin RE-MINTS when origin.json carries a DIFFERENT machine (a foreign clone)',
+      RM.boardOrigin(bU) !== 'origX' && JSON.parse(fs.readFileSync(oPath(bU), 'utf8')).m === 'machine-A');
+
+    // (b) E2E — the actual drop. A: origX, X1..X3 then X4 (code NEVER sees X4). Clone A->B (carries
+    // origin.json). B (on `cloneMachine`) appends X4', code reads up to X4', B appends X5'. Merge B into
+    // A and carry code's cursor across. `mLessAtClone` strips A's `m` BEFORE the clone, modelling a clone
+    // taken while origin.json was still PRE-FIX (the population F1 was written for). Returns code's unread.
+    const buildDrop = (cloneMachine, mLessAtClone) => {
+      process.env.ARC_MACHINE_ID = 'machine-A';
+      const bA = mkb('f1a-');
+      fs.writeFileSync(oPath(bA), JSON.stringify({ id: 'origX', m: 'machine-A' }));
+      for (const t of ['X1', 'X2', 'X3']) RM.appendNote(bA, { from: 'peer', to: 'code', kind: 'info', body: t });
+      if (mLessAtClone) fs.writeFileSync(oPath(bA), JSON.stringify({ id: 'origX' }));    // pre-fix state at clone time
+      const bB = mkb('f1b-');
+      fs.copyFileSync(oPath(bA), oPath(bB));                                            // out-of-band clone: origin.json travels
+      fs.copyFileSync(RM.notesPath(bA), RM.notesPath(bB));
+      RM.appendNote(bA, { from: 'peer', to: 'code', kind: 'info', body: 'X4' });         // A's note; code never reads it
+      process.env.ARC_MACHINE_ID = cloneMachine;                                        // B is on this machine now
+      RM.appendNote(bB, { from: 'peer', to: 'code', kind: 'info', body: "X4'" });
+      RM.markRead(bB, 'code');                                                          // code reads up to X4' on B
+      const cursorB = fs.readFileSync(path.join(bB.planDir, 'cursor-code.json'), 'utf8');
+      RM.appendNote(bB, { from: 'peer', to: 'code', kind: 'info', body: "X5'" });
+      process.env.ARC_MACHINE_ID = 'machine-A';
+      const merged = sync.mergeLedgers(fs.readFileSync(RM.notesPath(bA), 'utf8'), fs.readFileSync(RM.notesPath(bB), 'utf8'));
+      fs.writeFileSync(RM.notesPath(bA), merged.text);
+      fs.writeFileSync(path.join(bA.planDir, 'cursor-code.json'), cursorB);             // the clone carried the cursor too
+      return RM.unreadFor(bA, 'code').notes.map((n) => n.body);
+    };
+    // The one residual B CANNOT close: a golden-image clone of an ALREADY-fingerprinted board keeps the
+    // matching `m`, still shares the origin, and DROPS X4. Documented honestly (matches arc-board.js).
+    ok('F1 residual: a golden-image clone of an m-STAMPED board (same fingerprint) still DROPS X4',
+      !buildDrop('machine-A', false).includes('X4'));
+    // A DIFFERENT machine re-mints -> X4 delivered (the original fix, still holds).
+    ok('F1 fixed: a DIFFERENT-machine clone re-mints its origin, so the unread X4 is DELIVERED',
+      buildDrop('machine-B', false).includes('X4'));
+    // B's win — the pre-existing population: a clone taken while origin.json was PRE-FIX (m-less) now
+    // re-mints on BOTH sides, so X4 is delivered even across machines...
+    ok('F1 fixed by B: a pre-fix (m-less) clone on another machine re-mints both sides -> X4 DELIVERED',
+      buildDrop('machine-B', true).includes('X4'));
+    // ...and even on the SAME fingerprint, two m-less boards re-mint to DIFFERENT random origins -> no drop.
+    ok('F1 fixed by B: a pre-fix (m-less) clone on the same fingerprint re-mints apart -> X4 DELIVERED',
+      buildDrop('machine-A', true).includes('X4'));
+
+    if (savedMid == null) delete process.env.ARC_MACHINE_ID; else process.env.ARC_MACHINE_ID = savedMid;
+  }
+
   // -- E2E: export a repo's board, import it twice (same repo merge; --dest fresh) --
   if (has('tar', ['--version'])) {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'brd-'));
@@ -1897,6 +1963,24 @@ try {
     /does not declare a "ghost" role/.test(info.message));
   ok('...and a non-request note is told it keeps for whoever claims the role next',
     /It keeps:/.test(info.message));
+
+  // DIGESTION HINT: writing to a peer who still has UNREAD notes from you FLAGS it, so you can consolidate
+  // or --supersedes the stale one instead of stacking behind it — the #279/#281 case (a busy peer reads
+  // oldest-first, so a fresh note lands BEHIND a stale one it has not reached). Silent on a caught-up peer.
+  {
+    const RMd = require(path.join(SRC, 'arc-board.js'));
+    const first = F8.requestNote(AS, 'quiz "answer part 1"', drepo);
+    ok('a first note to a peer carries NO digestion hint (nothing stacked yet)',
+      first.ok === true && !/heads-up:.*unread from you/.test(first.message));
+    const second = F8.requestNote(AS, 'quiz "answer part 2"', drepo);
+    ok('a note to a peer that has NOT read your earlier one FLAGS the undigested prior (#279/#281 case)',
+      /heads-up: quiz still has 1 unread from you \(#\d+\)/.test(second.message)
+      && /reads oldest-first/.test(second.message) && /--supersedes/.test(second.message));
+    RMd.markRead(RMd.resolveBoard(drepo), 'quiz');                    // quiz catches up on everything
+    const third = F8.requestNote(AS, 'quiz "answer part 3"', drepo);
+    ok('...and once the recipient catches up, the hint goes QUIET (no noise on a digested peer)',
+      third.ok === true && !/heads-up:.*unread from you/.test(third.message));
+  }
 
   // ---- parentage + arc close: spawning without closing is a leak --------------------------
   // arc knew a peer EXISTED and never who MADE it, so nothing could reap one — a leaked probe was
